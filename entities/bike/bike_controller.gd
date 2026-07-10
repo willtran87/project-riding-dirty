@@ -6,6 +6,9 @@ signal telemetry_updated(speed_mph: float, throttle: float, grounded: bool)
 signal landed(intensity: float)
 signal airtime_started()
 signal trick_landed(airtime: float, rotation_amount: float, landing_intensity: float, clean: bool)
+signal flow_changed(value: float, boosting: bool)
+signal flow_gained(amount: float)
+signal boost_activated(flow_remaining: float)
 
 @export_category("Drive")
 @export var engine_force: float = 3600.0
@@ -30,6 +33,13 @@ signal trick_landed(airtime: float, rotation_amount: float, landing_intensity: f
 @export var air_roll_torque: float = 380.0
 @export var preload_impulse: float = 230.0
 
+@export_category("Flow Boost")
+@export var flow_capacity: float = 100.0
+@export var flow_boost_cost: float = 35.0
+@export var flow_boost_duration: float = 1.15
+@export var flow_boost_force: float = 2700.0
+@export var flow_boost_impulse: float = 4.2
+
 @onready var _front_ray: RayCast3D = %FrontSuspension
 @onready var _rear_ray: RayCast3D = %RearSuspension
 @onready var _visual: Node3D = %BikeVisual
@@ -52,6 +62,8 @@ var _air_rotation: float = 0.0
 var _base_engine_force: float = 3600.0
 var _base_lateral_grip: float = 440.0
 var _base_maximum_speed_mps: float = 34.0
+var _flow: float = 0.0
+var _boost_time: float = 0.0
 
 
 func _ready() -> void:
@@ -72,6 +84,7 @@ func _physics_process(delta: float) -> void:
 	var brake := InputRouter.get_brake() if controls_enabled else 1.0
 	var steer := InputRouter.get_steer() if controls_enabled else 0.0
 	var lean := InputRouter.get_lean() if controls_enabled else 0.0
+	_handle_flow_boost(delta)
 
 	if _grounded:
 		_apply_ground_drive(throttle, brake, steer)
@@ -100,6 +113,7 @@ func _physics_process(delta: float) -> void:
 		if _airtime >= 0.12:
 			var clean_landing := global_transform.basis.y.normalized().dot(_get_ground_normal()) > 0.48 and intensity < 0.9
 			trick_landed.emit(_airtime, _air_rotation, intensity, clean_landing)
+			_award_landing_flow(_airtime, _air_rotation, clean_landing)
 		_airtime = 0.0
 		_air_rotation = 0.0
 		_airborne_fall_speed = 0.0
@@ -124,6 +138,9 @@ func _physics_process(delta: float) -> void:
 
 func set_controls_enabled(enabled: bool) -> void:
 	controls_enabled = enabled
+	if not enabled and is_boosting():
+		_boost_time = 0.0
+		flow_changed.emit(_flow, false)
 
 
 func reset_to_safe_position() -> void:
@@ -141,10 +158,19 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_airborne_fall_speed = 0.0
 	_airtime = 0.0
 	_air_rotation = 0.0
+	_reset_flow()
 
 
 func get_speed_mps() -> float:
 	return Vector3(linear_velocity.x, 0.0, linear_velocity.z).length()
+
+
+func get_flow() -> float:
+	return _flow
+
+
+func is_boosting() -> bool:
+	return _boost_time > 0.0
 
 
 func apply_setup(setup: StringName) -> void:
@@ -207,9 +233,13 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float) -> void:
 	var forward_speed := linear_velocity.dot(forward)
 	var lateral_speed := linear_velocity.dot(right)
 
+	var speed_limit := maximum_speed_mps * (1.18 if is_boosting() else 1.0)
 	if throttle > 0.0:
-		var speed_factor := 1.0 - clampf(maxf(forward_speed, 0.0) / maximum_speed_mps, 0.0, 0.94)
+		var speed_factor := 1.0 - clampf(maxf(forward_speed, 0.0) / speed_limit, 0.0, 0.94)
 		apply_central_force(forward * throttle * engine_force * speed_factor)
+	if is_boosting():
+		var boost_falloff := clampf(_boost_time / 0.22, 0.15, 1.0)
+		apply_central_force(forward * flow_boost_force * boost_falloff)
 	if brake > 0.0:
 		if forward_speed > 1.0:
 			apply_central_force(-forward * forward_speed * brake_drag * brake)
@@ -223,9 +253,45 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float) -> void:
 	var reverse_sign := -1.0 if forward_speed < -0.5 else 1.0
 	apply_torque(ground_up * -steer * steering_torque * steer_authority * reverse_sign)
 
-	if planar_velocity.length() > maximum_speed_mps:
-		var excess := planar_velocity.length() - maximum_speed_mps
+	if planar_velocity.length() > speed_limit:
+		var excess := planar_velocity.length() - speed_limit
 		apply_central_force(-planar_velocity.normalized() * excess * mass * 7.0)
+
+
+func _handle_flow_boost(delta: float) -> void:
+	var was_boosting := is_boosting()
+	_boost_time = maxf(_boost_time - delta, 0.0)
+	if controls_enabled and _grounded and InputRouter.is_flow_boost_just_pressed() and _flow >= flow_boost_cost:
+		_flow -= flow_boost_cost
+		_boost_time = flow_boost_duration
+		var forward := -global_transform.basis.z.slide(_get_ground_normal()).normalized()
+		apply_central_impulse(forward * mass * flow_boost_impulse)
+		flow_changed.emit(_flow, true)
+		boost_activated.emit(_flow)
+	elif was_boosting and not is_boosting():
+		flow_changed.emit(_flow, false)
+
+
+func _award_landing_flow(airtime: float, rotation_amount: float, clean: bool) -> void:
+	if not controls_enabled or not clean or airtime < 0.45:
+		return
+	var rotation_turns := minf(rotation_amount / TAU, 2.0)
+	var requested_gain := clampf(22.0 + airtime * 20.0 + rotation_turns * 12.0, 14.0, 45.0)
+	var previous_flow := _flow
+	_flow = minf(_flow + requested_gain, flow_capacity)
+	var actual_gain := _flow - previous_flow
+	if actual_gain <= 0.01:
+		return
+	flow_gained.emit(actual_gain)
+	flow_changed.emit(_flow, is_boosting())
+
+
+func _reset_flow() -> void:
+	var had_flow := _flow > 0.01 or is_boosting()
+	_flow = 0.0
+	_boost_time = 0.0
+	if had_flow:
+		flow_changed.emit(_flow, false)
 
 
 func _apply_balance(steer: float) -> void:

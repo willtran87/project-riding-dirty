@@ -147,19 +147,36 @@ func _run_circuit() -> void:
 func _run_freestyle() -> void:
 	var exit_code := 0
 	await _wait_physics_frames(12)
-	_bike.respawn_at(Transform3D(Basis.IDENTITY, Vector3(0.0, 6.5, 12.0)))
-	_bike.linear_velocity = Vector3(0.0, 0.0, -5.0)
-	_bike.angular_velocity = Vector3(0.75, 0.0, 0.0)
-	await _wait_physics_frames(120)
+	_bike.respawn_at(Transform3D(Basis.IDENTITY, Vector3(0.0, 2.5, 12.0)))
+	_bike.linear_velocity = Vector3(0.0, 5.0, -5.0)
+	_bike.angular_velocity = Vector3(0.25, 0.0, 0.0)
+	await _wait_physics_frames(100)
 	if _freestyle.score <= 0:
 		push_error("FREESTYLE SMOKE: physical airtime and landing did not award points.")
+		exit_code = 1
+	var earned_flow := _bike.get_flow()
+	if earned_flow < _bike.flow_boost_cost:
+		push_error("FREESTYLE SMOKE: clean physical landing awarded only %.1f Flow." % earned_flow)
+		exit_code = 1
+	var speed_before_boost := _bike.get_speed_mps()
+	Input.action_press(InputRouter.FLOW_BOOST)
+	await _wait_physics_frames(1)
+	Input.action_release(InputRouter.FLOW_BOOST)
+	await _wait_physics_frames(2)
+	var flow_after_boost := _bike.get_flow()
+	var speed_after_boost := _bike.get_speed_mps()
+	if not _bike.is_boosting() or flow_after_boost > earned_flow - _bike.flow_boost_cost + 0.1:
+		push_error("FREESTYLE SMOKE: Flow boost did not activate or spend its cost.")
+		exit_code = 1
+	if speed_after_boost < speed_before_boost + 1.0:
+		push_error("FREESTYLE SMOKE: Flow boost did not produce a meaningful speed impulse (%.2f -> %.2f)." % [speed_before_boost, speed_after_boost])
 		exit_code = 1
 	if not _freestyle.active:
 		push_error("FREESTYLE SMOKE: session ended before its 60-second duration.")
 		exit_code = 1
 	if &"--capture-smoke" in OS.get_cmdline_user_args():
 		await _capture_named_frame("riding-dirty-freestyle.png")
-	print("FREESTYLE SMOKE RESULT: score=%d combo=%d height=%.2f" % [_freestyle.score, _freestyle.combo, _bike.global_position.y])
+	print("FREESTYLE SMOKE RESULT: score=%d combo=%d flow=%.1f->%.1f boost_speed=%.2f->%.2f height=%.2f" % [_freestyle.score, _freestyle.combo, earned_flow, flow_after_boost, speed_before_boost, speed_after_boost, _bike.global_position.y])
 	_freestyle.enter_waiting()
 	await _wait_physics_frames(60)
 	get_tree().quit(exit_code)
@@ -254,7 +271,7 @@ func _validate_tour_progression() -> bool:
 
 
 func _capture_named_frame(file_name: String) -> void:
-	for _frame: int in 3:
+	for _frame: int in 12:
 		await get_tree().process_frame
 	var capture := get_viewport().get_texture().get_image()
 	var capture_path := ProjectSettings.globalize_path("res://artifacts/%s" % file_name)

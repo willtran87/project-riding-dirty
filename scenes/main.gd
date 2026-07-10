@@ -11,6 +11,7 @@ extends Node3D
 @onready var _freestyle: FreestyleController = %FreestyleController
 @onready var _discovery: DiscoveryController = %DiscoveryController
 @onready var _transition: DistrictTransition = %DistrictTransition
+@onready var _gameplay_audio: GameplayAudio = %GameplayAudio
 
 var _paused: bool = false
 var _current_activity: StringName = &"CIRCUIT"
@@ -22,7 +23,9 @@ func _ready() -> void:
 	_camera.target = _bike
 	_camera.snap_to_target()
 	_bike.telemetry_updated.connect(_hud.update_telemetry)
+	_bike.flow_changed.connect(_hud.update_flow)
 	_bike.landed.connect(_camera.apply_landing_kick)
+	_bike.boost_activated.connect(_camera.apply_boost_punch)
 	_bike.landed.connect(_on_bike_landed)
 	_race.time_updated.connect(_hud.update_race_time)
 	_freestyle.hud_updated.connect(_hud.update_freestyle)
@@ -31,6 +34,7 @@ func _ready() -> void:
 	_race.initialize(_bike, _ghost)
 	_freestyle.initialize(_bike, _ghost)
 	_discovery.initialize(_bike, _ghost)
+	_gameplay_audio.initialize(_bike)
 	if &"--smoke-test" in OS.get_cmdline_user_args():
 		_on_ride_requested(Profile.current_setup, _get_requested_test_activity())
 	else:

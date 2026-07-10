@@ -12,6 +12,8 @@ var _best_label: Label
 var _checkpoint_label: Label
 var _speed_label: Label
 var _speed_bar: ProgressBar
+var _flow_label: Label
+var _flow_bar: ProgressBar
 var _countdown_label: Label
 var _message_label: Label
 var _controls_label: Label
@@ -60,6 +62,12 @@ func update_telemetry(speed_mph: float, _throttle: float, grounded: bool) -> voi
 	_speed_label.text = "%03d" % int(round(speed_mph))
 	_speed_bar.value = clampf(speed_mph, 0.0, 82.0)
 	_speed_label.modulate = AMBER if grounded else CYAN
+
+
+func update_flow(value: float, boosting: bool) -> void:
+	_flow_bar.value = clampf(value, 0.0, 100.0)
+	_flow_label.text = "BOOSTING" if boosting else "FLOW  %03d" % int(round(value))
+	_flow_label.modulate = CYAN if boosting else CREAM
 
 
 func update_race_time(elapsed_usec: int, best_usec: int, checkpoint: int, total: int) -> void:
@@ -123,22 +131,22 @@ func _build_hud() -> void:
 
 	var speed_panel := ColorRect.new()
 	speed_panel.color = DARK
-	_anchor_rect(speed_panel, Vector2.ONE, Rect2(-235.0, -166.0, 205.0, 132.0))
+	_anchor_rect(speed_panel, Vector2.ONE, Rect2(-235.0, -202.0, 205.0, 168.0))
 	speed_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(speed_panel)
 
 	_speed_label = _make_label(root, "000", 64, AMBER)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(_speed_label, Vector2.ONE, Rect2(-230.0, -166.0, 155.0, 84.0))
+	_anchor_rect(_speed_label, Vector2.ONE, Rect2(-230.0, -202.0, 155.0, 84.0))
 	var mph := _make_label(root, "MPH", 18, CREAM)
-	_anchor_rect(mph, Vector2.ONE, Rect2(-74.0, -127.0, 50.0, 32.0))
+	_anchor_rect(mph, Vector2.ONE, Rect2(-74.0, -163.0, 50.0, 32.0))
 
 	_speed_bar = ProgressBar.new()
 	_speed_bar.min_value = 0.0
 	_speed_bar.max_value = 82.0
 	_speed_bar.value = 0.0
 	_speed_bar.show_percentage = false
-	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-220.0, -72.0, 180.0, 12.0))
+	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-220.0, -108.0, 180.0, 12.0))
 	var bar_background := StyleBoxFlat.new()
 	bar_background.bg_color = Color("263039")
 	bar_background.corner_radius_top_left = 5
@@ -155,13 +163,27 @@ func _build_hud() -> void:
 	_speed_bar.add_theme_stylebox_override(&"fill", bar_fill)
 	root.add_child(_speed_bar)
 
+	_flow_label = _make_label(root, "FLOW  000", 16, CREAM)
+	_anchor_rect(_flow_label, Vector2.ONE, Rect2(-220.0, -88.0, 180.0, 25.0))
+	_flow_bar = ProgressBar.new()
+	_flow_bar.min_value = 0.0
+	_flow_bar.max_value = 100.0
+	_flow_bar.value = 0.0
+	_flow_bar.show_percentage = false
+	_anchor_rect(_flow_bar, Vector2.ONE, Rect2(-220.0, -55.0, 180.0, 10.0))
+	_flow_bar.add_theme_stylebox_override(&"background", bar_background.duplicate())
+	var flow_fill := bar_fill.duplicate() as StyleBoxFlat
+	flow_fill.bg_color = CYAN
+	_flow_bar.add_theme_stylebox_override(&"fill", flow_fill)
+	root.add_child(_flow_bar)
+
 	var controls_panel := ColorRect.new()
 	controls_panel.color = DARK
-	_anchor_rect(controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -126.0, 590.0, 92.0))
+	_anchor_rect(controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -126.0, 700.0, 92.0))
 	controls_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(controls_panel)
 	_controls_label = _make_label(root, "", 17, Color("c7d0d5"))
-	_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(46.0, -111.0, 560.0, 70.0))
+	_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(46.0, -111.0, 670.0, 70.0))
 	_controls_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	_countdown_label = _make_label(root, "", 132, AMBER)
@@ -264,9 +286,9 @@ func _on_game_paused(paused: bool) -> void:
 
 func _on_device_changed(using_gamepad: bool) -> void:
 	if using_gamepad:
-		_controls_label.text = "RT THROTTLE   LT BRAKE   LEFT STICK STEER   RIGHT STICK LEAN\nA PRELOAD   Y RESET BIKE   X RESTART   B GARAGE"
+		_controls_label.text = "RT THROTTLE   LT BRAKE   LS STEER   RS LEAN\nA PRELOAD   LB BOOST   Y RESET   X RESTART   B GARAGE"
 	else:
-		_controls_label.text = "W THROTTLE   S BRAKE   A / D STEER   ↑ / ↓ LEAN\nSPACE PRELOAD   R RESET   ENTER RESTART   G GARAGE"
+		_controls_label.text = "W THROTTLE   S BRAKE   A / D STEER   UP / DOWN LEAN\nSPACE PRELOAD   SHIFT BOOST   R RESET   ENTER RESTART   G GARAGE"
 
 
 func _on_activity_started(activity: StringName) -> void:

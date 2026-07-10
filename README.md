@@ -45,6 +45,7 @@ The Web preset uses the single-threaded compatibility renderer, so it works on a
 | Steer | A / D | Left stick |
 | Lean in the air | Up / Down | Right stick |
 | Preload / hop | Space | A / Cross |
+| Flow boost | Shift | Left shoulder |
 | Reset bike | R | Y / Triangle |
 | Restart run | Enter | X / Square |
 | Pause | Escape | Start |
@@ -52,6 +53,8 @@ The Web preset uses the single-threaded compatibility renderer, so it works on a
 | Repair in garage | F | Right shoulder |
 
 The garage uses `Q` / `E` or the horizontal D-pad to change setups, `W` / `S` or the vertical D-pad to change events, and `Enter` / `A` to purchase or ride. Medal finishes award cash plus activity-specific Racer, Freestyler, or Explorer reputation; profile progress and personal-best records persist between sessions.
+
+Clean landings after at least 0.45 seconds of airtime earn **Flow**. Spend 35 Flow with `Shift` or the left shoulder button for a short acceleration burst with a wider camera, HUD response, and synthesized cue. Resets clear the meter, so the fastest lines link jumps and boosts within the same run.
 
 ## Tour progression
 

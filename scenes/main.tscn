@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scenes/main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://levels/quarry/quarry.tscn" id="2_quarry"]
@@ -13,6 +13,7 @@
 [ext_resource type="PackedScene" path="res://features/discovery/discovery_controller.tscn" id="11_discovery"]
 [ext_resource type="PackedScene" path="res://levels/pine_ridge/pine_ridge.tscn" id="12_pine"]
 [ext_resource type="PackedScene" path="res://features/tour/district_transition.tscn" id="13_transition"]
+[ext_resource type="Script" path="res://features/audio/gameplay_audio.gd" id="14_audio"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -42,3 +43,7 @@ script = ExtResource("8_smoke")
 [node name="DiscoveryController" parent="." instance=ExtResource("11_discovery")]
 
 [node name="DistrictTransition" parent="." instance=ExtResource("13_transition")]
+
+[node name="GameplayAudio" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("14_audio")

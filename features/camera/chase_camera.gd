@@ -13,6 +13,7 @@ class_name ChaseCamera
 
 var target: Node3D
 var _landing_kick: float = 0.0
+var _boost_punch: float = 0.0
 var _noise_time: float = 0.0
 
 
@@ -40,14 +41,16 @@ func _process(delta: float) -> void:
 
 	_noise_time += delta * (4.0 + speed_ratio * 13.0)
 	_landing_kick = move_toward(_landing_kick, 0.0, delta * 3.6)
-	var shake_strength := speed_ratio * speed_ratio * 0.035 + _landing_kick * 0.12
+	_boost_punch = move_toward(_boost_punch, 0.0, delta * 1.8)
+	var shake_strength := speed_ratio * speed_ratio * 0.035 + _landing_kick * 0.12 + _boost_punch * _boost_punch * 0.055
 	var shake := Vector3(sin(_noise_time * 1.7), cos(_noise_time * 2.3), 0.0) * shake_strength
 	var look_target := target.global_position + target_forward * (1.0 + speed_ratio * 3.3) + Vector3.UP * (0.92 - _landing_kick * 0.3)
 	var desired_basis := Basis.looking_at((look_target - global_position).normalized(), Vector3.UP)
 	var rotation_weight := 1.0 - exp(-rotation_smoothing * delta)
 	global_transform.basis = global_transform.basis.slerp(desired_basis, rotation_weight)
 	_camera.position = shake
-	_camera.fov = lerpf(_camera.fov, lerpf(base_fov, maximum_fov, speed_ratio), 1.0 - exp(-4.5 * delta))
+	var target_fov := minf(lerpf(base_fov, maximum_fov, speed_ratio) + _boost_punch * 6.0, maximum_fov + 4.0)
+	_camera.fov = lerpf(_camera.fov, target_fov, 1.0 - exp(-4.5 * delta))
 
 
 func snap_to_target() -> void:
@@ -62,3 +65,7 @@ func snap_to_target() -> void:
 
 func apply_landing_kick(intensity: float) -> void:
 	_landing_kick = maxf(_landing_kick, intensity)
+
+
+func apply_boost_punch(_flow_remaining: float = 0.0) -> void:
+	_boost_punch = 1.0

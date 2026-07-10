@@ -70,6 +70,7 @@ The target is arcade readability supported by convincing physical behavior. The 
 - Steering
 - Suspension preload before jumps
 - Trick or contextual action input
+- Flow boost, earned through clean landings and spent tactically on the ground
 
 ### Advanced Techniques
 
@@ -361,11 +362,12 @@ The project now contains a playable Godot vertical slice of the recommended dire
 
 - Stylized low-to-mid-poly dirt bike and rider assembled from procedural 3D geometry
 - Rigid-body arcade handling with two-point ray suspension, active balance, steering, braking, reverse, preload hopping, and airborne lean control
+- A 0–100 Flow meter earned by clean airborne landings, with a 35-point ground boost that raises acceleration and temporary top speed
 - Responsive speed-reactive third-person chase camera with predictive framing and landing kick
 - A complete Red Mesa quarry circuit with track markings, jumps, table sections, berms, cliffs, props, course markers, lighting, fog, and environmental landmarks
 - Ordered checkpoint validation, countdown, microsecond timing, medal thresholds, instant restart, and safe-position bike reset
 - Persistent personal-best time and interpolated collision-free ghost playback
-- Synthesized engine audio, dust trails, landing bursts, wheel animation, rider pose response, and speed presentation
+- Synthesized engine and pooled gameplay cues, dust trails, landing bursts, wheel animation, rider pose response, boost camera punch, and speed presentation
 - Responsive race HUD with keyboard and gamepad instructions, pause state, speed, time, best time, checkpoint progress, and finish results
 - Persistent cash, Racer reputation, run rewards, and transaction history
 - A playable garage with three bike setups: Trail, Balanced, and Attack

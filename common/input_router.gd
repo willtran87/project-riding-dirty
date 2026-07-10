@@ -10,6 +10,7 @@ const STEER_RIGHT: StringName = &"steer_right"
 const LEAN_FORWARD: StringName = &"lean_forward"
 const LEAN_BACK: StringName = &"lean_back"
 const PRELOAD: StringName = &"preload"
+const FLOW_BOOST: StringName = &"flow_boost"
 const RESET_BIKE: StringName = &"reset_bike"
 const RESTART_RUN: StringName = &"restart_run"
 const PAUSE: StringName = &"pause_game"
@@ -61,6 +62,10 @@ func is_preload_just_released() -> bool:
 	return Input.is_action_just_released(PRELOAD)
 
 
+func is_flow_boost_just_pressed() -> bool:
+	return Input.is_action_just_pressed(FLOW_BOOST)
+
+
 func _register_actions() -> void:
 	_add_key(THROTTLE, KEY_W)
 	_add_axis(THROTTLE, JOY_AXIS_TRIGGER_RIGHT, 1.0)
@@ -79,6 +84,8 @@ func _register_actions() -> void:
 
 	_add_key(PRELOAD, KEY_SPACE)
 	_add_button(PRELOAD, JOY_BUTTON_A)
+	_add_key(FLOW_BOOST, KEY_SHIFT)
+	_add_button(FLOW_BOOST, JOY_BUTTON_LEFT_SHOULDER)
 	_add_key(RESET_BIKE, KEY_R)
 	_add_button(RESET_BIKE, JOY_BUTTON_Y)
 	_add_key(RESTART_RUN, KEY_ENTER)
