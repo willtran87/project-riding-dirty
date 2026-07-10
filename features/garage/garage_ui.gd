@@ -20,8 +20,12 @@ var _price_label: Label
 var _status_label: Label
 var _event_label: Label
 var _event_description: Label
+var _event_meta_label: Label
+var _tour_label: Label
+var _event_accent: ColorRect
 var _repair_label: Label
 var _bars: Dictionary[StringName, ProgressBar] = {}
+var _event_markers: Array[Label] = []
 var _selected_index: int = 1
 var _event_index: int = 0
 var _open: bool = false
@@ -89,9 +93,14 @@ func _confirm_selection() -> void:
 		_status_label.modulate = CYAN
 		_refresh()
 		return
+	var activity := EVENTS[_event_index]
+	if not Profile.is_activity_unlocked(activity):
+		_status_label.text = Profile.get_activity_unlock_hint(activity)
+		_status_label.modulate = Color("ff6f5e")
+		return
 	Profile.set_current_setup(setup)
 	hide_garage()
-	ride_requested.emit(setup, EVENTS[_event_index])
+	ride_requested.emit(setup, activity)
 
 
 func _build_ui() -> void:
@@ -128,11 +137,28 @@ func _build_ui() -> void:
 	_root.add_child(_event_label)
 	_event_description = _label("", 15, Color("9dadb6"))
 	_event_description.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(_event_description, Vector2(1.0, 0.0), Rect2(-840.0, 166.0, 760.0, 34.0))
+	_anchor_rect(_event_description, Vector2(1.0, 0.0), Rect2(-840.0, 162.0, 760.0, 30.0))
 	_root.add_child(_event_description)
+	_event_meta_label = _label("", 13, CYAN)
+	_event_meta_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_anchor_rect(_event_meta_label, Vector2(1.0, 0.0), Rect2(-840.0, 190.0, 760.0, 28.0))
+	_root.add_child(_event_meta_label)
 	_repair_label = _label("", 15, Color("9dadb6"))
 	_anchor_rect(_repair_label, Vector2.ZERO, Rect2(88.0, 175.0, 620.0, 32.0))
 	_root.add_child(_repair_label)
+	_tour_label = _label("", 13, CREAM)
+	_anchor_rect(_tour_label, Vector2.ZERO, Rect2(88.0, 202.0, 370.0, 28.0))
+	_root.add_child(_tour_label)
+	_event_accent = ColorRect.new()
+	_event_accent.color = AMBER
+	_anchor_rect(_event_accent, Vector2(1.0, 0.0), Rect2(-840.0, 216.0, 760.0, 4.0))
+	_root.add_child(_event_accent)
+	for index: int in EVENTS.size():
+		var marker := _label("%02d" % (index + 1), 13, Color("52616a"))
+		marker.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_anchor_rect(marker, Vector2.ZERO, Rect2(88.0 + index * 34.0, 222.0, 28.0, 28.0))
+		_root.add_child(marker)
+		_event_markers.append(marker)
 
 	var card := ColorRect.new()
 	card.color = DARK
@@ -197,6 +223,10 @@ func _build_ui() -> void:
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_status_label, Vector2(0.5, 1.0), Rect2(-520.0, -102.0, 1040.0, 42.0))
 	_root.add_child(_status_label)
+	_root.move_child(_tour_label, _root.get_child_count() - 1)
+	_root.move_child(_event_accent, _root.get_child_count() - 1)
+	for marker: Label in _event_markers:
+		_root.move_child(marker, _root.get_child_count() - 1)
 
 
 func _refresh() -> void:
@@ -242,24 +272,69 @@ func _attempt_repair() -> void:
 
 func _refresh_event() -> void:
 	var activity := EVENTS[_event_index]
+	var event_color := _event_color(activity)
+	var medal := Profile.get_event_medal(activity)
+	var is_unlocked := Profile.is_activity_unlocked(activity)
+	_event_accent.color = event_color if is_unlocked else Color("74413d")
+	_tour_label.text = "RED MESA TOUR   //   %02d / %02d EVENTS CLEARED" % [Profile.get_completed_event_count(), EVENTS.size()]
+	for index: int in _event_markers.size():
+		var marker_activity := EVENTS[index]
+		var marker := _event_markers[index]
+		if index == _event_index:
+			marker.text = ">%d" % (index + 1)
+			_set_label_color(marker, event_color if is_unlocked else Color("ff6f5e"))
+		elif Profile.has_completed_event(marker_activity):
+			marker.text = "%02d" % (index + 1)
+			_set_label_color(marker, AMBER)
+		elif Profile.is_activity_unlocked(marker_activity):
+			marker.text = "%02d" % (index + 1)
+			_set_label_color(marker, Color("7e919d"))
+		else:
+			marker.text = "--"
+			_set_label_color(marker, Color("74413d"))
 	match activity:
 		&"PINE_ENDURO":
 			_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
-			_event_label.text = "EVENT  04 / 04   //   PINE RIDGE ENDURO"
-			_event_description.text = "A tighter woodland loop across roots, ravine jumps, timber lanes, and a creek bridge"
+			_event_label.text = "PINE RIDGE   //   EVENT  04 / 04   //   ENDURO"
+			_event_description.text = "Technical woodland loop across roots, ravine jumps, timber lanes, and creek water"
+			_event_meta_label.text = "LOCKED   //   %s" % Profile.get_activity_unlock_hint(activity) if not is_unlocked else "MEDAL  %s   //   ROOK  01:04.000   //   %s" % [String(medal), "ROOK BEATEN" if Profile.has_beaten_rival(activity) else "RIVAL ACTIVE"]
 		&"FREESTYLE":
 			_profile_label.text = "$%06d     FREESTYLER REP  %04d" % [Profile.cash, Profile.freestyler_reputation]
-			_event_label.text = "EVENT  02 / 04   //   QUARRY FREESTYLE"
-			_event_description.text = "60 seconds to chain airtime, rotation, and clean landings   •   BEST %06d" % Profile.best_freestyle_score
+			_event_label.text = "RED MESA   //   EVENT  02 / 04   //   FREESTYLE"
+			_event_description.text = "60 seconds to chain airtime, rotation, clean landings, and a rising combo multiplier"
+			_event_meta_label.text = "MEDAL  %s   //   BEST  %06d   //   TARGET  007000" % [String(medal), Profile.best_freestyle_score]
 		&"DISCOVERY":
 			_profile_label.text = "$%06d     EXPLORER REP  %04d" % [Profile.cash, Profile.explorer_reputation]
-			_event_label.text = "EVENT  03 / 04   //   SALVAGE HUNT"
+			_event_label.text = "RED MESA   //   EVENT  03 / 04   //   SALVAGE HUNT"
 			var best_text := "--:--.---" if Profile.best_discovery_usec < 0 else _format_usec(Profile.best_discovery_usec)
-			_event_description.text = "Find all six hidden workshop caches using the directional compass   •   BEST %s" % best_text
+			_event_description.text = "Find all six hidden workshop caches using only the directional compass and landmarks"
+			_event_meta_label.text = "MEDAL  %s   //   BEST  %s   //   SILVER  01:20.000" % [String(medal), best_text]
 		_:
 			_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
-			_event_label.text = "EVENT  01 / 04   //   QUARRY CIRCUIT"
-			_event_description.text = "Ordered gates, one fast lap, and a persistent personal-best ghost"
+			_event_label.text = "RED MESA   //   EVENT  01 / 04   //   QUARRY CIRCUIT"
+			_event_description.text = "Ordered gates, one fast lap, a persistent personal-best ghost, and Rook on the clock"
+			_event_meta_label.text = "MEDAL  %s   //   ROOK  00:52.000   //   %s" % [String(medal), "ROOK BEATEN" if Profile.has_beaten_rival(activity) else "RIVAL ACTIVE"]
+	_set_label_color(_event_meta_label, event_color if is_unlocked else Color("ff6f5e"))
+	if not is_unlocked and Profile.is_setup_unlocked(SETUPS[_selected_index]):
+		_status_label.text = "LOCKED   //   %s" % Profile.get_activity_unlock_hint(activity)
+		_status_label.modulate = Color("ff6f5e")
+
+
+func _event_color(activity: StringName) -> Color:
+	match activity:
+		&"PINE_ENDURO":
+			return Color("9fc744")
+		&"FREESTYLE":
+			return Color("56d6ff")
+		&"DISCOVERY":
+			return Color("d8b35a")
+		_:
+			return AMBER
+
+
+func _set_label_color(label: Label, color: Color) -> void:
+	label.modulate = Color.WHITE
+	label.add_theme_color_override(&"font_color", color)
 
 
 func _setup_data(setup: StringName) -> Dictionary:

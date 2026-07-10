@@ -6,6 +6,7 @@ var _camera: ChaseCamera
 var _race: RaceController
 var _freestyle: FreestyleController
 var _discovery: DiscoveryController
+var _transition: DistrictTransition
 var _activity: StringName = &"CIRCUIT"
 
 
@@ -14,12 +15,18 @@ func initialize(
 	camera: ChaseCamera,
 	race: RaceController,
 	freestyle: FreestyleController,
-	discovery: DiscoveryController
+	discovery: DiscoveryController,
+	transition: DistrictTransition
 ) -> void:
 	var arguments := OS.get_cmdline_user_args()
+	_transition = transition
 	if &"--capture-garage" in arguments:
 		_apply_requested_window_size()
 		_capture_garage.call_deferred()
+		return
+	if &"--capture-transition" in arguments:
+		_apply_requested_window_size()
+		_capture_transition.call_deferred()
 		return
 	if &"--smoke-test" not in arguments:
 		return
@@ -38,6 +45,18 @@ func _capture_garage() -> void:
 		await get_tree().process_frame
 	var capture := get_viewport().get_texture().get_image()
 	var capture_path := ProjectSettings.globalize_path("res://artifacts/riding-dirty-garage.png")
+	var save_error := capture.save_png(capture_path)
+	capture = null
+	await get_tree().process_frame
+	get_tree().quit(0 if save_error == OK else 1)
+
+
+func _capture_transition() -> void:
+	await _transition.cover(_requested_activity())
+	for _frame: int in 3:
+		await get_tree().process_frame
+	var capture := get_viewport().get_texture().get_image()
+	var capture_path := ProjectSettings.globalize_path("res://artifacts/riding-dirty-transition.png")
 	var save_error := capture.save_png(capture_path)
 	capture = null
 	await get_tree().process_frame
@@ -72,6 +91,8 @@ func _run() -> void:
 func _run_circuit() -> void:
 	var exit_code := 0
 	if not _validate_repair_economy():
+		exit_code = 1
+	if not _validate_tour_progression():
 		exit_code = 1
 	await _wait_physics_frames(220)
 	var start_position := _bike.global_position
@@ -194,6 +215,41 @@ func _validate_repair_economy() -> bool:
 	Profile.persistence_enabled = true
 	if not valid:
 		push_error("ECONOMY SMOKE: repair quote or transaction invariant failed.")
+	return valid
+
+
+func _validate_tour_progression() -> bool:
+	var old_racer_rep := Profile.racer_reputation
+	var old_freestyler_rep := Profile.freestyler_reputation
+	var old_explorer_rep := Profile.explorer_reputation
+	var old_total_runs := Profile.total_runs
+	var old_medals := Profile.best_medal_ranks.duplicate(true)
+	var old_victories := Profile.rival_victories.duplicate()
+	var old_persistence := Profile.persistence_enabled
+	Profile.persistence_enabled = false
+	Profile.racer_reputation = 0
+	Profile.freestyler_reputation = 0
+	Profile.explorer_reputation = 0
+	Profile.total_runs = 0
+	Profile.best_medal_ranks.clear()
+	Profile.rival_victories.clear()
+	var starts_locked := not Profile.is_activity_unlocked(&"PINE_ENDURO")
+	Profile.best_medal_ranks[&"CIRCUIT"] = 1
+	Profile.best_medal_ranks[&"FREESTYLE"] = 2
+	var two_events_unlock := Profile.is_activity_unlocked(&"PINE_ENDURO") and Profile.get_quarry_progress_count() == 2 and Profile.get_event_medal(&"FREESTYLE") == &"BRONZE"
+	Profile.best_medal_ranks.clear()
+	Profile.rival_victories.append(&"CIRCUIT")
+	var rival_unlock := Profile.is_activity_unlocked(&"PINE_ENDURO")
+	Profile.racer_reputation = old_racer_rep
+	Profile.freestyler_reputation = old_freestyler_rep
+	Profile.explorer_reputation = old_explorer_rep
+	Profile.total_runs = old_total_runs
+	Profile.best_medal_ranks.assign(old_medals)
+	Profile.rival_victories.assign(old_victories)
+	Profile.persistence_enabled = old_persistence
+	var valid := starts_locked and two_events_unlock and rival_unlock
+	if not valid:
+		push_error("TOUR SMOKE: unlock rules or medal projection failed.")
 	return valid
 
 

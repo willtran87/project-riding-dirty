@@ -1,6 +1,6 @@
 # Riding Dirty
 
-*Riding Dirty* is a stylized 3D dirt-bike game built with Godot. The current build is a playable quarry time-trial vertical slice focused on responsive handling, jumps, recoverable mistakes, course mastery, medals, and a personal-best ghost.
+*Riding Dirty* is a stylized 3D dirt-bike tour built with Godot. The current build includes four events across Red Mesa and Pine Ridge, responsive arcade handling, jumps, recoverable mistakes, persistent medals, a personal-best ghost, and a lightweight rival named Rook.
 
 ## Play online
 
@@ -31,7 +31,7 @@ Then open [http://127.0.0.1:8777/](http://127.0.0.1:8777/). Click **Start Engine
 To rebuild the browser release after a game change, install the Godot 4.7 export templates and run:
 
 ```powershell
-& '.\tools\godot-4.7\Godot_v4.7-stable_win64.exe' --headless --path . --export-release Web 'web/game/index.html'
+& '.\tools\godot-4.7\Godot_v4.7-stable_win64_console.exe' --headless --path . --export-release Web 'web/game/index.html'
 ```
 
 The Web preset uses the single-threaded compatibility renderer, so it works on an ordinary static server without COOP/COEP headers. Rider progress and personal-best ghosts use browser `localStorage`; clearing site data removes those browser saves.
@@ -53,6 +53,10 @@ The Web preset uses the single-threaded compatibility renderer, so it works on a
 
 The garage uses `Q` / `E` or the horizontal D-pad to change setups, `W` / `S` or the vertical D-pad to change events, and `Enter` / `A` to purchase or ride. Medal finishes award cash plus activity-specific Racer, Freestyler, or Explorer reputation; profile progress and personal-best records persist between sessions.
 
+## Tour progression
+
+The three Red Mesa activities are available from the start. Pine Ridge unlocks after completing any two Red Mesa events, beating Rook's `00:52.000` Quarry Circuit target, reaching 80 combined reputation, or completing two runs on an older save. Every event retains its highest medal. Race checkpoints show live ahead/behind splits against Rook, and each ride begins with an authored district card before handing control back to the player.
+
 ## Quarry events
 
 - **Quarry Circuit** — ordered checkpoint time trial with medals and a personal-best ghost
@@ -65,10 +69,10 @@ The garage uses `Q` / `E` or the horizontal D-pad to change setups, `W` / `S` or
 Run the deterministic activity smoke tests with:
 
 ```powershell
-& '.\tools\godot-4.7\Godot_v4.7-stable_win64.exe' --headless --path . -- --smoke-test --activity=CIRCUIT
-& '.\tools\godot-4.7\Godot_v4.7-stable_win64.exe' --headless --path . -- --smoke-test --activity=FREESTYLE
-& '.\tools\godot-4.7\Godot_v4.7-stable_win64.exe' --headless --path . -- --smoke-test --activity=DISCOVERY
-& '.\tools\godot-4.7\Godot_v4.7-stable_win64.exe' --headless --path . -- --smoke-test --activity=PINE_ENDURO
+& '.\tools\godot-4.7\Godot_v4.7-stable_win64_console.exe' --headless --path . -- --smoke-test --activity=CIRCUIT
+& '.\tools\godot-4.7\Godot_v4.7-stable_win64_console.exe' --headless --path . -- --smoke-test --activity=FREESTYLE
+& '.\tools\godot-4.7\Godot_v4.7-stable_win64_console.exe' --headless --path . -- --smoke-test --activity=DISCOVERY
+& '.\tools\godot-4.7\Godot_v4.7-stable_win64_console.exe' --headless --path . -- --smoke-test --activity=PINE_ENDURO
 ```
 
 ## Project structure

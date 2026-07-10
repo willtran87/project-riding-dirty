@@ -378,6 +378,9 @@ The project now contains a playable Godot vertical slice of the recommended dire
 - Data-driven track configuration with district-specific spawn points, gates, medal thresholds, presentation, and persistent ghost slots
 - Separate Racer, Freestyler, and Explorer reputation progression
 - Persistent bike condition, hard-landing damage, modest condition-based performance loss, and garage repair costs as a currency sink
+- Persistent per-event medal mastery, tour completion tracking, and Pine Ridge unlock rules with backward-compatible save migration
+- Rook rival targets for both race districts with live checkpoint split feedback and persistent rival victories
+- Authored district cover/reveal transitions for every activity, with event-specific route, target, and identity copy
 - Responsive web frontend with a single-threaded WebAssembly build, fullscreen presentation, browser input capture, and visibility-aware pause/audio behavior
 - Browser-local persistence for rider progress and personal-best ghost recordings
 - Runtime smoke validation covering acceleration, stable height, chase-camera distance, checkpoint registration, and run reset
@@ -387,7 +390,7 @@ The project now contains a playable Godot vertical slice of the recommended dire
 
 ### Next Expansion Targets
 
-1. Connect districts through a regional selection map and authored transition presentation.
-2. Expand garage kits into individual parts and multiple saved builds.
-3. Add rivals, sponsors, and reputation-specific unlocks.
+1. Expand garage kits into individual parts and multiple saved builds.
+2. Grow Rook from a clock target into an authored challenge ghost with post-event callouts.
+3. Add sponsors and reputation-specific unlocks tied to tour mastery.
 4. Add authored sound effects and music after the core event variety is proven.

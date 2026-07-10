@@ -22,6 +22,7 @@ var _reward_label: Label
 var _message_time: float = 0.0
 var _reward_time: float = 0.0
 var _activity: StringName = &"CIRCUIT"
+var _rival_target_usec: int = 52_000_000
 
 
 func _ready() -> void:
@@ -63,7 +64,8 @@ func update_telemetry(speed_mph: float, _throttle: float, grounded: bool) -> voi
 
 func update_race_time(elapsed_usec: int, best_usec: int, checkpoint: int, total: int) -> void:
 	_timer_label.text = _format_usec(elapsed_usec)
-	_best_label.text = "BEST  --:--.---" if best_usec < 0 else "BEST  %s" % _format_usec(best_usec)
+	var best_text := "--:--.---" if best_usec < 0 else _format_usec(best_usec)
+	_best_label.text = "PB %s  //  ROOK %s" % [best_text, _format_usec(_rival_target_usec)] if _rival_target_usec > 0 else "BEST  %s" % best_text
 	_checkpoint_label.text = "GATE  %02d / %02d" % [mini(checkpoint + 1, total), total]
 
 
@@ -218,11 +220,20 @@ func _on_countdown_changed(value: int) -> void:
 
 func _on_race_started() -> void:
 	_message_label.text = "HIT EVERY GATE  •  FIND THE FAST LINE"
+	_message_label.modulate = CREAM
 	_message_time = 2.6
 
 
-func _on_checkpoint_passed(index: int, total: int, _split_usec: int) -> void:
-	_message_label.text = "GATE %02d / %02d  —  CLEAN" % [index + 1, total]
+func _on_checkpoint_passed(index: int, total: int, split_usec: int) -> void:
+	if _rival_target_usec > 0 and total > 0:
+		var expected_split := int(float(_rival_target_usec) * float(index + 1) / float(total))
+		var delta_usec := split_usec - expected_split
+		var comparison := "AHEAD OF ROOK" if delta_usec <= 0 else "BEHIND ROOK"
+		_message_label.text = "GATE %02d / %02d  •  %.2fs %s" % [index + 1, total, absf(float(delta_usec) / 1_000_000.0), comparison]
+		_message_label.modulate = CYAN if delta_usec <= 0 else Color("ff806b")
+	else:
+		_message_label.text = "GATE %02d / %02d  —  CLEAN" % [index + 1, total]
+		_message_label.modulate = CREAM
 	_message_time = 1.2
 
 
@@ -230,13 +241,19 @@ func _on_race_finished(time_usec: int, medal: StringName, is_new_best: bool) -> 
 	_countdown_label.text = str(medal)
 	_countdown_label.add_theme_color_override(&"font_color", AMBER if medal == &"GOLD" else CREAM)
 	var record_text := "  •  NEW PERSONAL BEST" if is_new_best else ""
-	_message_label.text = "%s%s\nENTER / X RUN AGAIN   •   G / B GARAGE" % [_format_usec(time_usec), record_text]
+	var rival_text := ""
+	if _rival_target_usec > 0:
+		var rival_delta := time_usec - _rival_target_usec
+		rival_text = "  •  ROOK BEATEN" if rival_delta <= 0 else "  •  %.2fs BEHIND ROOK" % (float(rival_delta) / 1_000_000.0)
+	_message_label.text = "%s%s%s\nENTER / X RUN AGAIN   •   G / B GARAGE" % [_format_usec(time_usec), record_text, rival_text]
+	_message_label.modulate = CYAN if _rival_target_usec > 0 and time_usec <= _rival_target_usec else CREAM
 	_message_time = 9999.0
 
 
 func _on_race_reset() -> void:
 	_countdown_label.add_theme_color_override(&"font_color", AMBER)
 	_message_label.text = ""
+	_message_label.modulate = CREAM
 	_message_time = 0.0
 	_compass_label.visible = false
 
@@ -254,6 +271,7 @@ func _on_device_changed(using_gamepad: bool) -> void:
 
 func _on_activity_started(activity: StringName) -> void:
 	_activity = activity
+	_rival_target_usec = 64_000_000 if activity == &"PINE_ENDURO" else 52_000_000 if activity == &"CIRCUIT" else -1
 	_countdown_label.text = ""
 	_countdown_label.add_theme_color_override(&"font_color", AMBER)
 	match activity:
@@ -264,11 +282,13 @@ func _on_activity_started(activity: StringName) -> void:
 			_title_label.text = "RIDING DIRTY  //  QUARRY FREESTYLE"
 			_message_label.text = "CHAIN AIRTIME, ROTATION, AND CLEAN LANDINGS"
 			_message_time = 2.8
+			_message_label.modulate = CREAM
 			_compass_label.visible = false
 		&"DISCOVERY":
 			_title_label.text = "RIDING DIRTY  //  SALVAGE HUNT"
 			_message_label.text = "FOLLOW THE COMPASS  •  FIND ALL SIX CACHES"
 			_message_time = 2.8
+			_message_label.modulate = CREAM
 			_compass_label.visible = true
 		_:
 			_title_label.text = "RIDING DIRTY  //  RED MESA QUARRY"

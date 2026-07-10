@@ -10,9 +10,11 @@ extends Node3D
 @onready var _garage: GarageUi = %GarageUi
 @onready var _freestyle: FreestyleController = %FreestyleController
 @onready var _discovery: DiscoveryController = %DiscoveryController
+@onready var _transition: DistrictTransition = %DistrictTransition
 
 var _paused: bool = false
 var _current_activity: StringName = &"CIRCUIT"
+var _transitioning: bool = false
 
 
 func _ready() -> void:
@@ -33,10 +35,12 @@ func _ready() -> void:
 		_on_ride_requested(Profile.current_setup, _get_requested_test_activity())
 	else:
 		_garage.show_garage()
-	_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery)
+	_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery, _transition)
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _transitioning:
+		return
 	if event.is_action_pressed(InputRouter.PAUSE) and not event.is_echo():
 		_toggle_pause()
 		get_viewport().set_input_as_handled()
@@ -65,7 +69,13 @@ func _toggle_pause() -> void:
 
 
 func _on_ride_requested(setup: StringName, activity: StringName) -> void:
+	if _transitioning:
+		return
+	_transitioning = true
 	_stop_all_activities()
+	var skip_transition := &"--smoke-test" in OS.get_cmdline_user_args()
+	if not skip_transition:
+		await _transition.cover(activity)
 	_current_activity = activity
 	Profile.set_current_setup(setup)
 	_bike.apply_setup(setup)
@@ -82,6 +92,9 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 			_race.configure_track(&"QUARRY")
 			_race.reset_run()
 	_camera.snap_to_target()
+	if not skip_transition:
+		await _transition.reveal()
+	_transitioning = false
 
 
 func _restart_current_activity() -> void:
