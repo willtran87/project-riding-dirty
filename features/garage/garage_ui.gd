@@ -56,6 +56,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed(InputRouter.REPAIR_BIKE):
 		_attempt_repair()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed(InputRouter.TOGGLE_ASSIST):
+		Profile.cycle_assist_mode()
+		_refresh()
+		_status_label.text = "HANDLING ASSIST  //  %s" % String(Profile.assist_mode)
+		_status_label.modulate = CYAN
+		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.GARAGE_RIGHT):
 		_selected_index = wrapi(_selected_index + 1, 0, SETUPS.size())
 		_refresh()
@@ -243,7 +249,7 @@ func _refresh() -> void:
 	if Profile.is_setup_unlocked(setup):
 		_price_label.text = "INSTALLED" if setup == Profile.current_setup else "OWNED"
 		_price_label.modulate = CYAN
-		_status_label.text = "W / S EVENT   •   Q / E SETUP   •   ENTER / A RIDE"
+		_status_label.text = "W / S EVENT   •   Q / E SETUP   •   H / LS ASSIST   •   ENTER / A RIDE"
 		_status_label.modulate = Color("9dadb6")
 	else:
 		_price_label.text = "$%d TO INSTALL" % Profile.get_setup_price(setup)
@@ -252,7 +258,8 @@ func _refresh() -> void:
 		_status_label.modulate = Color("9dadb6")
 	_refresh_event()
 	var repair_price := Profile.get_repair_price()
-	_repair_label.text = "BIKE CONDITION  %03d%%   •   READY" % Profile.bike_condition if repair_price <= 0 else "BIKE CONDITION  %03d%%   •   F / RB REPAIR  $%d" % [Profile.bike_condition, repair_price]
+	var condition_text := "READY" if repair_price <= 0 else "F / RB REPAIR $%d" % repair_price
+	_repair_label.text = "BIKE %03d%%  •  %s  •  ASSIST %s  •  STYLE TOKENS %02d" % [Profile.bike_condition, condition_text, String(Profile.assist_mode), Profile.style_tokens]
 
 
 func _attempt_repair() -> void:

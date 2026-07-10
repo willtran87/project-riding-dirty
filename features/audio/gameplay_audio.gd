@@ -8,34 +8,68 @@ const VOICE_COUNT := 5
 var _voices: Array[AudioStreamPlayer] = []
 var _voice_index: int = 0
 var _cues: Dictionary[StringName, AudioStreamWAV] = {}
+var _music_base: AudioStreamPlayer
+var _music_drive: AudioStreamPlayer
+var _music_tween: Tween
+var _contract_cued: bool = false
+var _shut_down: bool = false
 
 
 func _ready() -> void:
+	if &"--smoke-test" in OS.get_cmdline_user_args():
+		return
 	_ensure_sfx_bus()
+	_ensure_music_bus()
 	for _index: int in VOICE_COUNT:
 		var voice := AudioStreamPlayer.new()
 		voice.bus = &"SFX"
 		add_child(voice)
 		_voices.append(voice)
 	_build_cues()
+	_build_music()
 	EventBus.race_countdown_changed.connect(_on_countdown_changed)
 	EventBus.checkpoint_passed.connect(_on_checkpoint_passed)
 	EventBus.race_finished.connect(_on_race_finished)
 	EventBus.activity_completed.connect(_on_activity_completed)
+	EventBus.activity_started.connect(_on_activity_started)
 
 
-func initialize(bike: DirtBikeController) -> void:
+func initialize(bike: DirtBikeController, ride_director: RideDirector) -> void:
 	if not bike.flow_gained.is_connected(_on_flow_gained):
 		bike.flow_gained.connect(_on_flow_gained)
 	if not bike.boost_activated.is_connected(_on_boost_activated):
 		bike.boost_activated.connect(_on_boost_activated)
+	if not ride_director.line_updated.is_connected(_on_line_updated):
+		ride_director.line_updated.connect(_on_line_updated)
+	if not ride_director.route_discovered.is_connected(_on_route_discovered):
+		ride_director.route_discovered.connect(_on_route_discovered)
+	if not ride_director.contract_updated.is_connected(_on_contract_updated):
+		ride_director.contract_updated.connect(_on_contract_updated)
 
 
 func _exit_tree() -> void:
+	shutdown()
+
+
+func shutdown() -> void:
+	if _shut_down:
+		return
+	_shut_down = true
 	for voice: AudioStreamPlayer in _voices:
 		voice.stop()
 		voice.stream = null
+		voice.queue_free()
 	_voices.clear()
+	if _music_tween != null:
+		_music_tween.kill()
+		_music_tween = null
+	for player: AudioStreamPlayer in [_music_base, _music_drive]:
+		if player != null:
+			player.stop()
+			player.stream = null
+			player.queue_free()
+	_music_base = null
+	_music_drive = null
 	_cues.clear()
 
 
@@ -46,6 +80,8 @@ func _build_cues() -> void:
 	_cues[&"flow"] = _make_sweep(540.0, 760.0, 0.16, 0.30, 0.22)
 	_cues[&"boost"] = _make_sweep(145.0, 510.0, 0.34, 0.42, 0.34)
 	_cues[&"finish"] = _make_sweep(430.0, 860.0, 0.42, 0.38, 0.28)
+	_cues[&"route"] = _make_sweep(310.0, 980.0, 0.30, 0.36, 0.25)
+	_cues[&"contract"] = _make_sweep(440.0, 1180.0, 0.48, 0.38, 0.30)
 
 
 func _make_sweep(start_hz: float, end_hz: float, duration: float, amplitude: float, harmonic: float) -> AudioStreamWAV:
@@ -71,6 +107,52 @@ func _make_sweep(start_hz: float, end_hz: float, duration: float, amplitude: flo
 	wave_stream.stereo = false
 	wave_stream.data = data
 	return wave_stream
+
+
+func _build_music() -> void:
+	_music_base = AudioStreamPlayer.new()
+	_music_base.name = "BaseMusic"
+	_music_base.bus = &"Music"
+	_music_base.stream = _make_music_loop(false)
+	_music_base.volume_db = -19.0
+	add_child(_music_base)
+	_music_drive = AudioStreamPlayer.new()
+	_music_drive.name = "DriveMusic"
+	_music_drive.bus = &"Music"
+	_music_drive.stream = _make_music_loop(true)
+	_music_drive.volume_db = -60.0
+	add_child(_music_drive)
+
+
+func _make_music_loop(drive_layer: bool) -> AudioStreamWAV:
+	var duration := 4.0
+	var sample_count := int(duration * MIX_RATE)
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var phase_a := 0.0
+	var phase_b := 0.0
+	for sample_index: int in sample_count:
+		var time := float(sample_index) / float(MIX_RATE)
+		var beat_phase := fmod(time * 2.0, 1.0)
+		var pulse := exp(-beat_phase * (18.0 if drive_layer else 9.0))
+		var frequency := 92.0 if drive_layer else 46.0
+		phase_a = fmod(phase_a + frequency / float(MIX_RATE), 1.0)
+		phase_b = fmod(phase_b + frequency * 1.5 / float(MIX_RATE), 1.0)
+		var wave := sin(phase_a * TAU) * 0.7 + sin(phase_b * TAU) * 0.3
+		var amplitude := (0.16 if drive_layer else 0.12) * (0.28 + pulse * 0.72)
+		var signed_sample := clampi(int(wave * amplitude * 32767.0), -32768, 32767)
+		var encoded_sample := signed_sample if signed_sample >= 0 else 65536 + signed_sample
+		data[sample_index * 2] = encoded_sample & 0xff
+		data[sample_index * 2 + 1] = (encoded_sample >> 8) & 0xff
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	stream.stereo = false
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_begin = 0
+	stream.loop_end = sample_count
+	stream.data = data
+	return stream
 
 
 func _play(cue: StringName, pitch: float = 1.0, volume_db: float = 0.0) -> void:
@@ -108,9 +190,48 @@ func _on_boost_activated(_flow_remaining: float) -> void:
 	_play(&"boost", 1.0, 1.5)
 
 
+func _on_activity_started(_activity: StringName) -> void:
+	_contract_cued = false
+	if _music_base == null or _music_drive == null:
+		return
+	if not _music_base.playing:
+		_music_base.play()
+		_music_drive.play()
+
+
+func _on_line_updated(_label: String, chain: int, _multiplier: float, _score: int, _time_left: float) -> void:
+	if _music_drive == null:
+		return
+	var target_db := -60.0 if chain <= 0 else lerpf(-32.0, -11.0, clampf(float(chain - 1) / 5.0, 0.0, 1.0))
+	if _music_tween != null:
+		_music_tween.kill()
+	_music_tween = create_tween()
+	_music_tween.tween_property(_music_drive, "volume_db", target_db, 0.45).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	if chain >= 3:
+		_play(&"flow", 0.9 + float(mini(chain, 8)) * 0.045, -5.0)
+
+
+func _on_route_discovered(_title: String) -> void:
+	_play(&"route", 1.0, 0.5)
+
+
+func _on_contract_updated(_title: String, _current: int, _target: int, completed: bool) -> void:
+	if completed and not _contract_cued:
+		_contract_cued = true
+		_play(&"contract", 1.0, 1.0)
+
+
 func _ensure_sfx_bus() -> void:
 	if AudioServer.get_bus_index(&"SFX") >= 0:
 		return
 	AudioServer.add_bus()
 	var bus_index := AudioServer.bus_count - 1
 	AudioServer.set_bus_name(bus_index, &"SFX")
+
+
+func _ensure_music_bus() -> void:
+	if AudioServer.get_bus_index(&"Music") >= 0:
+		return
+	AudioServer.add_bus()
+	var bus_index := AudioServer.bus_count - 1
+	AudioServer.set_bus_name(bus_index, &"Music")

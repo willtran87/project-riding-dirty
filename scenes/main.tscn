@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="Script" path="res://scenes/main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://levels/quarry/quarry.tscn" id="2_quarry"]
@@ -14,6 +14,8 @@
 [ext_resource type="PackedScene" path="res://levels/pine_ridge/pine_ridge.tscn" id="12_pine"]
 [ext_resource type="PackedScene" path="res://features/tour/district_transition.tscn" id="13_transition"]
 [ext_resource type="Script" path="res://features/audio/gameplay_audio.gd" id="14_audio"]
+[ext_resource type="Script" path="res://features/ride/ride_director.gd" id="15_ride"]
+[ext_resource type="Script" path="res://features/environment/atmosphere_director.gd" id="16_atmosphere"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -47,3 +49,11 @@ script = ExtResource("8_smoke")
 [node name="GameplayAudio" type="Node" parent="."]
 unique_name_in_owner = true
 script = ExtResource("14_audio")
+
+[node name="RideDirector" type="Node3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("15_ride")
+
+[node name="AtmosphereDirector" type="Node3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("16_atmosphere")

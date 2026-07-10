@@ -7,6 +7,16 @@ var _front_assembly: Node3D
 var _rider_root: Node3D
 var _dust: GPUParticles3D
 var _landing_dust: GPUParticles3D
+var _boost_trail: GPUParticles3D
+var _boost_burst: GPUParticles3D
+var _rider_torso: MeshInstance3D
+var _rider_hips: MeshInstance3D
+var _left_arm: MeshInstance3D
+var _right_arm: MeshInstance3D
+var _skid_marks: Array[MeshInstance3D] = []
+var _skid_index: int = 0
+var _skid_time: float = 0.0
+var _was_boosting: bool = false
 
 var _materials: Dictionary[StringName, StandardMaterial3D] = {}
 
@@ -17,27 +27,83 @@ func _ready() -> void:
 	_build_dust()
 
 
+func _exit_tree() -> void:
+	for mark: MeshInstance3D in _skid_marks:
+		if is_instance_valid(mark):
+			mark.queue_free()
+	_skid_marks.clear()
+
+
 func update_pose(
 	front_wheel_y: float,
 	rear_wheel_y: float,
 	wheel_spin: float,
 	steer: float,
 	lean: float,
-	dust_amount: float
+	dust_amount: float,
+	boosting: bool = false,
+	wobble: float = 0.0,
+	lateral_slip: float = 0.0
 ) -> void:
 	_front_wheel_pivot.position.y = front_wheel_y
 	_rear_wheel_pivot.position.y = rear_wheel_y
 	_front_wheel_pivot.rotation.x = wheel_spin
 	_rear_wheel_pivot.rotation.x = wheel_spin
 	_front_assembly.rotation.y = steer * 0.42
-	_rider_root.rotation.x = lerpf(_rider_root.rotation.x, lean * 0.16, 0.18)
+	var speed_bob := sin(wheel_spin * 0.45) * minf(absf(wheel_spin) * 0.0007, 0.025)
+	_rider_root.position.y = 0.15 + speed_bob + (0.06 if dust_amount <= 0.0 else 0.0)
+	_rider_root.rotation.x = lerpf(_rider_root.rotation.x, lean * 0.19 - (0.08 if boosting else 0.0), 0.18)
+	_rider_root.rotation.z = lerpf(_rider_root.rotation.z, sin(Time.get_ticks_msec() * 0.025) * wobble * 0.09, 0.22)
+	_rider_torso.rotation.x = lerpf(_rider_torso.rotation.x, -0.12 - lean * 0.08 - (0.12 if boosting else 0.0), 0.16)
+	_rider_hips.rotation.x = lerpf(_rider_hips.rotation.x, 0.08 + lean * 0.05, 0.16)
+	_left_arm.rotation.z = lerpf(_left_arm.rotation.z, steer * 0.08, 0.2)
+	_right_arm.rotation.z = lerpf(_right_arm.rotation.z, steer * 0.08, 0.2)
 	_dust.emitting = dust_amount > 0.08
-	_dust.amount_ratio = clampf(dust_amount, 0.0, 1.0)
+	_boost_trail.emitting = boosting
+	if boosting and not _was_boosting:
+		_boost_trail.restart()
+	_was_boosting = boosting
+	_skid_time += 1.0 / 60.0
+	if dust_amount > 0.18 and lateral_slip > 2.4 and _skid_time >= 0.11:
+		_drop_skid_mark()
+		_skid_time = 0.0
 
 
 func burst_landing_dust(intensity: float) -> void:
-	_landing_dust.amount_ratio = clampf(intensity, 0.25, 1.0)
+	_landing_dust.amount = clampi(int(26.0 + intensity * 48.0), 26, 74)
 	_landing_dust.restart()
+
+
+func burst_boost() -> void:
+	_boost_burst.restart()
+
+
+func apply_cosmetic_tier(tier: int) -> void:
+	match clampi(tier, 0, 3):
+		1:
+			_materials[&"red"].albedo_color = Color("e34b31")
+			_materials[&"helmet"].albedo_color = Color("56d6ff")
+		2:
+			_materials[&"red"].albedo_color = Color("f0642d")
+			_materials[&"red"].emission_enabled = true
+			_materials[&"red"].emission = Color("6f1d10")
+			_materials[&"helmet"].albedo_color = Color("f7e5b2")
+		3:
+			_materials[&"red"].albedo_color = Color("56d6ff")
+			_materials[&"red"].emission_enabled = true
+			_materials[&"red"].emission = Color("174f61")
+			_materials[&"helmet"].albedo_color = Color("ffb52d")
+
+
+func set_surface(surface: StringName) -> void:
+	var process_material := _dust.process_material as ParticleProcessMaterial
+	match surface:
+		&"MUD":
+			process_material.color = Color(0.22, 0.14, 0.09, 0.58)
+		&"GRAVEL", &"ROCK":
+			process_material.color = Color(0.45, 0.42, 0.38, 0.46)
+		_:
+			process_material.color = Color(0.44, 0.27, 0.14, 0.38)
 
 
 func _create_materials() -> void:
@@ -86,12 +152,12 @@ func _build_bike() -> void:
 	_rider_root.name = "RiderRoot"
 	_rider_root.position = Vector3(0.0, 0.15, 0.15)
 	add_child(_rider_root)
-	_add_box("RiderTorso", Vector3(0.58, 0.72, 0.38), Vector3(0.0, 1.05, 0.05), &"red", Vector3(-0.2, 0.0, 0.0), _rider_root)
-	_add_box("RiderHips", Vector3(0.48, 0.28, 0.38), Vector3(0.0, 0.72, 0.34), &"denim", Vector3(-0.1, 0.0, 0.0), _rider_root)
+	_rider_torso = _add_box("RiderTorso", Vector3(0.58, 0.72, 0.38), Vector3(0.0, 1.05, 0.05), &"red", Vector3(-0.2, 0.0, 0.0), _rider_root)
+	_rider_hips = _add_box("RiderHips", Vector3(0.48, 0.28, 0.38), Vector3(0.0, 0.72, 0.34), &"denim", Vector3(-0.1, 0.0, 0.0), _rider_root)
 	_add_sphere("Helmet", 0.27, Vector3(0.0, 1.58, -0.16), &"helmet", _rider_root)
 	_add_box("Visor", Vector3(0.36, 0.13, 0.12), Vector3(0.0, 1.59, -0.38), &"visor", Vector3(-0.1, 0.0, 0.0), _rider_root)
-	_add_cylinder_between("LeftArm", Vector3(-0.25, 1.3, -0.02), Vector3(-0.37, 0.86, -0.72), 0.075, &"red", _rider_root)
-	_add_cylinder_between("RightArm", Vector3(0.25, 1.3, -0.02), Vector3(0.37, 0.86, -0.72), 0.075, &"red", _rider_root)
+	_left_arm = _add_cylinder_between("LeftArm", Vector3(-0.25, 1.3, -0.02), Vector3(-0.37, 0.86, -0.72), 0.075, &"red", _rider_root)
+	_right_arm = _add_cylinder_between("RightArm", Vector3(0.25, 1.3, -0.02), Vector3(0.37, 0.86, -0.72), 0.075, &"red", _rider_root)
 	_add_cylinder_between("LeftLeg", Vector3(-0.2, 0.78, 0.28), Vector3(-0.22, 0.12, 0.48), 0.095, &"denim", _rider_root)
 	_add_cylinder_between("RightLeg", Vector3(0.2, 0.78, 0.28), Vector3(0.22, 0.12, 0.48), 0.095, &"denim", _rider_root)
 
@@ -106,6 +172,14 @@ func _build_dust() -> void:
 	_landing_dust.name = "LandingDust"
 	_landing_dust.position = Vector3(0.0, -0.35, 0.0)
 	add_child(_landing_dust)
+
+	_boost_trail = _create_boost_emitter(false)
+	_boost_trail.position = Vector3(0.0, 0.15, 1.15)
+	add_child(_boost_trail)
+	_boost_burst = _create_boost_emitter(true)
+	_boost_burst.position = Vector3(0.0, 0.2, 0.8)
+	add_child(_boost_burst)
+	_build_skid_pool()
 
 
 func _create_dust_emitter(one_shot: bool) -> GPUParticles3D:
@@ -141,6 +215,68 @@ func _create_dust_emitter(one_shot: bool) -> GPUParticles3D:
 	particles.draw_pass_1 = puff
 	particles.emitting = false
 	return particles
+
+
+func _create_boost_emitter(one_shot: bool) -> GPUParticles3D:
+	var particles := GPUParticles3D.new()
+	particles.name = "BoostBurst" if one_shot else "BoostTrail"
+	particles.amount = 42 if one_shot else 24
+	particles.lifetime = 0.48 if one_shot else 0.34
+	particles.one_shot = one_shot
+	particles.local_coords = false
+	particles.explosiveness = 0.92 if one_shot else 0.18
+	particles.visibility_aabb = AABB(Vector3(-5.0, -3.0, -5.0), Vector3(10.0, 8.0, 14.0))
+	var process_material := ParticleProcessMaterial.new()
+	process_material.direction = Vector3(0.0, 0.15, 1.0)
+	process_material.spread = 20.0
+	process_material.initial_velocity_min = 5.0
+	process_material.initial_velocity_max = 10.0 if one_shot else 7.0
+	process_material.gravity = Vector3(0.0, 0.35, 0.0)
+	process_material.scale_min = 0.06
+	process_material.scale_max = 0.18
+	var gradient := Gradient.new()
+	gradient.set_color(0, Color(0.34, 0.84, 1.0, 0.9))
+	gradient.add_point(0.55, Color(1.0, 0.58, 0.12, 0.62))
+	gradient.set_color(gradient.get_point_count() - 1, Color(1.0, 0.3, 0.05, 0.0))
+	var ramp := GradientTexture1D.new()
+	ramp.gradient = gradient
+	process_material.color_ramp = ramp
+	particles.process_material = process_material
+	var streak := BoxMesh.new()
+	streak.size = Vector3(0.045, 0.045, 0.72)
+	var streak_material := StandardMaterial3D.new()
+	streak_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	streak_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	streak_material.albedo_color = Color(0.34, 0.84, 1.0, 0.76)
+	streak.material = streak_material
+	particles.draw_pass_1 = streak
+	particles.emitting = false
+	return particles
+
+
+func _build_skid_pool() -> void:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.055, 0.045, 0.04, 0.62)
+	material.roughness = 1.0
+	for index: int in 36:
+		var strip := BoxMesh.new()
+		strip.size = Vector3(0.18, 0.012, 1.15)
+		var mark := MeshInstance3D.new()
+		mark.name = "SkidMark%02d" % index
+		mark.mesh = strip
+		mark.material_override = material
+		mark.visible = false
+		get_tree().current_scene.add_child.call_deferred(mark)
+		_skid_marks.append(mark)
+
+
+func _drop_skid_mark() -> void:
+	if _skid_marks.is_empty():
+		return
+	var mark := _skid_marks[_skid_index]
+	_skid_index = (_skid_index + 1) % _skid_marks.size()
+	mark.global_transform = Transform3D(global_transform.basis, global_position - global_transform.basis.z * 0.82 + Vector3.DOWN * 0.43)
+	mark.visible = true
 
 
 func _add_wheel(parent: Node3D) -> void:

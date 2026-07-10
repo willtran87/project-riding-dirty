@@ -3,6 +3,7 @@ class_name RaceController
 ## Countdown, ordered checkpoint validation, microsecond timing, medals, and run lifecycle.
 
 signal time_updated(elapsed_usec: int, best_usec: int, checkpoint: int, total: int)
+signal breakdown_ready(summary: String)
 
 enum State { WAITING, COUNTDOWN, RACING, FINISHED }
 
@@ -25,6 +26,8 @@ var _bronze_usec: int = 75_000_000
 var _activity_id: StringName = &"CIRCUIT"
 var _track_id: StringName = &"QUARRY"
 var _gates_enabled: bool = false
+var _split_times: Array[int] = []
+var _rival_target_usec: int = 52_000_000
 
 
 func _ready() -> void:
@@ -68,6 +71,10 @@ func get_spawn_transform() -> Transform3D:
 	return _spawn_transform
 
 
+func get_breakdown_preview() -> String:
+	return _build_breakdown()
+
+
 func configure_track(track_id: StringName) -> void:
 	_track_id = track_id
 	_cleanup_checkpoint_gates()
@@ -87,6 +94,7 @@ func configure_track(track_id: StringName) -> void:
 		_silver_usec = 68_000_000
 		_bronze_usec = 92_000_000
 		_activity_id = &"PINE_ENDURO"
+		_rival_target_usec = 64_000_000
 	else:
 		_spawn_transform = Transform3D(Basis.IDENTITY, Vector3(0.0, 1.4, 31.0))
 		_checkpoint_data = [
@@ -101,16 +109,19 @@ func configure_track(track_id: StringName) -> void:
 		_silver_usec = 55_000_000
 		_bronze_usec = 75_000_000
 		_activity_id = &"CIRCUIT"
+		_rival_target_usec = 52_000_000
 	_build_checkpoint_gates()
 	_set_gates_visible(false)
 	if ghost != null:
 		ghost.set_record_slot(StringName(String(track_id).to_lower()))
+		ghost.configure_rival(_get_rival_path(), _rival_target_usec)
 
 
 func enter_waiting() -> void:
 	state = State.WAITING
 	_elapsed_usec = 0
 	_expected_checkpoint = 0
+	_split_times.clear()
 	if bike != null:
 		bike.set_controls_enabled(false)
 		bike.respawn_at(_spawn_transform)
@@ -125,6 +136,7 @@ func reset_run() -> void:
 		return
 	state = State.COUNTDOWN
 	_expected_checkpoint = 0
+	_split_times.clear()
 	_elapsed_usec = 0
 	_countdown_remaining = 3.25
 	_last_countdown_value = -1
@@ -157,6 +169,7 @@ func _finish_race() -> void:
 	var medal := _medal_for_time(_elapsed_usec)
 	ghost.finish_run(_elapsed_usec, is_new_best)
 	EventBus.race_finished.emit(_elapsed_usec, medal, is_new_best)
+	breakdown_ready.emit(_build_breakdown())
 	time_updated.emit(_elapsed_usec, ghost.best_time_usec, _checkpoint_data.size(), _checkpoint_data.size())
 
 
@@ -164,6 +177,7 @@ func _on_gate_entered(body: Node3D, checkpoint_index: int) -> void:
 	if state != State.RACING or body != bike or checkpoint_index != _expected_checkpoint:
 		return
 	_expected_checkpoint += 1
+	_split_times.append(_elapsed_usec)
 	EventBus.checkpoint_passed.emit(checkpoint_index, _checkpoint_data.size(), _elapsed_usec)
 	_update_gate_visuals()
 	if _expected_checkpoint >= _checkpoint_data.size():
@@ -258,3 +272,32 @@ func _medal_for_time(time_usec: int) -> StringName:
 	if time_usec <= _bronze_usec:
 		return &"BRONZE"
 	return &"FINISHER"
+
+
+func _get_rival_path() -> Array[Vector3]:
+	var points: Array[Vector3] = [_spawn_transform.origin]
+	for checkpoint: Dictionary in _checkpoint_data:
+		points.append(checkpoint.get(&"position", Vector3.ZERO))
+	return points
+
+
+func _build_breakdown() -> String:
+	if _split_times.is_empty():
+		return "RUN READOUT  //  NO SECTOR DATA"
+	var best_delta: float = INF
+	var worst_delta: float = -INF
+	var best_sector := 1
+	var worst_sector := 1
+	var previous_split := 0
+	var rival_sector := float(_rival_target_usec) / float(_split_times.size())
+	for index: int in _split_times.size():
+		var sector_time := _split_times[index] - previous_split
+		previous_split = _split_times[index]
+		var delta := float(sector_time) - rival_sector
+		if delta < best_delta:
+			best_delta = delta
+			best_sector = index + 1
+		if delta > worst_delta:
+			worst_delta = delta
+			worst_sector = index + 1
+	return "RUN READOUT  //  BEST S%02d %+.2fs  //  COSTLIEST S%02d %+.2fs" % [best_sector, best_delta / 1_000_000.0, worst_sector, worst_delta / 1_000_000.0]

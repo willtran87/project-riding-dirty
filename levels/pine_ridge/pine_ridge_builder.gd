@@ -23,6 +23,7 @@ func _ready() -> void:
 	_build_jumps()
 	_build_forest()
 	_build_landmarks()
+	_build_trail_spectators()
 
 
 func _create_materials() -> void:
@@ -50,6 +51,10 @@ func _build_ground() -> void:
 func _build_trail() -> void:
 	for index: int in _track_points.size() - 1:
 		_add_trail_segment(_track_points[index], _track_points[index + 1], 9.0)
+	_add_trail_segment(Vector3(20.0, 0.0, 19.0), Vector3(31.0, 0.0, 4.0), 4.8)
+	_add_trail_segment(Vector3(31.0, 0.0, 4.0), Vector3(38.0, 0.0, -10.0), 4.8)
+	_add_trail_segment(Vector3(-30.0, 0.0, -22.0), Vector3(-20.0, 0.0, -39.0), 4.6)
+	_add_trail_segment(Vector3(-20.0, 0.0, -39.0), Vector3(-10.0, 0.0, -50.0), 4.6)
 
 
 func _build_creek_crossing() -> void:
@@ -146,6 +151,37 @@ func _build_landmarks() -> void:
 		mesh_instance.rotation.z = PI * 0.5
 		mesh_instance.material_override = _materials[&"wood"]
 		add_child(mesh_instance)
+	for prop_index: int in 7:
+		_add_breakaway_crate("BreakawayCrate%02d" % prop_index, Vector3(-34.0 + float(prop_index % 4) * 1.35, 0.55 + float(prop_index / 4) * 1.1, 29.0))
+
+
+func _build_trail_spectators() -> void:
+	var positions: Array[Vector3] = [Vector3(-8.0, 0.0, 43.0), Vector3(-5.8, 0.0, 44.0), Vector3(43.0, 0.0, -20.0), Vector3(45.0, 0.0, -17.0), Vector3(-32.0, 0.0, -34.0)]
+	for index: int in positions.size():
+		var root := Node3D.new()
+		root.name = "TrailSpectator%02d" % index
+		root.position = positions[index]
+		add_child(root)
+		var jacket := StandardMaterial3D.new()
+		jacket.albedo_color = Color.from_hsv(0.05 + index * 0.12, 0.58, 0.82)
+		jacket.roughness = 0.9
+		var torso := BoxMesh.new()
+		torso.size = Vector3(0.5, 0.75, 0.32)
+		var torso_mesh := MeshInstance3D.new()
+		torso_mesh.mesh = torso
+		torso_mesh.position.y = 1.08
+		torso_mesh.material_override = jacket
+		root.add_child(torso_mesh)
+		var head := SphereMesh.new()
+		head.radius = 0.22
+		head.height = 0.44
+		head.radial_segments = 8
+		head.rings = 5
+		var head_mesh := MeshInstance3D.new()
+		head_mesh.mesh = head
+		head_mesh.position.y = 1.69
+		head_mesh.material_override = _materials[&"marker"]
+		root.add_child(head_mesh)
 
 
 func _add_multimesh(
@@ -247,6 +283,27 @@ func _add_visual_box(mesh_name: String, size: Vector3, position: Vector3, materi
 	mesh_instance.rotation = rotation
 	mesh_instance.material_override = _materials[material_key]
 	add_child(mesh_instance)
+
+
+func _add_breakaway_crate(body_name: String, position: Vector3) -> void:
+	var body := DestructibleProp.new()
+	body.name = body_name
+	body.mass = 3.2
+	body.collision_layer = 2
+	body.collision_mask = 1 | 2
+	body.position = position
+	add_child(body)
+	var box := BoxMesh.new()
+	box.size = Vector3(1.05, 1.05, 1.05)
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = box
+	mesh.material_override = _materials[&"wood"]
+	body.add_child(mesh)
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.05, 1.05, 1.05)
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	body.add_child(collision)
 
 
 func _add_wedge_ramp(body_name: String, position: Vector3, yaw: float, length: float, width: float, height: float, high_negative_z: bool) -> void:

@@ -21,6 +21,7 @@ const OPEN_GARAGE: StringName = &"open_garage"
 const EVENT_PREVIOUS: StringName = &"event_previous"
 const EVENT_NEXT: StringName = &"event_next"
 const REPAIR_BIKE: StringName = &"repair_bike"
+const TOGGLE_ASSIST: StringName = &"toggle_assist"
 
 var using_gamepad: bool = false
 
@@ -110,6 +111,8 @@ func _register_actions() -> void:
 	_add_button(EVENT_NEXT, JOY_BUTTON_DPAD_DOWN)
 	_add_key(REPAIR_BIKE, KEY_F)
 	_add_button(REPAIR_BIKE, JOY_BUTTON_RIGHT_SHOULDER)
+	_add_key(TOGGLE_ASSIST, KEY_H)
+	_add_button(TOGGLE_ASSIST, JOY_BUTTON_LEFT_STICK)
 
 
 func _ensure_action(action: StringName, deadzone: float = 0.2) -> void:

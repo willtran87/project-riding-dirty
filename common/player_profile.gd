@@ -29,6 +29,11 @@ var bike_condition: int = 100
 var persistence_enabled: bool = true
 var best_medal_ranks: Dictionary[StringName, int] = {}
 var rival_victories: Array[StringName] = []
+var contract_completions: int = 0
+var style_tokens: int = 0
+var completed_contracts: Array[String] = []
+var assist_mode: StringName = &"SPORT"
+var unlocked_feats: Array[String] = []
 
 var _active_activity: StringName = &"CIRCUIT"
 
@@ -176,6 +181,55 @@ func repair_bike() -> bool:
 	return true
 
 
+func complete_contract(contract_id: String, activity: StringName, cash_reward: int = 350, reputation_reward: int = 35) -> bool:
+	if contract_id.is_empty() or completed_contracts.has(contract_id):
+		return false
+	completed_contracts.append(contract_id)
+	while completed_contracts.size() > 60:
+		completed_contracts.pop_front()
+	contract_completions += 1
+	style_tokens += 1
+	var old_cash := cash
+	cash = mini(cash + maxi(cash_reward, 0), MAX_CASH)
+	match activity:
+		&"FREESTYLE":
+			freestyler_reputation += reputation_reward
+		&"DISCOVERY":
+			explorer_reputation += reputation_reward
+		_:
+			racer_reputation += reputation_reward
+	_record_transaction(cash - old_cash, &"sponsor_contract")
+	_emit_and_save()
+	reward_granted.emit(cash - old_cash, reputation_reward)
+	return true
+
+
+func get_cosmetic_tier() -> int:
+	return clampi(style_tokens / 2, 0, 3)
+
+
+func unlock_feat(feat_id: String) -> bool:
+	if feat_id.is_empty() or unlocked_feats.has(feat_id):
+		return false
+	unlocked_feats.append(feat_id)
+	style_tokens += 1
+	_record_transaction(0, &"riding_feat")
+	_emit_and_save()
+	return true
+
+
+func cycle_assist_mode() -> StringName:
+	match assist_mode:
+		&"ASSISTED":
+			assist_mode = &"SPORT"
+		&"SPORT":
+			assist_mode = &"PRO"
+		_:
+			assist_mode = &"ASSISTED"
+	_emit_and_save()
+	return assist_mode
+
+
 func reset_profile_for_testing() -> void:
 	cash = 0
 	racer_reputation = 0
@@ -189,6 +243,11 @@ func reset_profile_for_testing() -> void:
 	unlocked_setups.assign([&"BALANCED"])
 	best_medal_ranks.clear()
 	rival_victories.clear()
+	contract_completions = 0
+	style_tokens = 0
+	completed_contracts.clear()
+	assist_mode = &"SPORT"
+	unlocked_feats.clear()
 	transaction_log.clear()
 	_emit_and_save()
 
@@ -342,6 +401,11 @@ func _load_profile() -> void:
 		"unlocked_setups": config.get_value("profile", "unlocked_setups", PackedStringArray(["BALANCED"])),
 		"best_medal_ranks": config.get_value("profile", "best_medal_ranks", {}),
 		"rival_victories": config.get_value("profile", "rival_victories", PackedStringArray()),
+		"contract_completions": config.get_value("profile", "contract_completions", 0),
+		"style_tokens": config.get_value("profile", "style_tokens", 0),
+		"completed_contracts": config.get_value("profile", "completed_contracts", PackedStringArray()),
+		"assist_mode": config.get_value("profile", "assist_mode", "SPORT"),
+		"unlocked_feats": config.get_value("profile", "unlocked_feats", PackedStringArray()),
 	}
 	_apply_profile_dictionary(profile_data)
 
@@ -363,6 +427,11 @@ func _profile_to_dictionary() -> Dictionary:
 		"unlocked_setups": setup_names,
 		"best_medal_ranks": _serialize_medal_ranks(),
 		"rival_victories": _serialize_string_names(rival_victories),
+		"contract_completions": contract_completions,
+		"style_tokens": style_tokens,
+		"completed_contracts": completed_contracts.duplicate(),
+		"assist_mode": String(assist_mode),
+		"unlocked_feats": unlocked_feats.duplicate(),
 	}
 
 
@@ -376,6 +445,21 @@ func _apply_profile_dictionary(profile_data: Dictionary) -> void:
 	best_freestyle_score = maxi(int(profile_data.get("best_freestyle_score", 0)), 0)
 	best_discovery_usec = int(profile_data.get("best_discovery_usec", -1))
 	bike_condition = clampi(int(profile_data.get("bike_condition", 100)), 0, 100)
+	contract_completions = maxi(int(profile_data.get("contract_completions", 0)), 0)
+	style_tokens = maxi(int(profile_data.get("style_tokens", 0)), 0)
+	completed_contracts.clear()
+	assist_mode = StringName(str(profile_data.get("assist_mode", "SPORT")).to_upper())
+	if assist_mode not in [&"ASSISTED", &"SPORT", &"PRO"]:
+		assist_mode = &"SPORT"
+	unlocked_feats.clear()
+	var loaded_feats: Variant = profile_data.get("unlocked_feats", [])
+	if loaded_feats is Array or loaded_feats is PackedStringArray:
+		for feat_id: Variant in loaded_feats:
+			unlocked_feats.append(str(feat_id))
+	var loaded_contracts: Variant = profile_data.get("completed_contracts", [])
+	if loaded_contracts is Array or loaded_contracts is PackedStringArray:
+		for contract_id: Variant in loaded_contracts:
+			completed_contracts.append(str(contract_id))
 	unlocked_setups.clear()
 	var loaded_setups: Variant = profile_data.get("unlocked_setups", ["BALANCED"])
 	if loaded_setups is Array or loaded_setups is PackedStringArray:

@@ -9,6 +9,8 @@ signal trick_landed(airtime: float, rotation_amount: float, landing_intensity: f
 signal flow_changed(value: float, boosting: bool)
 signal flow_gained(amount: float)
 signal boost_activated(flow_remaining: float)
+signal style_event(label: StringName, base_points: int)
+signal respawned()
 
 @export_category("Drive")
 @export var engine_force: float = 3600.0
@@ -64,6 +66,19 @@ var _base_lateral_grip: float = 440.0
 var _base_maximum_speed_mps: float = 34.0
 var _flow: float = 0.0
 var _boost_time: float = 0.0
+var _wheelie_time: float = 0.0
+var _wheelie_awarded: bool = false
+var _scrub_time: float = 0.0
+var _whip_time: float = 0.0
+var _wobble_time: float = 0.0
+var _run_engine_multiplier: float = 1.0
+var _run_grip_multiplier: float = 1.0
+var _flow_gain_multiplier: float = 1.0
+var _preload_buffer_time: float = 0.0
+var _ground_coyote_time: float = 0.0
+var _assist_strength: float = 0.45
+var _surface_grip_multiplier: float = 1.0
+var _surface_drag_multiplier: float = 1.0
 
 
 func _ready() -> void:
@@ -79,6 +94,7 @@ func _physics_process(delta: float) -> void:
 	_rear_distance = _apply_suspension(_rear_ray, delta)
 	_was_grounded = _grounded
 	_grounded = _front_ray.is_colliding() or _rear_ray.is_colliding()
+	_ground_coyote_time = 0.12 if _grounded else maxf(_ground_coyote_time - delta, 0.0)
 
 	var throttle := InputRouter.get_throttle() if controls_enabled else 0.0
 	var brake := InputRouter.get_brake() if controls_enabled else 1.0
@@ -89,13 +105,12 @@ func _physics_process(delta: float) -> void:
 	if _grounded:
 		_apply_ground_drive(throttle, brake, steer)
 		_apply_balance(steer)
-		_handle_preload(delta)
+		_update_wheelie(delta, get_speed_mps())
 		_safe_sample_time += delta
 		if _safe_sample_time >= 0.65 and global_transform.basis.y.dot(Vector3.UP) > 0.45:
 			_update_safe_transform()
 			_safe_sample_time = 0.0
 	else:
-		_preload_charge = 0.0
 		if _was_grounded:
 			_airtime = 0.0
 			_air_rotation = 0.0
@@ -103,6 +118,8 @@ func _physics_process(delta: float) -> void:
 		_airtime += delta
 		_air_rotation += angular_velocity.length() * delta
 		_apply_air_control(steer, lean)
+		_scrub_time += delta if lean > 0.55 else 0.0
+		_whip_time += delta if absf(steer) > 0.55 else 0.0
 		_airborne_fall_speed = maxf(_airborne_fall_speed, -linear_velocity.y)
 
 	if _grounded and not _was_grounded:
@@ -110,13 +127,28 @@ func _physics_process(delta: float) -> void:
 		if intensity > 0.05:
 			landed.emit(intensity)
 			_visual.call(&"burst_landing_dust", intensity)
+			Input.start_joy_vibration(0, intensity * 0.28, intensity * 0.62, 0.12 + intensity * 0.12)
 		if _airtime >= 0.12:
 			var clean_landing := global_transform.basis.y.normalized().dot(_get_ground_normal()) > 0.48 and intensity < 0.9
 			trick_landed.emit(_airtime, _air_rotation, intensity, clean_landing)
 			_award_landing_flow(_airtime, _air_rotation, clean_landing)
+			if clean_landing and _scrub_time >= 0.24:
+				style_event.emit(&"SCRUB", 240)
+			if clean_landing and _whip_time >= 0.24:
+				style_event.emit(&"WHIP", 280)
+			if intensity >= 0.55 and intensity < 0.9:
+				_wobble_time = maxf(_wobble_time, 1.1)
 		_airtime = 0.0
 		_air_rotation = 0.0
 		_airborne_fall_speed = 0.0
+		_scrub_time = 0.0
+		_whip_time = 0.0
+
+	_handle_preload(delta)
+	var was_wobbling := _wobble_time > 0.0
+	_wobble_time = maxf(_wobble_time - delta, 0.0)
+	if was_wobbling and _wobble_time <= 0.0 and controls_enabled:
+		style_event.emit(&"SAVE", 260)
 
 	var planar_velocity := Vector3(linear_velocity.x, 0.0, linear_velocity.z)
 	var speed_mps := planar_velocity.length()
@@ -124,7 +156,8 @@ func _physics_process(delta: float) -> void:
 	var front_y := _wheel_center_y(_front_ray, _front_distance)
 	var rear_y := _wheel_center_y(_rear_ray, _rear_distance)
 	var dust_amount := clampf((speed_mps - 2.0) / 16.0, 0.0, 1.0) * maxf(throttle, 0.22)
-	_visual.call(&"update_pose", front_y, rear_y, _wheel_spin, steer, lean, dust_amount if _grounded else 0.0)
+	var lateral_slip := absf(linear_velocity.dot(global_transform.basis.x.normalized()))
+	_visual.call(&"update_pose", front_y, rear_y, _wheel_spin, steer, lean, dust_amount if _grounded else 0.0, is_boosting(), clampf(_wobble_time / 1.1, 0.0, 1.0), lateral_slip)
 	_engine_audio.call(&"set_engine_state", speed_mps, throttle, _grounded)
 
 	_telemetry_time += delta
@@ -159,6 +192,14 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_airtime = 0.0
 	_air_rotation = 0.0
 	_reset_flow()
+	_wheelie_time = 0.0
+	_wheelie_awarded = false
+	_scrub_time = 0.0
+	_whip_time = 0.0
+	_wobble_time = 0.0
+	_preload_buffer_time = 0.0
+	_ground_coyote_time = 0.0
+	respawned.emit()
 
 
 func get_speed_mps() -> float:
@@ -171,6 +212,11 @@ func get_flow() -> float:
 
 func is_boosting() -> bool:
 	return _boost_time > 0.0
+
+
+func shutdown_audio() -> void:
+	_engine_audio.call(&"shutdown")
+	_engine_audio.queue_free()
 
 
 func apply_setup(setup: StringName) -> void:
@@ -208,6 +254,49 @@ func apply_condition(condition: int) -> void:
 	maximum_speed_mps = _base_maximum_speed_mps * lerpf(0.9, 1.0, condition_ratio)
 
 
+func apply_run_modifier(modifier: StringName) -> void:
+	_run_engine_multiplier = 1.0
+	_run_grip_multiplier = 1.0
+	_flow_gain_multiplier = 1.0
+	match modifier:
+		&"TAILWIND":
+			_run_engine_multiplier = 1.12
+		&"LOOSE_DIRT":
+			_run_grip_multiplier = 0.84
+		&"FLOW_SURGE":
+			_flow_gain_multiplier = 1.28
+
+
+func apply_cosmetic_tier(tier: int) -> void:
+	_visual.call(&"apply_cosmetic_tier", tier)
+
+
+func apply_assist_mode(mode: StringName) -> void:
+	match mode:
+		&"ASSISTED":
+			_assist_strength = 0.78
+		&"PRO":
+			_assist_strength = 0.12
+		_:
+			_assist_strength = 0.45
+
+
+func set_surface(surface: StringName) -> void:
+	_surface_grip_multiplier = 1.0
+	_surface_drag_multiplier = 1.0
+	match surface:
+		&"MUD":
+			_surface_grip_multiplier = 0.72
+			_surface_drag_multiplier = 1.85
+		&"GRAVEL":
+			_surface_grip_multiplier = 0.82
+			_surface_drag_multiplier = 1.16
+		&"ROCK":
+			_surface_grip_multiplier = 0.93
+			_surface_drag_multiplier = 1.08
+	_visual.call(&"set_surface", surface)
+
+
 func _apply_suspension(ray: RayCast3D, delta: float) -> float:
 	ray.force_raycast_update()
 	if not ray.is_colliding():
@@ -236,7 +325,7 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float) -> void:
 	var speed_limit := maximum_speed_mps * (1.18 if is_boosting() else 1.0)
 	if throttle > 0.0:
 		var speed_factor := 1.0 - clampf(maxf(forward_speed, 0.0) / speed_limit, 0.0, 0.94)
-		apply_central_force(forward * throttle * engine_force * speed_factor)
+		apply_central_force(forward * throttle * engine_force * _run_engine_multiplier * speed_factor)
 	if is_boosting():
 		var boost_falloff := clampf(_boost_time / 0.22, 0.15, 1.0)
 		apply_central_force(forward * flow_boost_force * boost_falloff)
@@ -246,9 +335,10 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float) -> void:
 		elif absf(forward_speed) < 3.5:
 			apply_central_force(-forward * reverse_force * brake)
 
-	apply_central_force(-right * lateral_speed * lateral_grip)
+	var wobble_grip := lerpf(0.72, 1.0, clampf(1.0 - _wobble_time / 1.1, 0.0, 1.0))
+	apply_central_force(-right * lateral_speed * lateral_grip * _run_grip_multiplier * _surface_grip_multiplier * wobble_grip)
 	var planar_velocity := Vector3(linear_velocity.x, 0.0, linear_velocity.z)
-	apply_central_force(-planar_velocity * rolling_drag)
+	apply_central_force(-planar_velocity * rolling_drag * _surface_drag_multiplier)
 	var steer_authority := clampf(absf(forward_speed) / 4.0, 0.18, 1.0)
 	var reverse_sign := -1.0 if forward_speed < -0.5 else 1.0
 	apply_torque(ground_up * -steer * steering_torque * steer_authority * reverse_sign)
@@ -268,6 +358,9 @@ func _handle_flow_boost(delta: float) -> void:
 		apply_central_impulse(forward * mass * flow_boost_impulse)
 		flow_changed.emit(_flow, true)
 		boost_activated.emit(_flow)
+		style_event.emit(&"FLOW BOOST", 120)
+		_visual.call(&"burst_boost")
+		Input.start_joy_vibration(0, 0.32, 0.58, 0.22)
 	elif was_boosting and not is_boosting():
 		flow_changed.emit(_flow, false)
 
@@ -276,7 +369,7 @@ func _award_landing_flow(airtime: float, rotation_amount: float, clean: bool) ->
 	if not controls_enabled or not clean or airtime < 0.45:
 		return
 	var rotation_turns := minf(rotation_amount / TAU, 2.0)
-	var requested_gain := clampf(22.0 + airtime * 20.0 + rotation_turns * 12.0, 14.0, 45.0)
+	var requested_gain := clampf((22.0 + airtime * 20.0 + rotation_turns * 12.0) * _flow_gain_multiplier, 14.0, 52.0)
 	var previous_flow := _flow
 	_flow = minf(_flow + requested_gain, flow_capacity)
 	var actual_gain := _flow - previous_flow
@@ -284,6 +377,7 @@ func _award_landing_flow(airtime: float, rotation_amount: float, clean: bool) ->
 		return
 	flow_gained.emit(actual_gain)
 	flow_changed.emit(_flow, is_boosting())
+	style_event.emit(&"CLEAN LANDING", int(round(160.0 + airtime * 80.0 + rotation_turns * 120.0)))
 
 
 func _reset_flow() -> void:
@@ -292,6 +386,17 @@ func _reset_flow() -> void:
 	_boost_time = 0.0
 	if had_flow:
 		flow_changed.emit(_flow, false)
+
+
+func _update_wheelie(delta: float, speed_mps: float) -> void:
+	if _rear_ray.is_colliding() and not _front_ray.is_colliding() and speed_mps > 5.0:
+		_wheelie_time += delta
+		if _wheelie_time >= 0.8 and not _wheelie_awarded:
+			_wheelie_awarded = true
+			style_event.emit(&"WHEELIE", 220)
+	elif _front_ray.is_colliding():
+		_wheelie_time = 0.0
+		_wheelie_awarded = false
 
 
 func _apply_balance(steer: float) -> void:
@@ -314,19 +419,30 @@ func _apply_air_control(steer: float, lean: float) -> void:
 	apply_torque(right * lean * air_pitch_torque)
 	apply_torque(forward * -steer * air_roll_torque)
 	apply_torque(-angular_velocity * 18.0)
+	if linear_velocity.y < 0.0 and _assist_strength > 0.0:
+		var correction_axis := global_transform.basis.y.normalized().cross(Vector3.UP)
+		apply_torque(correction_axis * upright_strength * _assist_strength * 0.22)
 
 
 func _handle_preload(delta: float) -> void:
 	if not controls_enabled:
 		_preload_charge = 0.0
+		_preload_buffer_time = 0.0
 		return
 	if InputRouter.is_preload_pressed():
 		_preload_charge = minf(_preload_charge + delta, 0.5)
-	elif InputRouter.is_preload_just_released() and _preload_charge > 0.08:
+	if InputRouter.is_preload_just_released():
+		_preload_buffer_time = 0.14
+	if _preload_buffer_time > 0.0 and _ground_coyote_time > 0.0 and _preload_charge > 0.08:
 		var charge_ratio := _preload_charge / 0.5
 		var forward := -global_transform.basis.z.slide(Vector3.UP).normalized()
 		apply_central_impulse(Vector3.UP * preload_impulse * charge_ratio + forward * preload_impulse * 0.24 * charge_ratio)
 		_preload_charge = 0.0
+		_preload_buffer_time = 0.0
+	else:
+		_preload_buffer_time = maxf(_preload_buffer_time - delta, 0.0)
+		if _ground_coyote_time <= 0.0 and _preload_buffer_time <= 0.0 and not InputRouter.is_preload_pressed():
+			_preload_charge = 0.0
 
 
 func _get_ground_normal() -> Vector3:

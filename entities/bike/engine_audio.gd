@@ -11,6 +11,8 @@ var _grounded: bool = true
 
 
 func _ready() -> void:
+	if &"--smoke-test" in OS.get_cmdline_user_args():
+		return
 	var generator := AudioStreamGenerator.new()
 	generator.mix_rate = MIX_RATE
 	generator.buffer_length = 0.18
@@ -42,6 +44,10 @@ func _process(_delta: float) -> void:
 
 
 func _exit_tree() -> void:
+	shutdown()
+
+
+func shutdown() -> void:
 	stop()
 	_playback = null
 	stream = null

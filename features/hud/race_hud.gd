@@ -21,6 +21,13 @@ var _paused_label: Label
 var _title_label: Label
 var _compass_label: Label
 var _reward_label: Label
+var _line_label: Label
+var _line_score_label: Label
+var _contract_label: Label
+var _modifier_label: Label
+var _breakdown_label: Label
+var _highlight_overlay: ColorRect
+var _highlight_tween: Tween
 var _message_time: float = 0.0
 var _reward_time: float = 0.0
 var _activity: StringName = &"CIRCUIT"
@@ -68,6 +75,32 @@ func update_flow(value: float, boosting: bool) -> void:
 	_flow_bar.value = clampf(value, 0.0, 100.0)
 	_flow_label.text = "BOOSTING" if boosting else "FLOW  %03d" % int(round(value))
 	_flow_label.modulate = CYAN if boosting else CREAM
+
+
+func update_line(label: String, chain: int, multiplier: float, score: int, time_left: float) -> void:
+	_line_label.text = label
+	_line_label.modulate = CYAN if chain >= 4 else AMBER
+	_line_score_label.text = "LINE %06d" % score if chain <= 1 else "LINE %06d   x%.2f   CHAIN %02d   %.1fs" % [score, multiplier, chain, time_left]
+	if chain == 4 or label.begins_with("ROUTE:"):
+		_pulse_highlight()
+
+
+func update_contract(title: String, current: int, target: int, completed: bool) -> void:
+	_contract_label.text = "%s   //   %s" % [title, "COMPLETE +$350 +1 TOKEN" if completed else "%d / %d" % [current, target]]
+	_contract_label.modulate = CYAN if completed else CREAM
+
+
+func update_modifier(title: String, description: String) -> void:
+	_modifier_label.text = "DAILY: %s   //   %s" % [title, description]
+
+
+func show_breakdown(summary: String) -> void:
+	_breakdown_label.text = summary
+
+
+func show_feat(title: String) -> void:
+	_reward_label.text = "FEAT UNLOCKED  //  %s  //  +1 STYLE TOKEN" % title
+	_reward_time = 4.0
 
 
 func update_race_time(elapsed_usec: int, best_usec: int, checkpoint: int, total: int) -> void:
@@ -193,7 +226,7 @@ func _build_hud() -> void:
 
 	_message_label = _make_label(root, "", 27, CREAM)
 	_message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_message_label, Vector2(0.5, 0.5), Rect2(-420.0, 74.0, 840.0, 100.0))
+	_anchor_rect(_message_label, Vector2(0.5, 0.5), Rect2(-500.0, 70.0, 1000.0, 140.0))
 	_compass_label = _make_label(root, "▲", 54, CYAN)
 	_compass_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_compass_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -204,11 +237,32 @@ func _build_hud() -> void:
 	_reward_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_reward_label, Vector2(1.0, 0.0), Rect2(-410.0, 105.0, 380.0, 42.0))
 
+	_contract_label = _make_label(root, "", 17, CREAM)
+	_anchor_rect(_contract_label, Vector2.ZERO, Rect2(28.0, 100.0, 720.0, 32.0))
+	_modifier_label = _make_label(root, "", 15, Color("a8b4bd"))
+	_modifier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_anchor_rect(_modifier_label, Vector2(1.0, 0.0), Rect2(-680.0, 148.0, 650.0, 30.0))
+	_line_label = _make_label(root, "", 31, AMBER)
+	_line_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(_line_label, Vector2(0.5, 1.0), Rect2(-360.0, -276.0, 720.0, 42.0))
+	_line_score_label = _make_label(root, "", 17, CREAM)
+	_line_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(_line_score_label, Vector2(0.5, 1.0), Rect2(-360.0, -236.0, 720.0, 30.0))
+	_breakdown_label = _make_label(root, "", 19, CYAN)
+	_breakdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(_breakdown_label, Vector2(0.5, 0.5), Rect2(-520.0, 214.0, 1040.0, 38.0))
+
 	_paused_label = _make_label(root, "PAUSED\nESC / START TO RIDE", 54, CREAM)
 	_paused_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_paused_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_paused_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_paused_label.visible = false
+
+	_highlight_overlay = ColorRect.new()
+	_highlight_overlay.color = Color.TRANSPARENT
+	_highlight_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_highlight_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.add_child(_highlight_overlay)
 
 
 func _make_label(parent: Control, text: String, font_size: int, color: Color) -> Label:
@@ -260,6 +314,8 @@ func _on_checkpoint_passed(index: int, total: int, split_usec: int) -> void:
 
 
 func _on_race_finished(time_usec: int, medal: StringName, is_new_best: bool) -> void:
+	_line_label.text = ""
+	_line_score_label.text = ""
 	_countdown_label.text = str(medal)
 	_countdown_label.add_theme_color_override(&"font_color", AMBER if medal == &"GOLD" else CREAM)
 	var record_text := "  •  NEW PERSONAL BEST" if is_new_best else ""
@@ -267,7 +323,8 @@ func _on_race_finished(time_usec: int, medal: StringName, is_new_best: bool) -> 
 	if _rival_target_usec > 0:
 		var rival_delta := time_usec - _rival_target_usec
 		rival_text = "  •  ROOK BEATEN" if rival_delta <= 0 else "  •  %.2fs BEHIND ROOK" % (float(rival_delta) / 1_000_000.0)
-	_message_label.text = "%s%s%s\nENTER / X RUN AGAIN   •   G / B GARAGE" % [_format_usec(time_usec), record_text, rival_text]
+	var rook_callout := "ROOK: CLEAN. DO IT AGAIN." if _rival_target_usec > 0 and time_usec <= _rival_target_usec else "ROOK: YOU LEFT TIME IN THE CORNERS."
+	_message_label.text = "%s%s%s\n%s\nENTER / X RUN AGAIN   •   G / B GARAGE" % [_format_usec(time_usec), record_text, rival_text, rook_callout]
 	_message_label.modulate = CYAN if _rival_target_usec > 0 and time_usec <= _rival_target_usec else CREAM
 	_message_time = 9999.0
 
@@ -278,6 +335,7 @@ func _on_race_reset() -> void:
 	_message_label.modulate = CREAM
 	_message_time = 0.0
 	_compass_label.visible = false
+	_breakdown_label.text = ""
 
 
 func _on_game_paused(paused: bool) -> void:
@@ -334,6 +392,8 @@ func _on_discovery_progress_changed(current: int, total: int) -> void:
 func _on_activity_completed(activity: StringName, result_value: int, medal: StringName, is_new_best: bool) -> void:
 	if activity == &"CIRCUIT":
 		return
+	_line_label.text = ""
+	_line_score_label.text = ""
 	_countdown_label.text = str(medal)
 	_countdown_label.add_theme_color_override(&"font_color", AMBER if medal == &"GOLD" else CREAM)
 	_compass_label.visible = false
@@ -354,3 +414,11 @@ func _format_usec(time_usec: int) -> String:
 	var seconds := (total_msec / 1000) % 60
 	var milliseconds := total_msec % 1000
 	return "%02d:%02d.%03d" % [minutes, seconds, milliseconds]
+
+
+func _pulse_highlight() -> void:
+	if _highlight_tween != null:
+		_highlight_tween.kill()
+	_highlight_overlay.color = Color(0.34, 0.84, 1.0, 0.12)
+	_highlight_tween = create_tween()
+	_highlight_tween.tween_property(_highlight_overlay, "color", Color.TRANSPARENT, 0.5).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)

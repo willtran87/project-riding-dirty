@@ -7,6 +7,8 @@ var _race: RaceController
 var _freestyle: FreestyleController
 var _discovery: DiscoveryController
 var _transition: DistrictTransition
+var _ride_director: RideDirector
+var _gameplay_audio: GameplayAudio
 var _activity: StringName = &"CIRCUIT"
 
 
@@ -16,10 +18,14 @@ func initialize(
 	race: RaceController,
 	freestyle: FreestyleController,
 	discovery: DiscoveryController,
-	transition: DistrictTransition
+	transition: DistrictTransition,
+	ride_director: RideDirector,
+	gameplay_audio: GameplayAudio
 ) -> void:
 	var arguments := OS.get_cmdline_user_args()
 	_transition = transition
+	_ride_director = ride_director
+	_gameplay_audio = gameplay_audio
 	if &"--capture-garage" in arguments:
 		_apply_requested_window_size()
 		_capture_garage.call_deferred()
@@ -53,7 +59,9 @@ func _capture_garage() -> void:
 
 func _capture_transition() -> void:
 	await _transition.cover(_requested_activity())
-	for _frame: int in 3:
+	# Give the audio server enough main-thread ticks to release native playback
+	# objects before headless teardown; otherwise the test can report false leaks.
+	for _frame: int in 30:
 		await get_tree().process_frame
 	var capture := get_viewport().get_texture().get_image()
 	var capture_path := ProjectSettings.globalize_path("res://artifacts/riding-dirty-transition.png")
@@ -94,6 +102,8 @@ func _run_circuit() -> void:
 		exit_code = 1
 	if not _validate_tour_progression():
 		exit_code = 1
+	if not _validate_progression_extensions():
+		exit_code = 1
 	await _wait_physics_frames(220)
 	var start_position := _bike.global_position
 	Input.action_press(InputRouter.THROTTLE, 1.0)
@@ -111,6 +121,19 @@ func _run_circuit() -> void:
 	if camera_distance < 4.0 or camera_distance > 16.0:
 		push_error("SMOKE TEST: chase camera distance is invalid (%.2f m)." % camera_distance)
 		exit_code = 1
+	if not _ghost_has_rival():
+		push_error("TRACK SMOKE: authored Rook ghost was not configured.")
+		exit_code = 1
+	var route_positions := _ride_director.get_route_positions(_activity)
+	var route_registered := false
+	if not route_positions.is_empty():
+		var line_before_route := _ride_director.get_line_score()
+		_bike.respawn_at(Transform3D(Basis.IDENTITY, route_positions[0] + Vector3.UP * 0.3))
+		await _wait_physics_frames(5)
+		route_registered = _ride_director.get_line_score() > line_before_route
+	if not route_registered:
+		push_error("TRACK SMOKE: secret route gate did not register a line event.")
+		exit_code = 1
 	if &"--capture-smoke" in OS.get_cmdline_user_args():
 		await get_tree().process_frame
 		var capture := get_viewport().get_texture().get_image()
@@ -124,13 +147,17 @@ func _run_circuit() -> void:
 	var checkpoint_positions := _race.get_checkpoint_positions()
 	if checkpoint_positions.is_empty():
 		push_error("TRACK SMOKE: no checkpoints were configured.")
-		get_tree().quit(1)
+		await _quit_cleanly(1)
 		return
 	_bike.respawn_at(Transform3D(Basis.IDENTITY, checkpoint_positions[0] + Vector3.UP * 0.2))
 	await _wait_physics_frames(4)
 	var checkpoint_registered := _race.get_expected_checkpoint() == 1
 	if not checkpoint_registered:
 		push_error("SMOKE TEST: the first ordered checkpoint did not register.")
+		exit_code = 1
+	var breakdown_available := _race.get_breakdown_preview().contains("S01")
+	if not breakdown_available:
+		push_error("SMOKE TEST: sector breakdown did not summarize checkpoint data.")
 		exit_code = 1
 
 	_race.reset_run()
@@ -140,8 +167,8 @@ func _run_circuit() -> void:
 		push_error("SMOKE TEST: restart did not restore the spawn transform (%.2f m)." % reset_distance)
 		exit_code = 1
 
-	print("TRACK SMOKE RESULT: activity=%s moved=%.2fm position=%s camera=%.2fm checkpoint=%s reset_error=%.2fm" % [String(_activity), moved_distance, str(_bike.global_position), camera_distance, str(checkpoint_registered), reset_distance])
-	get_tree().quit(exit_code)
+	print("TRACK SMOKE RESULT: activity=%s moved=%.2fm position=%s camera=%.2fm rival=true route=%s checkpoint=%s breakdown=%s reset_error=%.2fm" % [String(_activity), moved_distance, str(_bike.global_position), camera_distance, str(route_registered), str(checkpoint_registered), str(breakdown_available), reset_distance])
+	await _quit_cleanly(exit_code)
 
 
 func _run_freestyle() -> void:
@@ -153,6 +180,12 @@ func _run_freestyle() -> void:
 	await _wait_physics_frames(100)
 	if _freestyle.score <= 0:
 		push_error("FREESTYLE SMOKE: physical airtime and landing did not award points.")
+		exit_code = 1
+	if _ride_director.get_line_score() <= 0 or _ride_director.get_contract_progress() <= 0:
+		push_error("FREESTYLE SMOKE: Ride Director did not register the physical clean-landing line.")
+		exit_code = 1
+	if _ride_director.get_modifier() not in [&"TAILWIND", &"FLOW_SURGE", &"LOOSE_DIRT"]:
+		push_error("FREESTYLE SMOKE: daily modifier selection was invalid.")
 		exit_code = 1
 	var earned_flow := _bike.get_flow()
 	if earned_flow < _bike.flow_boost_cost:
@@ -176,10 +209,10 @@ func _run_freestyle() -> void:
 		exit_code = 1
 	if &"--capture-smoke" in OS.get_cmdline_user_args():
 		await _capture_named_frame("riding-dirty-freestyle.png")
-	print("FREESTYLE SMOKE RESULT: score=%d combo=%d flow=%.1f->%.1f boost_speed=%.2f->%.2f height=%.2f" % [_freestyle.score, _freestyle.combo, earned_flow, flow_after_boost, speed_before_boost, speed_after_boost, _bike.global_position.y])
+	print("FREESTYLE SMOKE RESULT: score=%d combo=%d line=%d contract=%d modifier=%s flow=%.1f->%.1f boost_speed=%.2f->%.2f height=%.2f" % [_freestyle.score, _freestyle.combo, _ride_director.get_line_score(), _ride_director.get_contract_progress(), String(_ride_director.get_modifier()), earned_flow, flow_after_boost, speed_before_boost, speed_after_boost, _bike.global_position.y])
 	_freestyle.enter_waiting()
 	await _wait_physics_frames(60)
-	get_tree().quit(exit_code)
+	await _quit_cleanly(exit_code)
 
 
 func _run_discovery() -> void:
@@ -188,7 +221,7 @@ func _run_discovery() -> void:
 	var positions := _discovery.get_pickup_positions()
 	if positions.is_empty():
 		push_error("DISCOVERY SMOKE: no pickup positions were configured.")
-		get_tree().quit(1)
+		await _quit_cleanly(1)
 		return
 	_bike.respawn_at(Transform3D(Basis.IDENTITY, positions[0] + Vector3.UP * 0.3))
 	await _wait_physics_frames(6)
@@ -206,7 +239,7 @@ func _run_discovery() -> void:
 	print("DISCOVERY SMOKE RESULT: first_pickup=true respawned=%d compass_source=true" % respawned_count)
 	_discovery.enter_waiting()
 	await _wait_physics_frames(12)
-	get_tree().quit(exit_code)
+	await _quit_cleanly(exit_code)
 
 
 func _requested_activity() -> StringName:
@@ -270,6 +303,45 @@ func _validate_tour_progression() -> bool:
 	return valid
 
 
+func _validate_progression_extensions() -> bool:
+	var old_cash := Profile.cash
+	var old_racer_rep := Profile.racer_reputation
+	var old_style_tokens := Profile.style_tokens
+	var old_completions := Profile.contract_completions
+	var old_contracts := Profile.completed_contracts.duplicate()
+	var old_feats := Profile.unlocked_feats.duplicate()
+	var old_assist := Profile.assist_mode
+	var old_persistence := Profile.persistence_enabled
+	Profile.persistence_enabled = false
+	Profile.cash = 0
+	Profile.racer_reputation = 0
+	Profile.style_tokens = 0
+	Profile.contract_completions = 0
+	Profile.completed_contracts.clear()
+	Profile.unlocked_feats.clear()
+	Profile.assist_mode = &"SPORT"
+	var feat_awarded := Profile.unlock_feat("SMOKE_FEAT")
+	var contract_awarded := Profile.complete_contract("SMOKE_CONTRACT", &"CIRCUIT", 350, 35)
+	var assist_changed := Profile.cycle_assist_mode() == &"PRO"
+	var valid := feat_awarded and contract_awarded and assist_changed and Profile.cash == 350 and Profile.racer_reputation == 35 and Profile.style_tokens == 2 and Profile.get_cosmetic_tier() == 1
+	Profile.cash = old_cash
+	Profile.racer_reputation = old_racer_rep
+	Profile.style_tokens = old_style_tokens
+	Profile.contract_completions = old_completions
+	Profile.completed_contracts.assign(old_contracts)
+	Profile.unlocked_feats.assign(old_feats)
+	Profile.assist_mode = old_assist
+	Profile.persistence_enabled = old_persistence
+	if not valid:
+		push_error("PROGRESSION SMOKE: contracts, feats, cosmetics, or assist persistence failed.")
+	return valid
+
+
+func _ghost_has_rival() -> bool:
+	var ghost := _race.ghost
+	return ghost != null and ghost.is_rival_configured()
+
+
 func _capture_named_frame(file_name: String) -> void:
 	for _frame: int in 12:
 		await get_tree().process_frame
@@ -284,3 +356,12 @@ func _capture_named_frame(file_name: String) -> void:
 func _wait_physics_frames(frame_count: int) -> void:
 	for _frame: int in frame_count:
 		await get_tree().physics_frame
+
+
+func _quit_cleanly(exit_code: int) -> void:
+	_gameplay_audio.shutdown()
+	_bike.set_physics_process(false)
+	_bike.shutdown_audio()
+	for _frame: int in 3:
+		await get_tree().process_frame
+	get_tree().quit(exit_code)

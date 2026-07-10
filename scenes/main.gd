@@ -12,6 +12,8 @@ extends Node3D
 @onready var _discovery: DiscoveryController = %DiscoveryController
 @onready var _transition: DistrictTransition = %DistrictTransition
 @onready var _gameplay_audio: GameplayAudio = %GameplayAudio
+@onready var _ride_director: RideDirector = %RideDirector
+@onready var _atmosphere: AtmosphereDirector = %AtmosphereDirector
 
 var _paused: bool = false
 var _current_activity: StringName = &"CIRCUIT"
@@ -26,20 +28,29 @@ func _ready() -> void:
 	_bike.flow_changed.connect(_hud.update_flow)
 	_bike.landed.connect(_camera.apply_landing_kick)
 	_bike.boost_activated.connect(_camera.apply_boost_punch)
+	_bike.airtime_started.connect(_camera.begin_airtime)
 	_bike.landed.connect(_on_bike_landed)
 	_race.time_updated.connect(_hud.update_race_time)
+	_race.breakdown_ready.connect(_hud.show_breakdown)
 	_freestyle.hud_updated.connect(_hud.update_freestyle)
 	_discovery.hud_updated.connect(_hud.update_discovery)
 	_garage.ride_requested.connect(_on_ride_requested)
 	_race.initialize(_bike, _ghost)
 	_freestyle.initialize(_bike, _ghost)
 	_discovery.initialize(_bike, _ghost)
-	_gameplay_audio.initialize(_bike)
+	_gameplay_audio.initialize(_bike, _ride_director)
+	_ride_director.initialize(_bike)
+	_ride_director.line_updated.connect(_hud.update_line)
+	_ride_director.contract_updated.connect(_hud.update_contract)
+	_ride_director.modifier_updated.connect(_hud.update_modifier)
+	_ride_director.route_discovered.connect(_camera.apply_route_highlight)
+	_ride_director.feat_unlocked.connect(_hud.show_feat)
+	_atmosphere.initialize(_bike)
 	if &"--smoke-test" in OS.get_cmdline_user_args():
 		_on_ride_requested(Profile.current_setup, _get_requested_test_activity())
 	else:
 		_garage.show_garage()
-	_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery, _transition)
+	_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery, _transition, _ride_director, _gameplay_audio)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -84,6 +95,8 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	Profile.set_current_setup(setup)
 	_bike.apply_setup(setup)
 	_bike.apply_condition(Profile.bike_condition)
+	_bike.apply_cosmetic_tier(Profile.get_cosmetic_tier())
+	_bike.apply_assist_mode(Profile.assist_mode)
 	match activity:
 		&"PINE_ENDURO":
 			_race.configure_track(&"PINE")

@@ -383,16 +383,24 @@ The project now contains a playable Godot vertical slice of the recommended dire
 - Persistent per-event medal mastery, tour completion tracking, and Pine Ridge unlock rules with backward-compatible save migration
 - Rook rival targets for both race districts with live checkpoint split feedback and persistent rival victories
 - Authored district cover/reveal transitions for every activity, with event-specific route, target, and identity copy
+- Ride Director ownership of 4.5-second Flow-line chains spanning clean landings, scrubs, whips, wheelies, saves, boosts, routes, and near-misses
+- Two secret route gates per activity, narrow alternate route geometry, reusable breakaway props, and surface-specific mud, gravel, and rock handling
+- Deterministic daily Tailwind, Flow Surge, and Loose Dirt conditions plus persistent sponsor contracts
+- Persistent Style Tokens, feat unlocks, and three cosmetic tiers earned through four-move chains, route discovery, contracts, and no-reset finishes
+- Assisted, Sport, and Pro handling modes with buffered preload, takeoff grace, and aerial self-righting differences
+- Authored collision-free Rook riders following district racing curves, character finish callouts, and best/costliest sector analysis
+- Reactive rider posture, wobble recovery, pooled skid marks, boost trails, landing debris, controller haptics, and route/airtime camera framing
+- Activity-specific atmospheric grading, fog, lightweight weather, trackside spectators, flags, and adaptive two-layer synthesized music
 - Responsive web frontend with a single-threaded WebAssembly build, fullscreen presentation, browser input capture, and visibility-aware pause/audio behavior
 - Browser-local persistence for rider progress and personal-best ghost recordings
 - Runtime smoke validation covering acceleration, stable height, chase-camera distance, checkpoint registration, and run reset
-- Activity-specific smoke validation covering both race districts, physical freestyle scoring, discovery pickup rebuilding, and repair transaction invariants
+- Activity-specific smoke validation covering both race districts, authored rivals, secret routes, sector breakdowns, physical Flow lines, contracts, feats, cosmetics, assist persistence, discovery pickup rebuilding, and repair transaction invariants
 - Live browser validation at 2560×1600, 1280×800, and 390×844, including WebAssembly startup and in-canvas keyboard input
 - Rendered visual validation at 2560×1440, 1280×720, and 960×540
 
 ### Next Expansion Targets
 
 1. Expand garage kits into individual parts and multiple saved builds.
-2. Grow Rook from a clock target into an authored challenge ghost with post-event callouts.
-3. Add sponsors and reputation-specific unlocks tied to tour mastery.
-4. Add authored sound effects and music after the core event variety is proven.
+2. Add additional named rivals and district-specific sponsor arcs.
+3. Add authored production music and voice while retaining the synthesized Web fallback.
+4. Add optional online leaderboards and shared daily seeds without making progression network-dependent.

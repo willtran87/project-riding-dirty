@@ -24,6 +24,7 @@ func _ready() -> void:
 	_build_jump_line()
 	_build_quarry_props()
 	_build_course_markers()
+	_build_trackside_life()
 
 
 func _create_materials() -> void:
@@ -120,6 +121,11 @@ func _build_ground_and_walls() -> void:
 func _build_track() -> void:
 	for index: int in _track_points.size() - 1:
 		_add_track_segment(_track_points[index], _track_points[index + 1], 12.0)
+	# Narrow alternate lines trade safety for distance and route-chain value.
+	_add_track_segment(Vector3(0.0, 0.0, -5.0), Vector3(-18.0, 0.0, -17.0), 5.5)
+	_add_track_segment(Vector3(-18.0, 0.0, -17.0), Vector3(0.0, 0.0, -31.0), 5.5)
+	_add_track_segment(Vector3(20.0, 0.0, -51.0), Vector3(44.0, 0.0, -18.0), 5.8)
+	_add_track_segment(Vector3(44.0, 0.0, -18.0), Vector3(54.0, 0.0, 2.0), 5.8)
 
 	# Broad inside berms imply the fast line through the oval.
 	_add_static_box("NorthBerm", Vector3(28.0, 1.3, 2.0), Vector3(25.0, 0.35, -54.0), &"track_edge", Vector3(0.0, -0.34, -0.18))
@@ -133,6 +139,8 @@ func _build_jump_line() -> void:
 	_add_wedge_ramp("EastTableFace", Vector3(54.0, 0.04, 12.0), PI, 8.0, 8.0, 1.15, true)
 	_add_static_box("EastTableTop", Vector3(8.0, 1.15, 7.0), Vector3(54.0, 0.575, 19.2), &"track")
 	_add_wedge_ramp("EastTableDown", Vector3(54.0, 0.04, 26.5), PI, 8.0, 8.0, 1.15, false)
+	_add_wedge_ramp("PipeCutSend", Vector3(-12.0, 0.04, -12.5), -0.9, 7.0, 5.2, 1.55, true)
+	_add_wedge_ramp("HighLineKick", Vector3(38.0, 0.04, -27.0), -0.58, 6.5, 5.4, 1.25, true)
 
 
 func _build_quarry_props() -> void:
@@ -153,6 +161,10 @@ func _build_quarry_props() -> void:
 	for x_position: float in [-18.0, 18.0, 48.0]:
 		_add_visual_cylinder("LightPole%d" % int(x_position), 0.12, 9.0, Vector3(x_position, 4.5, 57.0), &"metal")
 		_add_visual_box("LightBar%d" % int(x_position), Vector3(2.6, 0.4, 0.45), Vector3(x_position, 8.9, 57.0), &"cream")
+	for prop_index: int in 9:
+		var row := prop_index / 3
+		var column := prop_index % 3
+		_add_destructible_barrel("BreakawayBarrel%02d" % prop_index, Vector3(-22.0 + column * 1.25, 0.65, 12.0 + row * 1.35))
 
 
 func _build_course_markers() -> void:
@@ -168,6 +180,48 @@ func _build_course_markers() -> void:
 			var center := start.lerp(end, weight)
 			if (index + marker_index) % 2 == 0:
 				_add_cone("Marker%d_%d" % [index, marker_index], center + right * 6.3 + Vector3.UP * 0.42)
+
+
+func _build_trackside_life() -> void:
+	var spectator_positions: Array[Vector3] = [
+		Vector3(-15.0, 0.0, 48.0), Vector3(-12.5, 0.0, 49.2), Vector3(-9.8, 0.0, 49.5),
+		Vector3(29.0, 0.0, -59.0), Vector3(32.0, 0.0, -58.4), Vector3(35.0, 0.0, -57.8),
+		Vector3(64.0, 0.0, 15.0), Vector3(64.5, 0.0, 19.0), Vector3(62.8, 0.0, 23.0),
+	]
+	for index: int in spectator_positions.size():
+		_add_spectator("Spectator%02d" % index, spectator_positions[index], Color.from_hsv(float(index) / 9.0, 0.62, 0.88))
+	for flag_index: int in 5:
+		var flag_position := Vector3(-24.0 + flag_index * 12.0, 0.0, 58.0)
+		_add_visual_cylinder("FlagPole%d" % flag_index, 0.055, 4.5, flag_position + Vector3.UP * 2.25, &"metal")
+		_add_visual_box("Flag%d" % flag_index, Vector3(1.5, 0.72, 0.06), flag_position + Vector3(0.75, 3.85, 0.0), &"red")
+
+
+func _add_spectator(node_name: String, position: Vector3, color: Color) -> void:
+	var root := Node3D.new()
+	root.name = node_name
+	root.position = position
+	root.rotation.y = position.angle_to(Vector3.ZERO)
+	add_child(root)
+	var shirt := StandardMaterial3D.new()
+	shirt.albedo_color = color
+	shirt.roughness = 0.85
+	var torso := BoxMesh.new()
+	torso.size = Vector3(0.48, 0.72, 0.3)
+	var torso_mesh := MeshInstance3D.new()
+	torso_mesh.mesh = torso
+	torso_mesh.position.y = 1.05
+	torso_mesh.material_override = shirt
+	root.add_child(torso_mesh)
+	var head := SphereMesh.new()
+	head.radius = 0.21
+	head.height = 0.42
+	head.radial_segments = 8
+	head.rings = 5
+	var head_mesh := MeshInstance3D.new()
+	head_mesh.mesh = head
+	head_mesh.position.y = 1.65
+	head_mesh.material_override = _materials[&"cream"]
+	root.add_child(head_mesh)
 
 
 func _add_track_segment(start: Vector3, end: Vector3, width: float) -> void:
@@ -266,6 +320,41 @@ func _add_visual_cylinder(
 	mesh_instance.material_override = _materials[material_key]
 	add_child(mesh_instance)
 	return mesh_instance
+
+
+func _add_destructible_barrel(body_name: String, position: Vector3) -> void:
+	var body := DestructibleProp.new()
+	body.name = body_name
+	body.mass = 4.0
+	body.collision_layer = 2
+	body.collision_mask = 1 | 2
+	body.position = position
+	add_child(body)
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = 0.42
+	cylinder.bottom_radius = 0.42
+	cylinder.height = 1.3
+	cylinder.radial_segments = 10
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = cylinder
+	mesh.material_override = _materials[&"red"]
+	body.add_child(mesh)
+	var stripe := TorusMesh.new()
+	stripe.inner_radius = 0.38
+	stripe.outer_radius = 0.44
+	stripe.rings = 10
+	stripe.ring_segments = 6
+	var stripe_mesh := MeshInstance3D.new()
+	stripe_mesh.mesh = stripe
+	stripe_mesh.rotation.x = PI * 0.5
+	stripe_mesh.material_override = _materials[&"cream"]
+	body.add_child(stripe_mesh)
+	var shape := CylinderShape3D.new()
+	shape.radius = 0.42
+	shape.height = 1.3
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	body.add_child(collision)
 
 
 func _add_wedge_ramp(
