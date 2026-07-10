@@ -244,7 +244,7 @@ Potential themes include:
 - Community, rivalry, and reputation
 - Repairing and repurposing discarded machines and places
 
-The soundtrack could combine garage rock, punk, southern hip-hop, electronic breakbeats, and atmospheric music for solitary trail riding. Final musical direction remains open.
+The implemented soundtrack establishes an original arcade-hip-hop/chiptune direction. “Dust Circuit” is synthesized procedurally in D minor at 116 BPM: a bass, drum, and noise-channel foundation runs continuously while an independent pulse-lead and arpeggio stem fades in with the player’s Flow chain. Future districts can extend this adaptive stem-based language with garage rock, punk, breakbeats, and atmospheric trail music.
 
 ## 12. Camera, Format, and Technology
 

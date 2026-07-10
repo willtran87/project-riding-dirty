@@ -1,9 +1,28 @@
 extends Node
 class_name GameplayAudio
-## Pooled, pre-rendered feedback cues that keep the browser build asset-light.
+## Pooled feedback cues and the original adaptive "Dust Circuit" chiptune.
 
 const MIX_RATE := 22050
 const VOICE_COUNT := 5
+const MUSIC_BPM := 116.0
+const MUSIC_BEATS := 16.0
+
+# Original D-minor patterns. The supplied reference informed the broad idea of a
+# low minor-key hook; its pitches, rhythm, harmony, and contour were rewritten.
+const BASS_PATTERN := [
+	38, -1, 38, 45, 38, -1, 41, 38,
+	36, -1, 43, 36, 36, 43, 41, -1,
+	34, -1, 41, 34, 34, 41, 38, -1,
+	33, -1, 40, 33, 36, 40, 45, -1,
+]
+const LEAD_PATTERN := [
+	-1, 69, 74, 77, 72, -1, 69, 67,
+	69, 72, 74, -1, 81, 79, 77, 72,
+	-1, 67, 69, 72, 77, 74, 72, 69,
+	65, 69, 72, 74, 72, 69, 67, -1,
+]
+const CHORD_ROOTS := [50, 48, 46, 45] # Dm, C, Bb, A
+const CHORD_QUALITIES := [&"MINOR", &"MAJOR", &"MAJOR", &"MAJOR"]
 
 var _voices: Array[AudioStreamPlayer] = []
 var _voice_index: int = 0
@@ -113,34 +132,28 @@ func _build_music() -> void:
 	_music_base = AudioStreamPlayer.new()
 	_music_base.name = "BaseMusic"
 	_music_base.bus = &"Music"
-	_music_base.stream = _make_music_loop(false)
-	_music_base.volume_db = -19.0
+	_music_base.stream = _make_music_loop(&"BASE")
+	_music_base.volume_db = -15.5
 	add_child(_music_base)
 	_music_drive = AudioStreamPlayer.new()
 	_music_drive.name = "DriveMusic"
 	_music_drive.bus = &"Music"
-	_music_drive.stream = _make_music_loop(true)
+	_music_drive.stream = _make_music_loop(&"DRIVE")
 	_music_drive.volume_db = -60.0
 	add_child(_music_drive)
 
 
-func _make_music_loop(drive_layer: bool) -> AudioStreamWAV:
-	var duration := 4.0
+func _make_music_loop(layer: StringName) -> AudioStreamWAV:
+	var seconds_per_beat := 60.0 / MUSIC_BPM
+	var duration := MUSIC_BEATS * seconds_per_beat
 	var sample_count := int(duration * MIX_RATE)
 	var data := PackedByteArray()
 	data.resize(sample_count * 2)
-	var phase_a := 0.0
-	var phase_b := 0.0
 	for sample_index: int in sample_count:
 		var time := float(sample_index) / float(MIX_RATE)
-		var beat_phase := fmod(time * 2.0, 1.0)
-		var pulse := exp(-beat_phase * (18.0 if drive_layer else 9.0))
-		var frequency := 92.0 if drive_layer else 46.0
-		phase_a = fmod(phase_a + frequency / float(MIX_RATE), 1.0)
-		phase_b = fmod(phase_b + frequency * 1.5 / float(MIX_RATE), 1.0)
-		var wave := sin(phase_a * TAU) * 0.7 + sin(phase_b * TAU) * 0.3
-		var amplitude := (0.16 if drive_layer else 0.12) * (0.28 + pulse * 0.72)
-		var signed_sample := clampi(int(wave * amplitude * 32767.0), -32768, 32767)
+		var beat := time / seconds_per_beat
+		var wave := _render_base_layer(beat, seconds_per_beat, sample_index) if layer == &"BASE" else _render_drive_layer(beat, seconds_per_beat)
+		var signed_sample := clampi(int(tanh(wave * 1.18) * 32767.0), -32768, 32767)
 		var encoded_sample := signed_sample if signed_sample >= 0 else 65536 + signed_sample
 		data[sample_index * 2] = encoded_sample & 0xff
 		data[sample_index * 2 + 1] = (encoded_sample >> 8) & 0xff
@@ -153,6 +166,78 @@ func _make_music_loop(drive_layer: bool) -> AudioStreamWAV:
 	stream.loop_end = sample_count
 	stream.data = data
 	return stream
+
+
+func _render_base_layer(beat: float, seconds_per_beat: float, sample_index: int) -> float:
+	var half_step := posmod(int(floor(beat * 2.0)), BASS_PATTERN.size())
+	var half_phase := fmod(beat * 2.0, 1.0)
+	var bass_note: int = BASS_PATTERN[half_step]
+	var bass := 0.0
+	if bass_note >= 0:
+		var bass_hz := _midi_to_hz(bass_note)
+		var bass_time := half_phase * seconds_per_beat * 0.5
+		var bass_envelope := minf(half_phase * 18.0, 1.0) * pow(1.0 - half_phase, 0.32)
+		bass = (_pulse(bass_time * bass_hz, 0.44) * 0.72 + sin(bass_time * bass_hz * TAU) * 0.28) * bass_envelope * 0.24
+
+	var quarter_phase := fmod(beat * 4.0, 1.0)
+	var eighth_index := posmod(int(floor(beat * 2.0)), 8)
+	var eighth_phase := fmod(beat * 2.0, 1.0)
+	var kick_pattern := eighth_index in [0, 3, 4, 7]
+	var kick := 0.0
+	if kick_pattern:
+		var kick_time := eighth_phase * seconds_per_beat * 0.5
+		var kick_phase := 48.0 * kick_time + 12.0 * (1.0 - exp(-kick_time * 18.0))
+		kick = sin(kick_phase * TAU) * exp(-eighth_phase * 7.5) * 0.42
+
+	var beat_index := posmod(int(floor(beat)), 4)
+	var beat_phase := fmod(beat, 1.0)
+	var snare := 0.0
+	if beat_index in [1, 3]:
+		var noise := _chip_noise(sample_index)
+		snare = (noise * 0.78 + sin(beat_phase * seconds_per_beat * 168.0 * TAU) * 0.22) * exp(-beat_phase * 13.0) * 0.24
+
+	var hat_noise := _chip_noise(sample_index / 3)
+	var hat := hat_noise * exp(-quarter_phase * 22.0) * (0.065 if eighth_index % 2 == 0 else 0.045)
+	return bass + kick + snare + hat
+
+
+func _render_drive_layer(beat: float, seconds_per_beat: float) -> float:
+	var half_step := posmod(int(floor(beat * 2.0)), LEAD_PATTERN.size())
+	var half_phase := fmod(beat * 2.0, 1.0)
+	var lead_note: int = LEAD_PATTERN[half_step]
+	var lead := 0.0
+	if lead_note >= 0:
+		var lead_hz := _midi_to_hz(lead_note)
+		var lead_time := half_phase * seconds_per_beat * 0.5
+		var lead_envelope := minf(half_phase * 24.0, 1.0) * pow(1.0 - half_phase, 0.6)
+		var vibrato := sin(lead_time * 6.1 * TAU) * 0.0035
+		lead = (_pulse(lead_time * lead_hz + vibrato, 0.28) * 0.76 + _pulse(lead_time * lead_hz * 2.0, 0.5) * 0.24) * lead_envelope * 0.20
+
+	var sixteenth_step := posmod(int(floor(beat * 4.0)), 16)
+	var sixteenth_phase := fmod(beat * 4.0, 1.0)
+	var bar_index := posmod(int(floor(beat / 4.0)), CHORD_ROOTS.size())
+	var chord_root: int = CHORD_ROOTS[bar_index]
+	var third := 3 if CHORD_QUALITIES[bar_index] == &"MINOR" else 4
+	var chord_offsets := [0, third, 7, 12]
+	var arp_note: int = chord_root + chord_offsets[posmod(sixteenth_step + bar_index, chord_offsets.size())]
+	var arp_hz := _midi_to_hz(arp_note)
+	var arp_time := sixteenth_phase * seconds_per_beat * 0.25
+	var arp_envelope := pow(1.0 - sixteenth_phase, 1.5)
+	var arp := _pulse(arp_time * arp_hz, 0.5) * arp_envelope * 0.075
+	return lead + arp
+
+
+func _midi_to_hz(note: int) -> float:
+	return 440.0 * pow(2.0, (float(note) - 69.0) / 12.0)
+
+
+func _pulse(phase: float, duty: float) -> float:
+	return 1.0 if fmod(phase, 1.0) < duty else -1.0
+
+
+func _chip_noise(seed: int) -> float:
+	var value := posmod(seed * 1103515245 + 12345, 2147483647)
+	return float(value & 65535) / 32767.5 - 1.0
 
 
 func _play(cue: StringName, pitch: float = 1.0, volume_db: float = 0.0) -> void:
