@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://features/hud/race_hud.gd" id="1_hud"]
+
+[node name="RaceHud" type="CanvasLayer"]
+unique_name_in_owner = true
+layer = 10
+script = ExtResource("1_hud")
+

@@ -1,0 +1,18 @@
+# Godot generated files
+.godot/
+*.tmp
+
+# Local editor and engine tools
+tools/
+
+# Exported builds
+build/
+dist/
+artifacts/
+web/game/*.import
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

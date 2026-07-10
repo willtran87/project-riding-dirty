@@ -1,0 +1,47 @@
+; Engine configuration file.
+; Edit through the Godot editor where possible.
+
+config_version=5
+
+[application]
+
+config/name="Riding Dirty"
+config/description="A stylized arcade-physics dirt-bike time trial."
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[autoload]
+
+EventBus="*res://common/event_bus.gd"
+InputRouter="*res://common/input_router.gd"
+WebPlatform="*res://common/web_platform.gd"
+Profile="*res://common/player_profile.gd"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
+
+[audio]
+
+general/default_playback_type.web=1
+
+[physics]
+
+common/physics_ticks_per_second=60
+3d/default_gravity=19.6
+
+[layer_names]
+
+3d_physics/layer_1="Player"
+3d_physics/layer_2="World"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.075, 0.105, 0.14, 1)

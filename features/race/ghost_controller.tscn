@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://features/race/ghost_controller.gd" id="1_ghost"]
+
+[node name="GhostController" type="Node3D"]
+unique_name_in_owner = true
+script = ExtResource("1_ghost")
+

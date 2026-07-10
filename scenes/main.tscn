@@ -1,0 +1,41 @@
+[gd_scene load_steps=12 format=3]
+
+[ext_resource type="Script" path="res://scenes/main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://levels/quarry/quarry.tscn" id="2_quarry"]
+[ext_resource type="PackedScene" path="res://entities/bike/bike.tscn" id="3_bike"]
+[ext_resource type="PackedScene" path="res://features/camera/chase_camera.tscn" id="4_camera"]
+[ext_resource type="PackedScene" path="res://features/race/race_controller.tscn" id="5_race"]
+[ext_resource type="PackedScene" path="res://features/race/ghost_controller.tscn" id="6_ghost"]
+[ext_resource type="PackedScene" path="res://features/hud/race_hud.tscn" id="7_hud"]
+[ext_resource type="Script" path="res://features/testing/runtime_smoke_test.gd" id="8_smoke"]
+[ext_resource type="PackedScene" path="res://features/garage/garage_ui.tscn" id="9_garage"]
+[ext_resource type="PackedScene" path="res://features/freestyle/freestyle_controller.tscn" id="10_freestyle"]
+[ext_resource type="PackedScene" path="res://features/discovery/discovery_controller.tscn" id="11_discovery"]
+[ext_resource type="PackedScene" path="res://levels/pine_ridge/pine_ridge.tscn" id="12_pine"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="Quarry" parent="." instance=ExtResource("2_quarry")]
+
+[node name="PineRidge" parent="." instance=ExtResource("12_pine")]
+
+[node name="Bike" parent="." instance=ExtResource("3_bike")]
+
+[node name="ChaseCamera" parent="." instance=ExtResource("4_camera")]
+
+[node name="RaceController" parent="." instance=ExtResource("5_race")]
+
+[node name="GhostController" parent="." instance=ExtResource("6_ghost")]
+
+[node name="RaceHud" parent="." instance=ExtResource("7_hud")]
+
+[node name="RuntimeSmokeTest" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("8_smoke")
+
+[node name="GarageUi" parent="." instance=ExtResource("9_garage")]
+
+[node name="FreestyleController" parent="." instance=ExtResource("10_freestyle")]
+
+[node name="DiscoveryController" parent="." instance=ExtResource("11_discovery")]

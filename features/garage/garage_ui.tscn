@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://features/garage/garage_ui.gd" id="1_garage"]
+
+[node name="GarageUi" type="CanvasLayer"]
+unique_name_in_owner = true
+layer = 20
+script = ExtResource("1_garage")
+

@@ -1,0 +1,120 @@
+extends Node3D
+## Composes the vertical slice and mediates scene-local systems.
+
+@onready var _bike: DirtBikeController = %Bike
+@onready var _camera: ChaseCamera = %ChaseCamera
+@onready var _race: RaceController = %RaceController
+@onready var _ghost: GhostController = %GhostController
+@onready var _hud: RaceHud = %RaceHud
+@onready var _smoke_test: Node = %RuntimeSmokeTest
+@onready var _garage: GarageUi = %GarageUi
+@onready var _freestyle: FreestyleController = %FreestyleController
+@onready var _discovery: DiscoveryController = %DiscoveryController
+
+var _paused: bool = false
+var _current_activity: StringName = &"CIRCUIT"
+
+
+func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	_camera.target = _bike
+	_camera.snap_to_target()
+	_bike.telemetry_updated.connect(_hud.update_telemetry)
+	_bike.landed.connect(_camera.apply_landing_kick)
+	_bike.landed.connect(_on_bike_landed)
+	_race.time_updated.connect(_hud.update_race_time)
+	_freestyle.hud_updated.connect(_hud.update_freestyle)
+	_discovery.hud_updated.connect(_hud.update_discovery)
+	_garage.ride_requested.connect(_on_ride_requested)
+	_race.initialize(_bike, _ghost)
+	_freestyle.initialize(_bike, _ghost)
+	_discovery.initialize(_bike, _ghost)
+	if &"--smoke-test" in OS.get_cmdline_user_args():
+		_on_ride_requested(Profile.current_setup, _get_requested_test_activity())
+	else:
+		_garage.show_garage()
+	_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed(InputRouter.PAUSE) and not event.is_echo():
+		_toggle_pause()
+		get_viewport().set_input_as_handled()
+		return
+	if _garage.is_open():
+		return
+	if _paused:
+		return
+	if event.is_action_pressed(InputRouter.OPEN_GARAGE) and not event.is_echo():
+		_stop_all_activities()
+		_garage.show_garage()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed(InputRouter.RESET_BIKE) and not event.is_echo():
+		_bike.reset_to_safe_position()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed(InputRouter.RESTART_RUN) and not event.is_echo():
+		_restart_current_activity()
+		get_viewport().set_input_as_handled()
+
+
+func _toggle_pause() -> void:
+	_paused = not _paused
+	get_tree().paused = _paused
+	EventBus.game_paused.emit(_paused)
+
+
+func _on_ride_requested(setup: StringName, activity: StringName) -> void:
+	_stop_all_activities()
+	_current_activity = activity
+	Profile.set_current_setup(setup)
+	_bike.apply_setup(setup)
+	_bike.apply_condition(Profile.bike_condition)
+	match activity:
+		&"PINE_ENDURO":
+			_race.configure_track(&"PINE")
+			_race.reset_run()
+		&"FREESTYLE":
+			_freestyle.start_session()
+		&"DISCOVERY":
+			_discovery.start_hunt()
+		_:
+			_race.configure_track(&"QUARRY")
+			_race.reset_run()
+	_camera.snap_to_target()
+
+
+func _restart_current_activity() -> void:
+	match _current_activity:
+		&"PINE_ENDURO":
+			_race.reset_run()
+		&"FREESTYLE":
+			_freestyle.start_session()
+		&"DISCOVERY":
+			_discovery.start_hunt()
+		_:
+			_race.reset_run()
+	_camera.snap_to_target()
+
+
+func _stop_all_activities() -> void:
+	_race.enter_waiting()
+	_freestyle.enter_waiting()
+	_discovery.enter_waiting()
+
+
+func _get_requested_test_activity() -> StringName:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--activity="):
+			var requested := StringName(argument.trim_prefix("--activity=").to_upper())
+			if requested in [&"CIRCUIT", &"FREESTYLE", &"DISCOVERY", &"PINE_ENDURO"]:
+				return requested
+	return &"CIRCUIT"
+
+
+func _on_bike_landed(intensity: float) -> void:
+	if &"--smoke-test" in OS.get_cmdline_user_args() or intensity <= 0.72:
+		return
+	var damage := maxi(int(ceil((intensity - 0.72) * 18.0)), 1)
+	Profile.apply_bike_damage(damage)
+	_bike.apply_condition(Profile.bike_condition)
