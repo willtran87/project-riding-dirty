@@ -2,6 +2,10 @@
 
 *Riding Dirty* is a stylized 3D dirt-bike game built with Godot. The current build is a playable quarry time-trial vertical slice focused on responsive handling, jumps, recoverable mistakes, course mastery, medals, and a personal-best ghost.
 
+## Play online
+
+[Play Riding Dirty in your browser](https://willtran87.github.io/project-riding-dirty/)
+
 ## Run the game
 
 The project includes a locally ignored portable Godot editor under `tools/godot-4.7/` when developed in the original workspace.
