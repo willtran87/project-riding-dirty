@@ -184,7 +184,10 @@ func _render_base_layer(beat: float, seconds_per_beat: float, sample_index: int)
 		var bass_hz := _midi_to_hz(bass_note)
 		var bass_time := half_phase * seconds_per_beat * 0.5
 		var bass_envelope := minf(half_phase * 18.0, 1.0) * pow(1.0 - half_phase, 0.32)
-		bass = (_pulse(bass_time * bass_hz, 0.44) * 0.72 + sin(bass_time * bass_hz * TAU) * 0.28) * bass_envelope * 0.24
+		var bass_fundamental := sin(bass_time * bass_hz * TAU)
+		var bass_sub := sin(bass_time * bass_hz * 0.5 * TAU)
+		var bass_body := tanh(bass_fundamental * 1.8)
+		bass = (bass_fundamental * 0.56 + bass_sub * 0.30 + bass_body * 0.14) * bass_envelope * 0.34
 
 	var quarter_phase := fmod(beat * 4.0, 1.0)
 	var eighth_index := posmod(int(floor(beat * 2.0)), 8)
@@ -193,18 +196,18 @@ func _render_base_layer(beat: float, seconds_per_beat: float, sample_index: int)
 	var kick := 0.0
 	if kick_pattern:
 		var kick_time := eighth_phase * seconds_per_beat * 0.5
-		var kick_phase := 48.0 * kick_time + 12.0 * (1.0 - exp(-kick_time * 18.0))
-		kick = sin(kick_phase * TAU) * exp(-eighth_phase * 7.5) * 0.42
+		var kick_phase := 42.0 * kick_time + 5.0 * (1.0 - exp(-kick_time * 18.0))
+		kick = sin(kick_phase * TAU) * exp(-eighth_phase * 7.0) * 0.50
 
 	var beat_index := posmod(int(floor(beat)), 4)
 	var beat_phase := fmod(beat, 1.0)
 	var snare := 0.0
 	if beat_index in [1, 3]:
 		var noise := _chip_noise(sample_index)
-		snare = (noise * 0.78 + sin(beat_phase * seconds_per_beat * 168.0 * TAU) * 0.22) * exp(-beat_phase * 13.0) * 0.24
+		snare = (noise * 0.52 + sin(beat_phase * seconds_per_beat * 142.0 * TAU) * 0.48) * exp(-beat_phase * 13.0) * 0.17
 
 	var hat_noise := _chip_noise(sample_index / 3)
-	var hat := hat_noise * exp(-quarter_phase * 22.0) * (0.065 if eighth_index % 2 == 0 else 0.045)
+	var hat := hat_noise * exp(-quarter_phase * 24.0) * (0.028 if eighth_index % 2 == 0 else 0.018)
 	return bass + kick + snare + hat
 
 
@@ -214,11 +217,12 @@ func _render_drive_layer(beat: float, seconds_per_beat: float) -> float:
 	var lead_note: int = LEAD_PATTERN[half_step]
 	var lead := 0.0
 	if lead_note >= 0:
-		var lead_hz := _midi_to_hz(lead_note)
+		var lead_hz := _midi_to_hz(lead_note - 12)
 		var lead_time := half_phase * seconds_per_beat * 0.5
 		var lead_envelope := minf(half_phase * 24.0, 1.0) * pow(1.0 - half_phase, 0.6)
 		var vibrato := sin(lead_time * 6.1 * TAU) * 0.0035
-		lead = (_pulse(lead_time * lead_hz + vibrato, 0.375) * 0.72 + sin(lead_time * lead_hz * TAU) * 0.28) * lead_envelope * 0.25
+		var lead_phase := lead_time * lead_hz + vibrato
+		lead = (sin(lead_phase * TAU) * 0.62 + _triangle(lead_phase) * 0.28 + _pulse(lead_phase, 0.5) * 0.10) * lead_envelope * 0.23
 
 	var sixteenth_step := posmod(int(floor(beat * 4.0)), 16)
 	var sixteenth_phase := fmod(beat * 4.0, 1.0)
@@ -230,7 +234,7 @@ func _render_drive_layer(beat: float, seconds_per_beat: float) -> float:
 	var arp_hz := _midi_to_hz(arp_note)
 	var arp_time := sixteenth_phase * seconds_per_beat * 0.25
 	var arp_envelope := pow(1.0 - sixteenth_phase, 1.5)
-	var arp := _pulse(arp_time * arp_hz, 0.5) * arp_envelope * 0.04
+	var arp := (_triangle(arp_time * arp_hz) * 0.8 + sin(arp_time * arp_hz * TAU) * 0.2) * arp_envelope * 0.028
 	return lead + arp
 
 
@@ -245,6 +249,10 @@ func _pulse(phase: float, duty: float) -> float:
 func _chip_noise(seed: int) -> float:
 	var value := posmod(seed * 1103515245 + 12345, 2147483647)
 	return float(value & 65535) / 32767.5 - 1.0
+func _triangle(phase: float) -> float:
+	return 1.0 - 4.0 * absf(fmod(phase, 1.0) - 0.5)
+
+
 
 
 func _play(cue: StringName, pitch: float = 1.0, volume_db: float = 0.0) -> void:
@@ -328,3 +336,7 @@ func _ensure_music_bus() -> void:
 	AudioServer.add_bus()
 	var bus_index := AudioServer.bus_count - 1
 	AudioServer.set_bus_name(bus_index, &"Music")
+	var low_pass := AudioEffectLowPassFilter.new()
+	low_pass.cutoff_hz = 6200.0
+	low_pass.resonance = 0.18
+	AudioServer.add_bus_effect(bus_index, low_pass)
