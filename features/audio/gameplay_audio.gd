@@ -4,7 +4,7 @@ class_name GameplayAudio
 
 const MIX_RATE := 22050
 const VOICE_COUNT := 5
-const MUSIC_BPM := 116.0
+const MUSIC_BPM := 143.0
 const MUSIC_BEATS := 16.0
 
 # Original D-minor patterns. The supplied reference informed the broad idea of a
