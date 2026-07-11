@@ -6,6 +6,9 @@ const MIX_RATE := 22050
 const VOICE_COUNT := 5
 const MUSIC_BPM := 143.0
 const MUSIC_BEATS := 16.0
+const MUSIC_BASE_DB := -10.5
+const MUSIC_MELODY_IDLE_DB := -12.0
+const MUSIC_MELODY_FLOW_DB := -3.5
 
 # Original D-minor patterns. The supplied reference informed the broad idea of a
 # low minor-key hook; its pitches, rhythm, harmony, and contour were rewritten.
@@ -16,10 +19,10 @@ const BASS_PATTERN := [
 	33, -1, 40, 33, 36, 40, 45, -1,
 ]
 const LEAD_PATTERN := [
-	-1, 69, 74, 77, 72, -1, 69, 67,
-	69, 72, 74, -1, 81, 79, 77, 72,
-	-1, 67, 69, 72, 77, 74, 72, 69,
-	65, 69, 72, 74, 72, 69, 67, -1,
+	-1, 69, 74, 77, 76, 74, 69, 72, # D minor
+	67, 72, 76, 79, 76, 74, 72, 67, # C major
+	65, 70, 74, 77, 74, 72, 70, 65, # B-flat major
+	64, 69, 73, 76, 73, 71, 69, -1, # A major, resolving to A
 ]
 const CHORD_ROOTS := [50, 48, 46, 45] # Dm, C, Bb, A
 const CHORD_QUALITIES := [&"MINOR", &"MAJOR", &"MAJOR", &"MAJOR"]
@@ -133,14 +136,18 @@ func _build_music() -> void:
 	_music_base.name = "BaseMusic"
 	_music_base.bus = &"Music"
 	_music_base.stream = _make_music_loop(&"BASE")
-	_music_base.volume_db = -15.5
+	_music_base.volume_db = MUSIC_BASE_DB
 	add_child(_music_base)
 	_music_drive = AudioStreamPlayer.new()
 	_music_drive.name = "DriveMusic"
 	_music_drive.bus = &"Music"
 	_music_drive.stream = _make_music_loop(&"DRIVE")
-	_music_drive.volume_db = -60.0
+	_music_drive.volume_db = MUSIC_MELODY_IDLE_DB
 	add_child(_music_drive)
+	# Start in the garage so clicking the game provides an immediate audio check.
+	# Both identically sized loops begin on the same frame and stay synchronized.
+	_music_base.play()
+	_music_drive.play()
 
 
 func _make_music_loop(layer: StringName) -> AudioStreamWAV:
@@ -211,7 +218,7 @@ func _render_drive_layer(beat: float, seconds_per_beat: float) -> float:
 		var lead_time := half_phase * seconds_per_beat * 0.5
 		var lead_envelope := minf(half_phase * 24.0, 1.0) * pow(1.0 - half_phase, 0.6)
 		var vibrato := sin(lead_time * 6.1 * TAU) * 0.0035
-		lead = (_pulse(lead_time * lead_hz + vibrato, 0.28) * 0.76 + _pulse(lead_time * lead_hz * 2.0, 0.5) * 0.24) * lead_envelope * 0.20
+		lead = (_pulse(lead_time * lead_hz + vibrato, 0.375) * 0.72 + sin(lead_time * lead_hz * TAU) * 0.28) * lead_envelope * 0.25
 
 	var sixteenth_step := posmod(int(floor(beat * 4.0)), 16)
 	var sixteenth_phase := fmod(beat * 4.0, 1.0)
@@ -223,7 +230,7 @@ func _render_drive_layer(beat: float, seconds_per_beat: float) -> float:
 	var arp_hz := _midi_to_hz(arp_note)
 	var arp_time := sixteenth_phase * seconds_per_beat * 0.25
 	var arp_envelope := pow(1.0 - sixteenth_phase, 1.5)
-	var arp := _pulse(arp_time * arp_hz, 0.5) * arp_envelope * 0.075
+	var arp := _pulse(arp_time * arp_hz, 0.5) * arp_envelope * 0.04
 	return lead + arp
 
 
@@ -287,7 +294,8 @@ func _on_activity_started(_activity: StringName) -> void:
 func _on_line_updated(_label: String, chain: int, _multiplier: float, _score: int, _time_left: float) -> void:
 	if _music_drive == null:
 		return
-	var target_db := -60.0 if chain <= 0 else lerpf(-32.0, -11.0, clampf(float(chain - 1) / 5.0, 0.0, 1.0))
+	var flow_mix := clampf(float(chain) / 6.0, 0.0, 1.0)
+	var target_db := lerpf(MUSIC_MELODY_IDLE_DB, MUSIC_MELODY_FLOW_DB, flow_mix)
 	if _music_tween != null:
 		_music_tween.kill()
 	_music_tween = create_tween()

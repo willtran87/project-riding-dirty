@@ -66,7 +66,7 @@ Clean landings after at least 0.45 seconds of airtime earn **Flow**. Spend 35 Fl
 - **Authored Rook rival:** Race events include an amber, collision-free Rook rider following the target racing line, live checkpoint comparison, post-run character callouts, and sector analysis.
 - **Alternate lines:** Quarry and Pine Ridge now include narrow shortcuts, transfer kickers, creek skips, ridge threads, distinctive mud/gravel/rock behavior, and reusable breakaway props.
 - **Handling assists:** Assisted, Sport, and Pro modes change aerial self-righting. Preload input includes a short buffer and takeoff grace window.
-- **Reactive presentation:** The original procedural chiptune “Dust Circuit” adds its lead and arpeggio layers as Flow rises; boost streaks, pooled skid marks, district weather and grading, landing debris, haptics, animated rider posture, trackside spectators, and non-blocking cinematic camera framing respond to the ride.
+- **Reactive presentation:** The original 143 BPM procedural chiptune “Dust Circuit” previews in the garage and raises its lead and arpeggio layers as Flow rises; boost streaks, pooled skid marks, district weather and grading, landing debris, haptics, animated rider posture, trackside spectators, and non-blocking cinematic camera framing respond to the ride.
 
 ## Tour progression
 
