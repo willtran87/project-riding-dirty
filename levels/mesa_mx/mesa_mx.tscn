@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://levels/mesa_mx/mesa_mx_builder.gd" id="1_builder"]
+
+[node name="MesaMX" type="Node3D"]
+position = Vector3(-1500, 0, 0)
+script = ExtResource("1_builder")

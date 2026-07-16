@@ -57,6 +57,7 @@ func start_hunt() -> void:
 	collected_count = 0
 	_start_usec = Time.get_ticks_usec()
 	bike.respawn_at(SPAWN_TRANSFORM)
+	bike.set_motion_locked(false)
 	bike.set_controls_enabled(true)
 	ghost.cancel_run()
 	_spawn_pickups()

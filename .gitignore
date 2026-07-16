@@ -3,12 +3,23 @@
 *.tmp
 
 # Local editor and engine tools
-tools/
+tools/*
+!tools/build_web_release.py
+!tools/run_quality_gate.py
+!tools/bake_runtime_audio_assets.gd
+!tools/bake_runtime_audio_assets.gd.uid
+!tools/bake_quarry_music_wav.mjs
+
+# Vendor reference builds and recovered source
+Moto Tykes v0.1/
+Moto Tykes v0.1_recovered/
 
 # Exported builds
 build/
 dist/
-artifacts/
+artifacts/*
+!artifacts/.gdignore
+.codex_tmp/
 web/game/*.import
 
 # OS/editor noise
@@ -16,3 +27,7 @@ web/game/*.import
 Thumbs.db
 .vscode/
 .idea/
+
+# Python delivery-test caches
+__pycache__/
+*.py[cod]

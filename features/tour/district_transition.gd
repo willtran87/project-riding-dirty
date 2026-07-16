@@ -16,10 +16,12 @@ var _description: Label
 var _rival: Label
 var _route: Label
 var _active_tween: Tween
+var _reduced_motion: bool = false
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	add_to_group(&"reduced_motion_consumers")
 	_build_ui()
 	visible = false
 
@@ -28,6 +30,12 @@ func cover(activity: StringName) -> void:
 	_kill_active_tween()
 	_configure(activity)
 	visible = true
+	if _reduced_motion:
+		_apply_covered_state()
+		# Give the static briefing one rendered frame before the caller starts
+		# streaming the district behind its opaque cover.
+		await get_tree().process_frame
+		return
 	_blackout.modulate.a = 0.0
 	_sweep.position.x = -CANVAS_WIDTH
 	_accent.scale.x = 0.0
@@ -54,6 +62,10 @@ func cover(activity: StringName) -> void:
 
 func reveal() -> void:
 	_kill_active_tween()
+	if _reduced_motion:
+		_apply_revealed_state()
+		await get_tree().process_frame
+		return
 	_active_tween = create_tween().bind_node(self)
 	_active_tween.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
 	_active_tween.set_parallel(true)
@@ -65,6 +77,53 @@ func reveal() -> void:
 	_active_tween.tween_property(_sweep, "position:x", CANVAS_WIDTH, 0.46).set_delay(0.08).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	_active_tween.tween_property(_blackout, "modulate:a", 0.0, 0.34).set_delay(0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	await _active_tween.finished
+	visible = false
+
+
+func set_reduced_motion(enabled: bool) -> void:
+	_reduced_motion = enabled
+
+
+func is_reduced_motion_enabled() -> bool:
+	return _reduced_motion
+
+
+func get_motion_accessibility_snapshot() -> Dictionary:
+	return {
+		&"reduced_motion": _reduced_motion,
+		&"visible": visible,
+		&"active_tween": _active_tween != null and _active_tween.is_valid(),
+		&"blackout_alpha": _blackout.modulate.a if _blackout != null else 0.0,
+		&"sweep_x": _sweep.position.x if _sweep != null else 0.0,
+		&"accent_scale_x": _accent.scale.x if _accent != null else 0.0,
+		&"title_y": _title.position.y if _title != null else 0.0,
+		&"title": _title.text if _title != null else "",
+		&"briefing_visible": _title != null and _title.modulate.a >= 0.99,
+	}
+
+
+func _apply_covered_state() -> void:
+	_blackout.modulate.a = 1.0
+	_sweep.position.x = 0.0
+	_accent.scale.x = 1.0
+	_kicker.modulate.a = 1.0
+	_title.modulate.a = 1.0
+	_description.modulate.a = 1.0
+	_rival.modulate.a = 1.0
+	_route.modulate.a = 1.0
+	_title.position.y = 350.0
+	_active_tween = null
+
+
+func _apply_revealed_state() -> void:
+	_kicker.modulate.a = 0.0
+	_title.modulate.a = 0.0
+	_description.modulate.a = 0.0
+	_rival.modulate.a = 0.0
+	_route.modulate.a = 0.0
+	_sweep.position.x = CANVAS_WIDTH
+	_blackout.modulate.a = 0.0
+	_active_tween = null
 	visible = false
 
 
@@ -113,35 +172,99 @@ func _build_ui() -> void:
 
 
 func _configure(activity: StringName) -> void:
-	match activity:
-		&"PINE_ENDURO":
-			_kicker.text = "DISTRICT 02   //   PINE RIDGE"
-			_title.text = "TIMBERLINE ENDURO"
-			_description.text = "ROOTS, RAVINES, CREEK WATER — COMMIT EARLY AND KEEP THE BIKE LIGHT"
-			_rival.text = "ROOK'S TARGET   01:04.000"
-			_route.text = "7 GATES   •   TECHNICAL TRAIL   •   PERSONAL-BEST GHOST"
-			_set_accent(Color("9fc744"))
-		&"FREESTYLE":
-			_kicker.text = "DISTRICT 01   //   RED MESA"
-			_title.text = "QUARRY FREESTYLE"
-			_description.text = "SIXTY SECONDS. LINK CLEAN AIR AND MAKE EVERY LANDING COUNT."
-			_rival.text = "CREW TARGET   007000 POINTS"
-			_route.text = "AIRTIME   •   ROTATION   •   CLEAN-LANDING COMBOS"
-			_set_accent(Color("56d6ff"))
-		&"DISCOVERY":
-			_kicker.text = "DISTRICT 01   //   RED MESA"
-			_title.text = "SALVAGE RUN"
-			_description.text = "FOLLOW THE NEEDLE, READ THE LAND, BRING ALL SIX CACHES HOME."
-			_rival.text = "CREW TARGET   01:20.000"
-			_route.text = "6 CACHES   •   OPEN ROUTE   •   NO MAP"
-			_set_accent(Color("d8b35a"))
-		_:
-			_kicker.text = "DISTRICT 01   //   RED MESA"
-			_title.text = "QUARRY CIRCUIT"
-			_description.text = "SIX GATES. ONE CLEAN LAP. FIND THE LINE THAT ROOK MISSED."
-			_rival.text = "ROOK'S TARGET   00:52.000"
-			_route.text = "6 GATES   •   SPRINT FORMAT   •   PERSONAL-BEST GHOST"
-			_set_accent(AMBER)
+	var briefing := get_briefing_snapshot(activity)
+	_kicker.text = str(briefing[&"kicker"])
+	_title.text = str(briefing[&"title"])
+	_description.text = str(briefing[&"description"])
+	_rival.text = str(briefing[&"target"])
+	_route.text = str(briefing[&"route"])
+	_set_accent(briefing[&"accent"] as Color)
+
+
+func get_briefing_snapshot(activity: StringName) -> Dictionary:
+	var event := RaceEventCatalog.get_event(activity)
+	if activity == &"FREESTYLE":
+		return {
+			&"event_id": activity, &"track_id": CourseCatalog.QUARRY_ID,
+			&"kicker": "DISTRICT 01   //   QUARRY WORKS",
+			&"title": str(event.get(&"display_name", "QUARRY FREESTYLE")),
+			&"description": str(event.get(&"description", "Link clean airtime and landings.")).to_upper(),
+			&"target": "CREW TARGET   007000 POINTS",
+			&"route": str(event.get(&"meta", "60 SEC  //  SCORE ATTACK")),
+			&"format": &"FREESTYLE", &"laps": 0, &"weather": &"SUNSET",
+			&"accent": Color("56d6ff"),
+		}
+	if activity == &"DISCOVERY":
+		return {
+			&"event_id": activity, &"track_id": CourseCatalog.QUARRY_ID,
+			&"kicker": "DISTRICT 01   //   QUARRY WORKS",
+			&"title": str(event.get(&"display_name", "SALVAGE HUNT")),
+			&"description": str(event.get(&"description", "Bring all six caches home.")).to_upper(),
+			&"target": "CREW TARGET   01:20.000",
+			&"route": str(event.get(&"meta", "6 CACHES  //  EXPLORATION")),
+			&"format": &"DISCOVERY", &"laps": 0, &"weather": &"MIST",
+			&"accent": Color("d8b35a"),
+		}
+
+	var session := RaceEventCatalog.get_session_config(activity)
+	var track_name := "QUARRY WORKS"
+	var district_number := "01"
+	var accent := AMBER
+	if session.track_id == CourseCatalog.PINE_ID:
+		track_name = "PINE RIDGE"
+		district_number = "02"
+		accent = Color("9fc744")
+	elif session.track_id == CourseCatalog.MESA_MX_ID:
+		track_name = "RED MESA MX"
+		district_number = "03"
+		accent = Color("e25532")
+	if session.weather in [&"NIGHT", &"STORM", &"WET"]:
+		accent = Color("56d6ff")
+	elif session.weather in [&"DUSK", &"SUNSET"]:
+		accent = Color("ff8d4a")
+	var target_usec := int(session.medal_times_usec.get(&"gold", 0))
+	var target_prefix := "ROOK TARGET" if bool(session.rules.get(&"rival_only", false)) or session.format == &"RIVAL" else "GOLD TARGET"
+	var lap_label := "%d LAP%s" % [session.laps, "S" if session.laps != 1 else ""]
+	var difficulty_mode := StringName(session.rules.get(&"player_difficulty_mode", &"LOCKED"))
+	var difficulty_offset := int(session.rules.get(&"player_difficulty_offset", 0))
+	var difficulty_locked := not session.rules.has(&"player_difficulty_mode")
+	var difficulty_label := "RACE DIFFICULTY %s" % String(difficulty_mode)
+	if RaceEventCatalog.is_challenge_event(activity):
+		difficulty_label = "CHALLENGE DIFFICULTY LOCKED"
+	elif activity == &"ACADEMY":
+		difficulty_label = "ACADEMY GRADING LOCKED"
+	elif difficulty_locked:
+		difficulty_label = "AI DIFFICULTY FIXED"
+	return {
+		&"event_id": activity,
+		&"track_id": session.track_id,
+		&"kicker": "DISTRICT %s   //   %s" % [district_number, track_name],
+		&"title": session.display_name,
+		&"description": str(event.get(&"description", "Complete the marked race session.")).to_upper(),
+		&"target": "%s   %s" % [target_prefix, _format_time_usec(target_usec)],
+		&"route": "%s   //   %s   //   %s   //   %s   //   %s" % [
+			lap_label, String(session.format).replace("_", " "),
+			String(session.weather).replace("_", " "), str(event.get(&"meta", "FULL CLASSIFICATION")), difficulty_label,
+		],
+		&"format": session.format,
+		&"laps": session.laps,
+		&"weather": session.weather,
+		&"difficulty": session.difficulty,
+		&"difficulty_mode": difficulty_mode,
+		&"difficulty_offset": difficulty_offset,
+		&"difficulty_locked": difficulty_locked,
+		&"accent": accent,
+	}
+
+
+func _format_time_usec(time_usec: int) -> String:
+	if time_usec <= 0:
+		return "--:--.---"
+	var total_msec := time_usec / 1000
+	var minutes := total_msec / 60000
+	var seconds := (total_msec / 1000) % 60
+	var milliseconds := total_msec % 1000
+	return "%02d:%02d.%03d" % [minutes, seconds, milliseconds]
 
 
 func _set_accent(color: Color) -> void:

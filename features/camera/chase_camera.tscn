@@ -9,7 +9,6 @@ script = ExtResource("1_camera")
 [node name="Camera3D" type="Camera3D" parent="."]
 unique_name_in_owner = true
 current = true
-fov = 68.0
+fov = 78.0
 near = 0.08
-far = 240.0
-
+far = 620.0

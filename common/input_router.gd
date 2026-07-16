@@ -11,6 +11,7 @@ const LEAN_FORWARD: StringName = &"lean_forward"
 const LEAN_BACK: StringName = &"lean_back"
 const PRELOAD: StringName = &"preload"
 const FLOW_BOOST: StringName = &"flow_boost"
+const RACECRAFT: StringName = &"racecraft_technique"
 const RESET_BIKE: StringName = &"reset_bike"
 const RESTART_RUN: StringName = &"restart_run"
 const PAUSE: StringName = &"pause_game"
@@ -22,8 +23,17 @@ const EVENT_PREVIOUS: StringName = &"event_previous"
 const EVENT_NEXT: StringName = &"event_next"
 const REPAIR_BIKE: StringName = &"repair_bike"
 const TOGGLE_ASSIST: StringName = &"toggle_assist"
+const OPEN_SETTINGS: StringName = &"open_settings"
+const TOGGLE_REPLAY: StringName = &"toggle_replay"
+const TOGGLE_PHOTO_MODE: StringName = &"toggle_photo_mode"
+const SPECTATOR_NEXT: StringName = &"spectator_next"
 
 var using_gamepad: bool = false
+var steering_deadzone: float = 0.12
+var throttle_deadzone: float = 0.05
+var brake_deadzone: float = 0.05
+var steering_sensitivity: float = 1.0
+var steering_curve: float = 1.35
 
 
 func _ready() -> void:
@@ -40,15 +50,29 @@ func _input(event: InputEvent) -> void:
 
 
 func get_throttle() -> float:
-	return Input.get_action_strength(THROTTLE)
+	return _shape_trigger(Input.get_action_strength(THROTTLE), throttle_deadzone)
 
 
 func get_brake() -> float:
-	return Input.get_action_strength(BRAKE)
+	return _shape_trigger(Input.get_action_strength(BRAKE), brake_deadzone)
 
 
 func get_steer() -> float:
-	return Input.get_axis(STEER_LEFT, STEER_RIGHT)
+	var raw := Input.get_axis(STEER_LEFT, STEER_RIGHT)
+	var magnitude := _shape_trigger(absf(raw), steering_deadzone)
+	return signf(raw) * clampf(pow(magnitude, steering_curve) * steering_sensitivity, 0.0, 1.0)
+
+
+func configure_controls(values: Dictionary) -> void:
+	steering_deadzone = clampf(float(values.get("steering_deadzone", steering_deadzone)), 0.0, 0.5)
+	throttle_deadzone = clampf(float(values.get("throttle_deadzone", throttle_deadzone)), 0.0, 0.5)
+	brake_deadzone = clampf(float(values.get("brake_deadzone", brake_deadzone)), 0.0, 0.5)
+	steering_sensitivity = clampf(float(values.get("steering_sensitivity", steering_sensitivity)), 0.25, 3.0)
+	steering_curve = clampf(float(values.get("steering_curve", steering_curve)), 0.5, 3.0)
+	InputMap.action_set_deadzone(STEER_LEFT, steering_deadzone)
+	InputMap.action_set_deadzone(STEER_RIGHT, steering_deadzone)
+	InputMap.action_set_deadzone(THROTTLE, throttle_deadzone)
+	InputMap.action_set_deadzone(BRAKE, brake_deadzone)
 
 
 func get_lean() -> float:
@@ -65,6 +89,18 @@ func is_preload_just_released() -> bool:
 
 func is_flow_boost_just_pressed() -> bool:
 	return Input.is_action_just_pressed(FLOW_BOOST)
+
+
+func is_flow_boost_pressed() -> bool:
+	return Input.is_action_pressed(FLOW_BOOST)
+
+
+func is_racecraft_just_pressed() -> bool:
+	return Input.is_action_just_pressed(RACECRAFT)
+
+
+func is_racecraft_pressed() -> bool:
+	return Input.is_action_pressed(RACECRAFT)
 
 
 func _register_actions() -> void:
@@ -87,6 +123,8 @@ func _register_actions() -> void:
 	_add_button(PRELOAD, JOY_BUTTON_A)
 	_add_key(FLOW_BOOST, KEY_SHIFT)
 	_add_button(FLOW_BOOST, JOY_BUTTON_LEFT_SHOULDER)
+	_add_key(RACECRAFT, KEY_C)
+	_add_button(RACECRAFT, JOY_BUTTON_RIGHT_SHOULDER)
 	_add_key(RESET_BIKE, KEY_R)
 	_add_button(RESET_BIKE, JOY_BUTTON_Y)
 	_add_key(RESTART_RUN, KEY_ENTER)
@@ -113,6 +151,12 @@ func _register_actions() -> void:
 	_add_button(REPAIR_BIKE, JOY_BUTTON_RIGHT_SHOULDER)
 	_add_key(TOGGLE_ASSIST, KEY_H)
 	_add_button(TOGGLE_ASSIST, JOY_BUTTON_LEFT_STICK)
+	_add_key(OPEN_SETTINGS, KEY_F1)
+	_add_button(OPEN_SETTINGS, JOY_BUTTON_BACK)
+	_add_key(TOGGLE_REPLAY, KEY_V)
+	_add_key(TOGGLE_PHOTO_MODE, KEY_P)
+	_add_key(SPECTATOR_NEXT, KEY_TAB)
+	_add_button(SPECTATOR_NEXT, JOY_BUTTON_RIGHT_STICK)
 
 
 func _ensure_action(action: StringName, deadzone: float = 0.2) -> void:
@@ -140,3 +184,10 @@ func _add_axis(action: StringName, axis: JoyAxis, axis_value: float) -> void:
 	input_event.axis = axis
 	input_event.axis_value = axis_value
 	InputMap.action_add_event(action, input_event)
+
+
+func _shape_trigger(value: float, deadzone: float) -> float:
+	var magnitude := clampf(value, 0.0, 1.0)
+	if magnitude <= deadzone:
+		return 0.0
+	return clampf((magnitude - deadzone) / maxf(1.0 - deadzone, 0.001), 0.0, 1.0)

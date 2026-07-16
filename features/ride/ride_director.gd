@@ -10,29 +10,29 @@ signal feat_unlocked(title: String)
 
 const CHAIN_WINDOW := 4.5
 const ROUTES: Array[Dictionary] = [
-	{&"activity": &"CIRCUIT", &"name": "PIPE CUT", &"position": Vector3(-18.0, 1.2, -17.0), &"color": Color("56d6ff")},
-	{&"activity": &"CIRCUIT", &"name": "HIGH LINE", &"position": Vector3(44.0, 1.2, -18.0), &"color": Color("ffb52d")},
+	# Quarry route gates now reward committed main-line sections. Their former
+	# locations sat on removed optional branches and visually instructed riders
+	# to leave the contained course.
+	{&"activity": &"CIRCUIT", &"name": "CANYON CUT", &"position": Vector3(-228.5, 41.7, 28.0), &"yaw": 2.970, &"color": Color("56d6ff")},
+	{&"activity": &"CIRCUIT", &"name": "BENCH LINE", &"position": Vector3(77.5, 51.7, -217.5), &"yaw": 1.357, &"color": Color("ffb52d")},
 	{&"activity": &"FREESTYLE", &"name": "EXCAVATOR GAP", &"position": Vector3(-24.0, 1.2, -39.0), &"color": Color("56d6ff")},
 	{&"activity": &"FREESTYLE", &"name": "TABLE TRANSFER", &"position": Vector3(51.0, 1.2, 20.0), &"color": Color("ffb52d")},
 	{&"activity": &"DISCOVERY", &"name": "CLIFF CUT", &"position": Vector3(-47.0, 1.2, 11.0), &"color": Color("56d6ff")},
 	{&"activity": &"DISCOVERY", &"name": "SERVICE ROAD", &"position": Vector3(57.0, 1.2, -34.0), &"color": Color("ffb52d")},
-	{&"activity": &"PINE_ENDURO", &"name": "CREEK SKIP", &"position": Vector3(292.0, 1.2, 4.0), &"color": Color("56d6ff")},
-	{&"activity": &"PINE_ENDURO", &"name": "RIDGE THREAD", &"position": Vector3(240.0, 1.2, -39.0), &"color": Color("ffb52d")},
+	{&"activity": &"PINE_ENDURO", &"name": "CREEK SKIP", &"position": Vector3(1770.0, 39.2, 160.0), &"yaw": -2.737, &"color": Color("56d6ff")},
+	{&"activity": &"PINE_ENDURO", &"name": "RIDGE THREAD", &"position": Vector3(1370.0, 109.2, 35.0), &"yaw": 1.869, &"color": Color("ffb52d")},
 ]
 
 const NEAR_MISSES: Dictionary[StringName, Array] = {
-	&"CIRCUIT": [Vector3(-10.0, 0.8, 41.0), Vector3(57.0, 0.8, 5.0), Vector3(34.0, 0.8, -51.0)],
+	&"CIRCUIT": [Vector3(-222.0, 45.8, -10.0), Vector3(-98.0, 66.8, -143.0), Vector3(205.0, 40.3, -125.0)],
 	&"FREESTYLE": [Vector3(-11.0, 0.8, -4.0), Vector3(53.0, 0.8, 11.0), Vector3(-31.0, 0.8, -55.0)],
 	&"DISCOVERY": [Vector3(-56.0, 0.8, 25.0), Vector3(58.0, 0.8, 36.0), Vector3(4.0, 0.8, -64.0)],
-	&"PINE_ENDURO": [Vector3(229.0, 0.8, -20.0), Vector3(296.0, 0.8, -10.0), Vector3(250.0, 0.8, -52.0)],
+	&"PINE_ENDURO": [Vector3(1575.0, 55.8, 170.0), Vector3(1410.0, 100.8, -30.0), Vector3(1085.0, 42.8, -220.0)],
 }
 
 const SURFACES: Array[Dictionary] = [
-	{&"activity": &"CIRCUIT", &"surface": &"GRAVEL", &"position": Vector3(53.0, 0.12, 7.0), &"size": Vector3(13.0, 2.5, 23.0), &"color": Color(0.42, 0.4, 0.38, 0.42)},
 	{&"activity": &"FREESTYLE", &"surface": &"MUD", &"position": Vector3(-8.0, 0.12, -16.0), &"size": Vector3(18.0, 2.5, 18.0), &"color": Color(0.22, 0.13, 0.08, 0.52)},
 	{&"activity": &"DISCOVERY", &"surface": &"GRAVEL", &"position": Vector3(-48.0, 0.12, 10.0), &"size": Vector3(16.0, 2.5, 22.0), &"color": Color(0.42, 0.4, 0.38, 0.42)},
-	{&"activity": &"PINE_ENDURO", &"surface": &"MUD", &"position": Vector3(291.0, 0.12, 4.0), &"size": Vector3(30.0, 2.5, 12.0), &"color": Color(0.20, 0.15, 0.09, 0.58)},
-	{&"activity": &"PINE_ENDURO", &"surface": &"ROCK", &"position": Vector3(242.0, 0.12, -40.0), &"size": Vector3(20.0, 2.5, 16.0), &"color": Color(0.35, 0.38, 0.37, 0.44)},
 ]
 
 var _bike: DirtBikeController
@@ -53,6 +53,7 @@ var _contract_target: int = 2
 var _contract_complete: bool = false
 var _contract_id: String = ""
 var _no_reset: bool = true
+var _initial_prompt_time: float = 0.0
 
 
 func _ready() -> void:
@@ -67,6 +68,10 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not _active or _bike == null:
 		return
+	if _initial_prompt_time > 0.0:
+		_initial_prompt_time = maxf(_initial_prompt_time - delta, 0.0)
+		if _initial_prompt_time <= 0.0 and _chain == 0 and _line_score == 0:
+			line_updated.emit("", 0, 1.0, 0, 0.0)
 	if _chain_time > 0.0:
 		_chain_time = maxf(_chain_time - delta, 0.0)
 		if _chain_time <= 0.0:
@@ -95,12 +100,28 @@ func get_modifier() -> StringName:
 	return _modifier
 
 
+func register_competition_event(label: String, base_points: int, positive: bool) -> void:
+	if not _active or _activity not in RaceEventCatalog.RACE_EVENTS or not positive or base_points <= 0:
+		return
+	_register_line_event(label, base_points)
+
+
 func get_route_positions(activity: StringName) -> Array[Vector3]:
 	var positions: Array[Vector3] = []
 	for route: Dictionary in ROUTES:
 		if route.get(&"activity", &"NONE") == activity:
 			positions.append(route.get(&"position", Vector3.ZERO))
 	return positions
+
+
+func get_first_route_transform(activity: StringName) -> Transform3D:
+	for route: Dictionary in ROUTES:
+		if route.get(&"activity", &"NONE") != activity:
+			continue
+		var yaw := float(route.get(&"yaw", 0.0))
+		var direction := Vector3(sin(yaw), 0.0, cos(yaw)).normalized()
+		return Transform3D(Basis.looking_at(direction, Vector3.UP), route.get(&"position", Vector3.ZERO))
+	return Transform3D.IDENTITY
 
 
 func _on_activity_started(activity: StringName) -> void:
@@ -112,6 +133,7 @@ func _on_activity_started(activity: StringName) -> void:
 	_visited_routes.clear()
 	_near_miss_hits.clear()
 	_no_reset = true
+	_initial_prompt_time = 3.0
 	_select_daily_modifier()
 	_select_contract()
 	_set_route_visibility()
@@ -125,6 +147,7 @@ func _on_race_reset() -> void:
 	_active = false
 	_chain = 0
 	_chain_time = 0.0
+	_initial_prompt_time = 0.0
 	_set_route_visibility()
 	_set_surface_visibility()
 	if _bike != null:
@@ -245,6 +268,7 @@ func _build_route_gates() -> void:
 		var area := Area3D.new()
 		area.name = "RouteGate%02d" % route_index
 		area.position = route.get(&"position", Vector3.ZERO)
+		area.rotation.y = float(route.get(&"yaw", 0.0))
 		area.collision_layer = 0
 		area.collision_mask = 1
 		area.monitoring = true
