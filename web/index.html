@@ -8,7 +8,7 @@
   <title>Riding Dirty — Play</title>
   <link rel="icon" href="./game/index.icon.png" type="image/png">
   <link rel="apple-touch-icon" href="./game/index.apple-touch-icon.png">
-  <link rel="stylesheet" href="./styles.css?v=20260715-racecraft-v27">
+  <link rel="stylesheet" href="./styles.css?v=20260715-racecraft-v28">
   <script>
     (() => {
       if (!("serviceWorker" in navigator)) return;
@@ -50,7 +50,7 @@
         </span>
       </a>
       <div class="topbar-actions">
-        <span class="build-status"><i aria-hidden="true"></i> RACECRAFT TOUR &middot; V27</span>
+        <span class="build-status"><i aria-hidden="true"></i> RACECRAFT TOUR &middot; V28</span>
         <button class="icon-button" id="fullscreenButton" type="button" aria-label="Enter fullscreen">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
           <span>Fullscreen</span>
@@ -64,14 +64,14 @@
           <iframe
             id="gameFrame"
             title="Riding Dirty game"
-            data-src="./game/index.html?build=racecraft-v27"
+            data-src="./game/index.html?build=racecraft-v28"
             allow="autoplay; fullscreen; gamepad; cross-origin-isolated"
             allowfullscreen
           ></iframe>
 
           <div class="start-panel" id="startPanel">
             <div class="start-copy">
-              <span class="eyebrow">RACECRAFT TOUR &middot; V27</span>
+              <span class="eyebrow">RACECRAFT TOUR &middot; V28</span>
               <h1>Find your line.<br><em>Send it.</em></h1>
               <p>Start in the garage, choose your event, then chase a clean line across an eighteen-event championship tour.</p>
             </div>
@@ -80,7 +80,7 @@
               <b aria-hidden="true">→</b>
             </button>
             <p class="start-feedback" id="startFeedback" role="alert" hidden></p>
-            <p class="start-hint">GARAGE &rarr; CHOOSE EVENT &rarr; RIDE &nbsp;&middot;&nbsp; KEYBOARD OR GAMEPAD</p>
+            <p class="start-hint">GARAGE &rarr; CHOOSE EVENT &rarr; RIDE &nbsp;&middot;&nbsp; KEYBOARD, GAMEPAD, OR TOUCH</p>
           </div>
 
           <div class="loading-panel" id="loadingPanel" role="status" aria-live="polite" aria-busy="true" hidden>
@@ -89,10 +89,16 @@
             <progress id="loadingProgress" max="100" hidden></progress>
             <span>Loading the WebAssembly build…</span>
           </div>
+
+          <div class="orientation-notice" role="status" aria-live="polite">
+            <span aria-hidden="true">&#8635;</span>
+            <strong>ROTATE TO RIDE</strong>
+            <small>Riding controls need a landscape view.</small>
+          </div>
         </div>
         <div class="stage-footer">
           <span id="runtimeStatus" role="status" aria-live="polite">READY TO RIDE</span>
-          <span>Click the game once to enable audio</span>
+          <span>Tap or click the game once to enable audio</span>
         </div>
       </div>
 
@@ -110,6 +116,7 @@
             <div><dt>F1 / BACK</dt><dd>Settings & accessibility</dd></div>
             <div><dt>R</dt><dd>Reset bike</dd></div>
             <div><dt>G</dt><dd>Garage & events</dd></div>
+            <div><dt>TOUCH</dt><dd>Adaptive ride + garage controls</dd></div>
           </dl>
           <details class="advanced-controls">
             <summary>Advanced controls</summary>
@@ -142,6 +149,6 @@
       </aside>
     </section>
   </main>
-  <script src="./app.js?v=20260715-racecraft-v27"></script>
+  <script src="./app.js?v=20260715-racecraft-v28"></script>
 </body>
 </html>

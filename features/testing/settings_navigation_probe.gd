@@ -49,7 +49,13 @@ func _run() -> void:
 
 	_check(service.settings.set_value(&"interface", &"text_scale", 1.75), "Could not set maximum text scale")
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"INPUT"))
-	var input_row_count := RaceServices.REBINDABLE_ACTIONS.size()
+	service.call(&"_refresh_settings_text")
+	var input_items: Array = service.get("_settings_items") as Array
+	var input_row_count := input_items.size()
+	_check(
+		input_row_count == RaceServices.REBINDABLE_ACTIONS.size() + 4,
+		"Input page does not expose touch settings and every remappable action"
+	)
 	service.set("_settings_index", input_row_count - 2)
 	service.call(&"_refresh_settings_text")
 	var keyboard_down := InputEventKey.new()
@@ -88,10 +94,27 @@ func _run() -> void:
 		"Selection visibility did not scroll back toward the top"
 	)
 
-	print("SETTINGS NAVIGATION PROBE: mouse=%s keyboard=%s gamepad=%s rows=%d max_scroll=%.0f passed=%s" % [
+	InputRouter.note_touch_input()
+	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"AUDIO"))
+	service.set("_settings_index", 0)
+	service.call(&"_refresh_settings_text")
+	await get_tree().process_frame
+	var touch_navigation := service.get_settings_navigation_snapshot()
+	var touch_decrement := service.find_child("SettingDecrease00", true, false) as Button
+	_check(bool(touch_navigation.get(&"touch_sized", false)), "Touch input did not enable compact-stage settings targets")
+	_check(float(touch_navigation.get(&"selected_row_height", 0.0)) >= 112.0, "Touch settings rows are below 112 authored pixels")
+	_check((touch_navigation.get(&"close_target_size", Vector2.ZERO) as Vector2).y >= 112.0, "Touch settings Close target is below 112 authored pixels")
+	_check((touch_navigation.get(&"tab_target_size", Vector2.ZERO) as Vector2).y >= 112.0, "Touch settings tabs are below 112 authored pixels")
+	_check(
+		touch_decrement != null and touch_decrement.custom_minimum_size.x >= 112.0 and touch_decrement.custom_minimum_size.y >= 112.0,
+		"Touch settings adjustment targets are below 112 authored pixels"
+	)
+
+	print("SETTINGS NAVIGATION PROBE: mouse=%s keyboard=%s gamepad=%s touch=%s rows=%d max_scroll=%.0f passed=%s" % [
 		str(bool(audio_navigation.get(&"has_decrement", false)) and bool(audio_navigation.get(&"has_increment", false))),
 		str(bool(keyboard_navigation.get(&"selected_visible", false))),
 		str(bool(gamepad_navigation.get(&"selected_visible", false))),
+		str(bool(touch_navigation.get(&"touch_sized", false))),
 		int(keyboard_navigation.get(&"row_count", 0)),
 		float(keyboard_navigation.get(&"maximum_scroll", 0.0)),
 		str(_failures.is_empty()),

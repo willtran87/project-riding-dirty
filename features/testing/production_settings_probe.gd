@@ -53,7 +53,23 @@ func _run() -> void:
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"INPUT"))
 	service.call(&"_refresh_settings_text")
 	var input_items: Array = service.get("_settings_items") as Array
-	_check(input_items.size() == RaceServices.REBINDABLE_ACTIONS.size(), "core race actions are not all remappable")
+	var touch_setting_keys: Array[StringName] = [
+		&"touch_controls", &"touch_handedness", &"touch_control_scale", &"touch_control_opacity",
+	]
+	_check(
+		input_items.size() == RaceServices.REBINDABLE_ACTIONS.size() + touch_setting_keys.size(),
+		"Input page does not expose touch settings and every remappable action"
+	)
+	for index: int in touch_setting_keys.size():
+		_check(
+			StringName(input_items[index].get(&"key", &"")) == touch_setting_keys[index],
+			"Input page touch setting order is unstable"
+		)
+	var binding_count := 0
+	for item: Dictionary in input_items:
+		if StringName(item.get(&"kind", &"")) == &"BINDING":
+			binding_count += 1
+	_check(binding_count == RaceServices.REBINDABLE_ACTIONS.size(), "core race actions are not all remappable")
 
 	var replacement := InputEventKey.new()
 	replacement.physical_keycode = KEY_F10
@@ -77,7 +93,7 @@ func _run() -> void:
 	_check(bool(restored.load_from_disk().get("ok", false)), "persisted settings did not reload")
 
 	print("PRODUCTION SETTINGS PROBE: pages=%d bindings=%d dual_device=%s persisted=%s passed=%s" % [
-		RaceServices.SETTINGS_PAGE_IDS.size(), input_items.size(), str(_has_gamepad_axis(InputMap.action_get_events(InputRouter.THROTTLE))),
+		RaceServices.SETTINGS_PAGE_IDS.size(), binding_count, str(_has_gamepad_axis(InputMap.action_get_events(InputRouter.THROTTLE))),
 		str(FileAccess.file_exists(TEST_PATH)), str(_passed),
 	])
 	service.queue_free()

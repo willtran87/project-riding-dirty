@@ -126,8 +126,8 @@ func _ready() -> void:
 	EventBus.activity_completed.connect(_on_activity_completed)
 	Profile.reward_granted.connect(_on_reward_granted)
 	Profile.achievement_unlocked.connect(_on_achievement_unlocked)
-	InputRouter.device_changed.connect(_on_device_changed)
-	_on_device_changed(InputRouter.using_gamepad)
+	InputRouter.input_mode_changed.connect(_on_input_mode_changed)
+	_on_input_mode_changed(InputRouter.input_mode)
 
 
 func _exit_tree() -> void:
@@ -1973,11 +1973,24 @@ func _on_game_paused(paused: bool) -> void:
 		show_control_hints(1.25)
 
 
-func _on_device_changed(using_gamepad: bool) -> void:
-	if using_gamepad:
+func _on_input_mode_changed(mode: StringName) -> void:
+	if mode == InputRouter.INPUT_MODE_GAMEPAD:
 		_controls_label.text = "RT THROTTLE   LT BRAKE   LS STEER   RS LEAN\nA PRELOAD   LB CONTEXT FLOW   RB CLUTCH / DAB / PUMP   Y RESET   B GARAGE"
+		_controls_label.add_theme_font_size_override(&"font_size", 14)
+		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
+		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
+	elif mode == InputRouter.INPUT_MODE_TOUCH:
+		_controls_label.text = "LEFT PAD  STEER + LEAN   //   HOLD THROTTLE + BRAKE\nHOLD + RELEASE PRELOAD TO HOP   //   FLOW + TECH ARE CONTEXTUAL"
+		_controls_label.add_theme_font_size_override(&"font_size", 22)
+		# The center lane below the top band avoids contract, flag, integrity,
+		# standings, minimap, and both hand zones while the learned hint fades.
+		_anchor_rect(_controls_panel, Vector2(0.5, 0.0), Rect2(-390.0, 196.0, 780.0, 78.0))
+		_anchor_rect(_controls_label, Vector2(0.5, 0.0), Rect2(-372.0, 202.0, 744.0, 66.0))
 	else:
 		_controls_label.text = "W THROTTLE   S BRAKE   A / D STEER   UP / DOWN LEAN\nSPACE PRELOAD   SHIFT CONTEXT FLOW   C CLUTCH / DAB / PUMP   R RESET   G GARAGE"
+		_controls_label.add_theme_font_size_override(&"font_size", 14)
+		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
+		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
 	show_control_hints(CONTROL_HINT_CONTEXT_SECONDS)
 
 

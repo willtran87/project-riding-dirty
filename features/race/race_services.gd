@@ -7,6 +7,7 @@ signal leaderboard_updated(result: Dictionary)
 signal replay_available(summary: Dictionary)
 signal replay_state_changed(active: bool)
 signal settings_changed(values: Dictionary)
+signal settings_visibility_changed(open: bool)
 signal spectator_changed(label: String)
 
 const BIKE_VISUAL_SCRIPT = preload("res://entities/bike/bike_visual.gd")
@@ -64,6 +65,7 @@ var _settings_backdrop: ColorRect
 var _settings_panel: PanelContainer
 var _settings_title: Label
 var _settings_page_label: Label
+var _settings_close_button: Button
 var _settings_status_label: Label
 var _settings_footer_label: Label
 var _settings_scroll: ScrollContainer
@@ -183,7 +185,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		else:
 			start_replay()
 		get_viewport().set_input_as_handled()
-	elif event.is_action_pressed(InputRouter.SPECTATOR_NEXT) and not event.is_echo():
+	elif (_replay_active or _photo_mode) and event.is_action_pressed(InputRouter.SPECTATOR_NEXT) and not event.is_echo():
 		cycle_spectator()
 		get_viewport().set_input_as_handled()
 
@@ -263,6 +265,15 @@ func stop_replay() -> void:
 		chase_camera.target = _saved_camera_target if is_instance_valid(_saved_camera_target) else bike
 		chase_camera.snap_to_target()
 	replay_state_changed.emit(false)
+
+
+func stop_transient_presentation() -> void:
+	## Garage and activity transitions must restore the real bike, camera, pause
+	## ownership, and spectator bindings before another screen becomes interactive.
+	if _replay_active:
+		stop_replay()
+	if _photo_mode:
+		toggle_photo_mode()
 
 
 func toggle_photo_mode() -> void:
@@ -493,6 +504,7 @@ func _apply_settings() -> void:
 		&"reduced_motion_consumers", &"set_reduced_motion",
 		bool(interface.get("reduced_motion", false))
 	)
+	get_tree().call_group(&"touch_controls", &"configure_touch_controls", controls)
 	if Profile.has_method(&"set_settings_reference"):
 		Profile.call(&"set_settings_reference", SettingsStore.DEFAULT_PATH)
 	settings_changed.emit(settings.values.duplicate(true))
@@ -645,6 +657,19 @@ func _build_settings_overlay() -> void:
 	_settings_page_label.add_theme_font_size_override(&"font_size", 17)
 	_settings_page_label.add_theme_color_override(&"font_color", Color("56d6ff"))
 	header.add_child(_settings_page_label)
+	_settings_close_button = Button.new()
+	_settings_close_button.name = "SettingsCloseButton"
+	_settings_close_button.text = "CLOSE  ×"
+	_settings_close_button.custom_minimum_size = Vector2(112.0, 48.0)
+	_settings_close_button.focus_mode = Control.FOCUS_NONE
+	_settings_close_button.tooltip_text = "Close settings"
+	_settings_close_button.add_theme_font_size_override(&"font_size", 16)
+	_settings_close_button.add_theme_color_override(&"font_color", Color("f7e5b2"))
+	_settings_close_button.add_theme_stylebox_override(&"normal", _settings_row_style(false))
+	_settings_close_button.add_theme_stylebox_override(&"hover", _settings_row_style(true))
+	_settings_close_button.add_theme_stylebox_override(&"pressed", _settings_row_style(true, true))
+	_settings_close_button.pressed.connect(_toggle_settings)
+	header.add_child(_settings_close_button)
 
 	var rule := ColorRect.new()
 	rule.color = Color("ffb52d")
@@ -707,6 +732,7 @@ func _toggle_settings() -> void:
 		get_tree().paused = _settings_saved_tree_paused
 		if is_instance_valid(bike):
 			bike.set_controls_enabled(_settings_saved_controls_enabled)
+	settings_visibility_changed.emit(_settings_open)
 
 
 func _handle_settings_input(event: InputEvent) -> void:
@@ -814,8 +840,13 @@ func _refresh_settings_text() -> void:
 		child.queue_free()
 	_settings_row_buttons.clear()
 	var text_scale := float(settings.get_value(&"interface", &"text_scale", 1.0))
-	var row_height := maxf(42.0, ceilf(28.0 + 14.0 * text_scale))
-	var adjust_width := maxf(50.0, ceilf(38.0 * text_scale))
+	var touch_targets := _use_touch_settings_targets()
+	var row_height := 112.0 if touch_targets else maxf(42.0, ceilf(28.0 + 14.0 * text_scale))
+	var adjust_width := 112.0 if touch_targets else maxf(50.0, ceilf(38.0 * text_scale))
+	_settings_scroll.custom_minimum_size.y = 300.0 if touch_targets else 490.0
+	if is_instance_valid(_settings_close_button):
+		_settings_close_button.custom_minimum_size = Vector2(176.0, 112.0) if touch_targets else Vector2(112.0, 48.0)
+		_settings_close_button.add_theme_font_size_override(&"font_size", 24 if touch_targets else 16)
 	for index: int in _settings_items.size():
 		var item := _settings_items[index]
 		var row_line := HBoxContainer.new()
@@ -837,7 +868,7 @@ func _refresh_settings_text() -> void:
 		row.custom_minimum_size = Vector2(0.0, row_height)
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.focus_mode = Control.FOCUS_NONE
-		row.add_theme_font_size_override(&"font_size", maxi(roundi(17.0 * text_scale), 14))
+		row.add_theme_font_size_override(&"font_size", maxi(roundi(17.0 * text_scale), 24 if touch_targets else 14))
 		row.add_theme_color_override(&"font_color", Color("f7e5b2") if index == _settings_index else Color("b8c4ca"))
 		row.add_theme_stylebox_override(&"normal", _settings_row_style(index == _settings_index))
 		row.add_theme_stylebox_override(&"hover", _settings_row_style(true))
@@ -852,6 +883,8 @@ func _refresh_settings_text() -> void:
 	for page_index: int in _settings_tab_buttons.size():
 		var active := page_index == _settings_page_index
 		var tab := _settings_tab_buttons[page_index]
+		tab.custom_minimum_size.y = 112.0 if touch_targets else 42.0
+		tab.add_theme_font_size_override(&"font_size", 22 if touch_targets else 16)
 		tab.add_theme_color_override(&"font_color", Color("16191b") if active else Color("9dabb4"))
 		tab.add_theme_stylebox_override(&"normal", _settings_tab_style(active))
 		tab.add_theme_stylebox_override(&"hover", _settings_tab_style(true))
@@ -874,6 +907,10 @@ func _refresh_settings_text() -> void:
 	_queue_settings_selection_visibility()
 
 
+func _use_touch_settings_targets() -> bool:
+	return InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH or DisplayServer.is_touchscreen_available()
+
+
 func _make_settings_adjust_button(
 	label: String,
 	row_index: int,
@@ -888,7 +925,10 @@ func _make_settings_adjust_button(
 	button.tooltip_text = "%s %s" % ["Decrease" if direction < 0 else "Increase", str(_settings_items[row_index].get(&"label", "setting")).to_lower()]
 	button.custom_minimum_size = Vector2(button_width, row_height)
 	button.focus_mode = Control.FOCUS_NONE
-	button.add_theme_font_size_override(&"font_size", maxi(roundi(20.0 * text_scale), 16))
+	button.add_theme_font_size_override(
+		&"font_size",
+		maxi(roundi(20.0 * text_scale), 28 if _use_touch_settings_targets() else 16)
+	)
 	button.add_theme_color_override(&"font_color", Color("f7e5b2"))
 	button.add_theme_stylebox_override(&"normal", _settings_row_style(false))
 	button.add_theme_stylebox_override(&"hover", _settings_row_style(true))
@@ -944,6 +984,12 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				{&"kind": &"COMMAND", &"command": &"RESET_ALL", &"label": "RESTORE ALL DEFAULTS"},
 			])
 		&"INPUT":
+			items.assign([
+				_enum_item("TOUCH CONTROLS", &"controls", &"touch_controls", SettingsStore.TOUCH_CONTROL_MODES),
+				_enum_item("TOUCH HANDEDNESS", &"controls", &"touch_handedness", SettingsStore.TOUCH_HANDEDNESS_MODES),
+				_value_item("TOUCH CONTROL SIZE", &"controls", &"touch_control_scale", &"PERCENT", 0.05, 1.0),
+				_value_item("TOUCH CONTROL OPACITY", &"controls", &"touch_control_opacity", &"PERCENT", 0.05, 0.72),
+			])
 			var names := {
 				&"throttle": "THROTTLE", &"brake": "BRAKE", &"steer_left": "STEER LEFT", &"steer_right": "STEER RIGHT",
 				&"lean_forward": "LEAN FORWARD", &"lean_back": "LEAN BACK", &"preload": "PRELOAD / JUMP",
@@ -1090,6 +1136,9 @@ func get_settings_navigation_snapshot() -> Dictionary:
 		&"selected_index": _settings_index,
 		&"selected_visible": selected_visible,
 		&"selected_row_height": selected_row_height,
+		&"touch_sized": _use_touch_settings_targets(),
+		&"close_target_size": _settings_close_button.custom_minimum_size if is_instance_valid(_settings_close_button) else Vector2.ZERO,
+		&"tab_target_size": _settings_tab_buttons[0].custom_minimum_size if not _settings_tab_buttons.is_empty() else Vector2.ZERO,
 		&"scroll_vertical": _settings_scroll.scroll_vertical if _settings_scroll != null else 0,
 		&"maximum_scroll": maximum_scroll,
 		&"has_decrement": _settings_rows.find_child("SettingDecrease%02d" % _settings_index, true, false) != null if _settings_rows != null else false,

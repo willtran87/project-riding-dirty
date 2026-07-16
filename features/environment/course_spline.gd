@@ -23,12 +23,23 @@ static func bake_motocross(
 	var rhythm_zones: Array = rhythm_profile.get(&"zones", [])
 	var relief_suppression_zones: Array = rhythm_profile.get(&"relief_suppression_zones", [])
 	var jump_zones: Array = rhythm_profile.get(&"jump_zones", [])
+	var closed_loop := (
+		control_points.size() >= 4
+		and control_points[0].distance_to(control_points[-1]) <= 0.02
+	)
 	for segment_index: int in range(control_points.size() - 1):
 		var p0 := control_points[maxi(segment_index - 1, 0)]
 		var p1 := control_points[segment_index]
 		var p2 := control_points[segment_index + 1]
-		var p3 := control_points[mini(segment_index + 2, control_points.size() - 1)]
 		var chord_length := p1.distance_to(p2)
+		var p3 := control_points[mini(segment_index + 2, control_points.size() - 1)]
+		if closed_loop and segment_index == control_points.size() - 2:
+			# Preserve the straight, stable launch chute while steering only the final
+			# authored segment into that same heading. Catmull's endpoint derivative
+			# is 0.5 * (p3 - p1), so this virtual neighbour makes the incoming finish
+			# tangent parallel to the opening chord without moving either checkpoint.
+			var opening_direction := (control_points[1] - control_points[0]).normalized()
+			p3 = p1 + opening_direction * chord_length * 2.0
 		var subdivisions := maxi(int(ceil(chord_length / safe_spacing)), 2)
 		for sample_index: int in range(subdivisions + 1):
 			if segment_index > 0 and sample_index == 0:

@@ -201,6 +201,18 @@ class WebReadinessContractTests(unittest.TestCase):
         self.assertIn("animation: none", styles)
         self.assertIn(":focus-visible", styles)
 
+    def test_touch_wrapper_has_landscape_and_safe_area_contract(self) -> None:
+        wrapper = (PROJECT_ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        styles = (PROJECT_ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("KEYBOARD, GAMEPAD, OR TOUCH", wrapper)
+        self.assertIn("orientation-notice", wrapper)
+        self.assertIn("ROTATE TO RIDE", wrapper)
+        self.assertIn("(pointer: coarse) and (orientation: landscape)", styles)
+        self.assertIn("(pointer: coarse) and (orientation: portrait)", styles)
+        self.assertIn("env(safe-area-inset-left)", styles)
+        self.assertIn("env(safe-area-inset-right)", styles)
+        self.assertIn("--playing-chrome: calc(max(4px, env(safe-area-inset-top))", styles)
+
     def test_static_hosts_boot_through_root_scoped_isolation_worker(self) -> None:
         wrapper = (PROJECT_ROOT / "web" / "index.html").read_text(encoding="utf-8")
         worker = (PROJECT_ROOT / "web" / "coi-serviceworker.js").read_text(

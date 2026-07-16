@@ -5,6 +5,7 @@ class_name CourseCatalog
 const QUARRY_ID: StringName = &"QUARRY"
 const PINE_ID: StringName = &"PINE"
 const MESA_MX_ID: StringName = &"MESA_MX"
+const MESA_MX_ROUTE_VERSION := 2
 
 const QUARRY_ORIGIN := Vector3.ZERO
 const PINE_ORIGIN := Vector3(1400.0, 0.0, 0.0)
@@ -374,5 +375,5 @@ static func get_record_slot(track_id: StringName) -> StringName:
 	if track_id == PINE_ID:
 		return &"pine_trail_v4"
 	if track_id == MESA_MX_ID:
-		return &"mesa_mx_v1"
+		return &"mesa_mx_v2"
 	return &"quarry_trail_v19"

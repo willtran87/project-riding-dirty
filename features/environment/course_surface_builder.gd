@@ -556,13 +556,28 @@ static func _build_frames(centerline: PackedVector3Array, width: float, config: 
 	var bank_strength := float(config.get(&"bank_strength", 0.48))
 	var berm_height := float(config.get(&"berm_height", 0.72))
 	var distance := 0.0
+	var closed_loop := (
+		centerline.size() >= 4
+		and centerline[0].distance_to(centerline[-1]) <= 0.02
+	)
+	var unique_point_count := centerline.size() - 1 if closed_loop else centerline.size()
+	var closed_sample_offset := mini(4, maxi((unique_point_count - 1) / 2, 1))
 	for index: int in centerline.size():
 		if index > 0:
 			distance += centerline[index - 1].distance_to(centerline[index])
-		var previous_index := maxi(index - 4, 0)
-		var next_index := mini(index + 4, centerline.size() - 1)
-		var incoming := centerline[index] - centerline[previous_index]
-		var outgoing := centerline[next_index] - centerline[index]
+		var sample_index := 0 if closed_loop and index == centerline.size() - 1 else index
+		var previous_index := (
+			posmod(sample_index - closed_sample_offset, unique_point_count)
+			if closed_loop
+			else maxi(index - 4, 0)
+		)
+		var next_index := (
+			posmod(sample_index + closed_sample_offset, unique_point_count)
+			if closed_loop
+			else mini(index + 4, centerline.size() - 1)
+		)
+		var incoming := centerline[sample_index] - centerline[previous_index]
+		var outgoing := centerline[next_index] - centerline[sample_index]
 		if incoming.length_squared() < 0.001:
 			incoming = outgoing
 		if outgoing.length_squared() < 0.001:
@@ -603,7 +618,7 @@ static func _build_frames(centerline: PackedVector3Array, width: float, config: 
 	var endpoint_taper_length := maxf(float(config.get(&"endpoint_taper_length", 0.0)), 0.0)
 	var endpoint_minimum_ratio := clampf(float(config.get(&"endpoint_minimum_width_ratio", 1.0)), 0.02, 1.0)
 	var endpoint_surface_lift := maxf(float(config.get(&"endpoint_surface_lift", 0.0)), 0.0)
-	if endpoint_taper_length > 0.0 and frames.size() >= 2:
+	if endpoint_taper_length > 0.0 and frames.size() >= 2 and not closed_loop:
 		var total_distance: float = frames[-1][&"distance"]
 		for index: int in frames.size():
 			var frame: Dictionary = frames[index]

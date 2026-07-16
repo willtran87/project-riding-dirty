@@ -90,7 +90,7 @@ func _make_session_config() -> RaceSessionConfig:
 		&"format": &"CIRCUIT",
 		&"session_type": &"MAIN",
 		&"championship_id": &"DIRT_TOUR",
-		&"route_version": 1,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION,
 		&"laps": 2,
 		&"opponent_count": 5,
 		&"checkpoint_count": 4,

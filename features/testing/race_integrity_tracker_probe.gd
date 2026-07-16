@@ -12,7 +12,10 @@ func _ready() -> void:
 	passed = _test_off_course(route, spawn) and passed
 	passed = _test_wrong_way(route, spawn) and passed
 	passed = _test_cut(route, spawn) and passed
+	passed = _test_closed_seam_shortcut(route, spawn) and passed
 	passed = _test_stuck(route, spawn) and passed
+	passed = _test_lap_gate_projection_lag(route, spawn) and passed
+	passed = _test_projection_wrap_before_lap_gate(route, spawn) and passed
 	passed = _test_multi_lap_wrap(route, spawn) and passed
 	print("RACE INTEGRITY TRACKER PROBE: passed=%s" % str(passed))
 	get_tree().quit(0 if passed else 1)
@@ -80,6 +83,34 @@ func _test_cut(route: PackedVector3Array, spawn: Transform3D) -> bool:
 	return passed
 
 
+func _test_closed_seam_shortcut(route: PackedVector3Array, spawn: Transform3D) -> bool:
+	var tracker := _new_tracker(route, spawn)
+	var first_index := 2
+	var final_index := route.size() - 3
+	tracker.update(
+		0.1,
+		_route_transform(route[first_index] + Vector3.UP * 1.25, route[first_index + 1] - route[first_index]),
+		(route[first_index + 1] - route[first_index]).normalized() * 8.0,
+		1
+	)
+	var after: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[final_index] + Vector3.UP * 1.25, route[final_index + 1] - route[final_index]),
+		(route[final_index + 1] - route[final_index]).normalized() * 8.0,
+		1
+	)
+	var passed := (
+		bool(after[&"cut_detected"])
+		and bool(after[&"reset_requested"])
+		and StringName(after[&"reset_reason"]) == &"CUT_DETECTED"
+	)
+	print("INTEGRITY CLOSED SEAM SHORTCUT: delta=%.1f reset=%s passed=%s" % [
+		float((after[&"projection"] as Dictionary).get(&"progress_delta", 0.0)),
+		str(after[&"reset_requested"]), str(passed),
+	])
+	return passed
+
+
 func _test_stuck(route: PackedVector3Array, spawn: Transform3D) -> bool:
 	var tracker := _new_tracker(route, spawn)
 	var transform := _route_transform(route[9] + Vector3.UP * 1.25, route[10] - route[9])
@@ -117,6 +148,87 @@ func _test_multi_lap_wrap(route: PackedVector3Array, spawn: Transform3D) -> bool
 		and not bool(after[&"reset_requested"])
 	)
 	print("INTEGRITY LAP WRAP: before=%.1f after=%.1f lap=%d passed=%s" % [float(before[&"total_progress"]), float(after[&"total_progress"]), int(after[&"lap"]), str(passed)])
+	return passed
+
+
+func _test_lap_gate_projection_lag(route: PackedVector3Array, spawn: Transform3D) -> bool:
+	var tracker := _new_tracker(route, spawn)
+	var last_index := route.size() - 2
+	var finish_direction := route[last_index + 1] - route[last_index]
+	var before: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[last_index] + Vector3.UP * 1.25, finish_direction),
+		finish_direction.normalized() * 14.0,
+		1
+	)
+	# The finish trigger advances the authoritative lap while the duplicated
+	# start/finish anchor can still project onto the final segment for a frame.
+	# That ambiguity must not look like a full-lap shortcut and request a reset.
+	var seam: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[-1] + Vector3.UP * 1.25, finish_direction),
+		finish_direction.normalized() * 14.0,
+		2
+	)
+	var opening_direction := route[2] - route[1]
+	var after: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[1] + Vector3.UP * 1.25, opening_direction),
+		opening_direction.normalized() * 14.0,
+		2
+	)
+	var seam_delta := float(seam[&"total_progress"]) - float(before[&"total_progress"])
+	var passed := (
+		seam_delta >= 0.0
+		and seam_delta < 12.0
+		and float(after[&"total_progress"]) > float(seam[&"total_progress"])
+		and not bool(seam[&"cut_detected"])
+		and not bool(seam[&"reset_requested"])
+		and not bool(after[&"reset_requested"])
+	)
+	print("INTEGRITY LAP GATE LAG: before=%.1f seam=%.1f after=%.1f delta=%.1f reset=%s passed=%s" % [
+		float(before[&"total_progress"]), float(seam[&"total_progress"]),
+		float(after[&"total_progress"]), seam_delta, str(seam[&"reset_requested"]), str(passed),
+	])
+	return passed
+
+
+func _test_projection_wrap_before_lap_gate(route: PackedVector3Array, spawn: Transform3D) -> bool:
+	var tracker := _new_tracker(route, spawn)
+	var last_index := route.size() - 2
+	var finish_direction := route[last_index + 1] - route[last_index]
+	var before: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[last_index] + Vector3.UP * 1.25, finish_direction),
+		finish_direction.normalized() * 14.0,
+		1
+	)
+	var opening_direction := route[2] - route[1]
+	# Projection may choose the opening segment one tick before the Area3D gate
+	# advances the authoritative lap. The next authority update must not create
+	# the inverse whole-lap jump.
+	var wrapped: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[1] + Vector3.UP * 1.25, opening_direction),
+		opening_direction.normalized() * 14.0,
+		1
+	)
+	var after: Dictionary = tracker.update(
+		0.1,
+		_route_transform(route[2] + Vector3.UP * 1.25, route[3] - route[2]),
+		(route[3] - route[2]).normalized() * 14.0,
+		2
+	)
+	var passed := (
+		float(wrapped[&"total_progress"]) > float(before[&"total_progress"])
+		and float(after[&"total_progress"]) > float(wrapped[&"total_progress"])
+		and not bool(wrapped[&"reset_requested"])
+		and not bool(after[&"reset_requested"])
+	)
+	print("INTEGRITY EARLY PROJECTION WRAP: before=%.1f wrapped=%.1f after=%.1f reset=%s passed=%s" % [
+		float(before[&"total_progress"]), float(wrapped[&"total_progress"]),
+		float(after[&"total_progress"]), str(after[&"reset_requested"]), str(passed),
+	])
 	return passed
 
 

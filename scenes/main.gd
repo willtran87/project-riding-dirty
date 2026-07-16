@@ -31,6 +31,7 @@ const OPPONENT_BUILD_SETUP_FACTORS: Dictionary = {
 @onready var _ride_director: RideDirector = %RideDirector
 @onready var _atmosphere: AtmosphereDirector = %AtmosphereDirector
 @onready var _race_services: RaceServices = %RaceServices
+@onready var _touch_controls: TouchRidingControls = %TouchRidingControls
 
 var _paused: bool = false
 var _current_activity: StringName = &"CIRCUIT"
@@ -43,6 +44,8 @@ var _active_challenge: Dictionary = {}
 var _active_level: Node3D
 var _active_track_id: StringName = &""
 var _garage_backdrop: Node3D
+var _touch_modal_open: bool = false
+var _touch_results_visible: bool = false
 
 
 func _ready() -> void:
@@ -112,6 +115,9 @@ func _ready() -> void:
 	_race_services.leaderboard_updated.connect(_hud.update_leaderboard_result)
 	_race_services.replay_available.connect(_hud.update_replay_available)
 	_race_services.replay_state_changed.connect(_hud.update_replay_state)
+	_race_services.settings_visibility_changed.connect(_on_settings_visibility_changed)
+	if not EventBus.activity_completed.is_connected(_on_activity_completed_for_touch):
+		EventBus.activity_completed.connect(_on_activity_completed_for_touch)
 	_garage.bind_competition_source(_race_services)
 	_garage.update_competition_context(_current_activity, _ghost.best_time_usec)
 	_freestyle.initialize(_bike, _ghost)
@@ -134,6 +140,7 @@ func _ready() -> void:
 	else:
 		_hud.visible = false
 		_garage.show_garage()
+		_refresh_touch_context()
 
 
 func _exit_tree() -> void:
@@ -154,10 +161,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed(InputRouter.OPEN_GARAGE) and not event.is_echo():
 		_stop_all_activities()
 		_hud.visible = false
+		_touch_results_visible = false
 		_camera.set_composition_offset_right(GARAGE_COMPOSITION_OFFSET_METERS)
 		_camera.snap_to_target()
 		_garage.update_competition_context(_current_activity, _ghost.best_time_usec)
 		_garage.show_garage()
+		_refresh_touch_context()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed(InputRouter.RESET_BIKE) and not event.is_echo():
@@ -183,6 +192,8 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	var profile_activity := OS.get_environment("RIDING_DIRTY_PROFILE_ACTIVITY") == "1"
 	var phase_begin_usec := Time.get_ticks_usec()
 	_transitioning = true
+	_touch_results_visible = false
+	_refresh_touch_context()
 	_stop_all_activities()
 	_camera.set_composition_offset_right(0.0)
 	# Garage actions can advance or roll over a season while this scene remains
@@ -269,6 +280,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 		await _transition.reveal()
 	_finish_profiled_activity_phase(&"camera_and_reveal", phase_begin_usec, profile_activity)
 	_transitioning = false
+	_refresh_touch_context()
 
 
 func _finish_profiled_activity_phase(phase: StringName, begin_usec: int, enabled: bool) -> int:
@@ -279,6 +291,8 @@ func _finish_profiled_activity_phase(phase: StringName, begin_usec: int, enabled
 
 
 func _restart_current_activity() -> void:
+	_touch_results_visible = false
+	_refresh_touch_context()
 	match _current_activity:
 		&"ACADEMY":
 			# Recompose from the shared Academy authority. A plain reset would keep
@@ -311,6 +325,8 @@ func _restart_academy_progression() -> void:
 
 
 func _stop_all_activities() -> void:
+	if is_instance_valid(_race_services):
+		_race_services.stop_transient_presentation()
 	_race.enter_waiting()
 	_freestyle.enter_waiting()
 	_discovery.enter_waiting()
@@ -640,6 +656,8 @@ func _dictionary_array(value: Variant) -> Array[Dictionary]:
 
 
 func _on_race_results_ready(result: Dictionary) -> void:
+	_touch_results_visible = true
+	_refresh_touch_context()
 	if not _active_challenge.is_empty() and RaceEventCatalog.is_challenge_event(_current_activity):
 		result[&"challenge_id"] = str(_active_challenge.get("challenge_id", ""))
 		result[&"challenge_kind"] = StringName(str(_active_challenge.get("kind", "DAILY")).to_upper())
@@ -728,6 +746,36 @@ func _on_race_results_ready(result: Dictionary) -> void:
 	).to_upper()
 	result.clear()
 	result.merge(structured_result, true)
+
+
+func _on_activity_completed_for_touch(
+	_activity: StringName,
+	_result_value: int,
+	_medal: StringName,
+	_is_new_best: bool
+) -> void:
+	_touch_results_visible = true
+	_refresh_touch_context()
+
+
+func _on_settings_visibility_changed(open: bool) -> void:
+	_touch_modal_open = open
+	_refresh_touch_context()
+
+
+func _refresh_touch_context() -> void:
+	if not is_instance_valid(_touch_controls):
+		return
+	if _transitioning or _touch_modal_open:
+		_touch_controls.set_context(&"HIDDEN")
+	elif _touch_results_visible:
+		_touch_controls.set_context(&"RESULTS")
+	elif _garage.is_open():
+		_touch_controls.set_context(&"GARAGE")
+	elif _hud.visible:
+		_touch_controls.set_context(&"RIDE")
+	else:
+		_touch_controls.set_context(&"HIDDEN")
 
 
 func _zero_race_rewards(source: Dictionary) -> Dictionary:

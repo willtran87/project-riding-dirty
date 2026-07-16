@@ -56,6 +56,7 @@ var _projection_line_segment := -1
 var _projection: Dictionary = {}
 var _current_lap := 1
 var _inferred_lap := 1
+var _seam_transition_lap := 0
 var _previous_chainage := -1.0
 var _previous_total_progress := -1.0
 var _previous_position := Vector3.ZERO
@@ -146,6 +147,7 @@ func reset(keep_penalties: bool = false) -> void:
 	_projection = {}
 	_current_lap = 1
 	_inferred_lap = 1
+	_seam_transition_lap = 0
 	_previous_chainage = -1.0
 	_previous_total_progress = -1.0
 	_previous_position = Vector3.ZERO
@@ -238,8 +240,13 @@ func update(
 	var horizontal_speed := flat_velocity.length()
 	var forward_speed := flat_velocity.dot(tangent)
 
+	var previous_lap := _current_lap
 	_current_lap = _resolve_lap_number(lap_number, chainage, forward_speed)
-	var total_progress := float(_current_lap - 1) * _route_length + chainage
+	if _closed and _current_lap > previous_lap and _previous_total_progress >= 0.0:
+		_seam_transition_lap = _current_lap
+	elif _current_lap < previous_lap:
+		_seam_transition_lap = 0
+	var total_progress := _resolve_total_progress(chainage, forward_speed)
 	var movement_distance := 0.0
 	if _has_previous_position:
 		movement_distance = Vector2(position.x, position.z).distance_to(
@@ -344,6 +351,7 @@ func consume_reset() -> Dictionary:
 	_projection_segment = -1
 	_projection_line_id = MAIN_ROUTE_LINE_ID
 	_projection_line_segment = -1
+	_seam_transition_lap = 0
 	_previous_chainage = -1.0
 	_previous_total_progress = -1.0
 	_has_previous_position = false
@@ -642,6 +650,57 @@ func _resolve_lap_number(authoritative_lap: int, chainage: float, forward_speed:
 		):
 		_inferred_lap = mini(_inferred_lap + 1, _total_laps)
 	return _inferred_lap
+
+
+func _resolve_total_progress(chainage: float, forward_speed: float) -> float:
+	var lap_progress := float(_current_lap - 1) * _route_length + chainage
+	if (
+			not _closed
+			or _previous_total_progress < 0.0
+			or _route_length <= 0.001
+		):
+		return lap_progress
+
+	# A closed spline represents the start/finish point twice: once at chainage
+	# zero and once at route_length. The checkpoint trigger can advance the
+	# authoritative lap while projection still resolves to the final segment (or
+	# briefly flickers between the two aliases). Choose the seam-equivalent total
+	# nearest the last physical sample so that crossing the line is continuous,
+	# never an apparent whole-lap shortcut that requests a recovery.
+	var seam_window := minf(
+		maxf(_minimum_cut_jump, _track_width * 1.25),
+		_route_length * 0.15
+	)
+	var wrapped_forward := (
+		_previous_chainage >= _route_length - seam_window
+		and chainage <= seam_window
+		and forward_speed > -0.5
+	)
+	if _seam_transition_lap != _current_lap and not wrapped_forward:
+		return lap_progress
+	if wrapped_forward:
+		# Projection is allowed to wrap one physics tick before the checkpoint Area
+		# reports the new lap. Retain the continuous alias until authority catches up.
+		_seam_transition_lap = _current_lap
+	var current_near_seam := chainage <= seam_window or chainage >= _route_length - seam_window
+	if not current_near_seam:
+		_seam_transition_lap = 0
+		return lap_progress
+	var previous_near_seam := (
+		_previous_chainage <= seam_window
+		or _previous_chainage >= _route_length - seam_window
+	)
+	if not previous_near_seam:
+		return lap_progress
+
+	var best_progress := lap_progress
+	var best_distance := absf(best_progress - _previous_total_progress)
+	for candidate: float in [lap_progress - _route_length, lap_progress + _route_length]:
+		var candidate_distance := absf(candidate - _previous_total_progress)
+		if candidate_distance < best_distance:
+			best_progress = candidate
+			best_distance = candidate_distance
+	return clampf(best_progress, 0.0, float(_total_laps) * _route_length)
 
 
 func _update_last_legal_rejoin(

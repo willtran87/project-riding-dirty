@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 2
+const SETTINGS_VERSION: int = 3
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -12,6 +12,8 @@ const COLOR_SAFE_MODES: Array[String] = ["OFF", "PROTANOPIA", "DEUTERANOPIA", "T
 const UNIT_MODES: Array[String] = ["IMPERIAL", "METRIC"]
 const RACE_DIFFICULTY_MODES: Array[String] = ["RELAXED", "STANDARD", "EXPERT"]
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
+const TOUCH_CONTROL_MODES: Array[String] = ["AUTO", "ON", "OFF"]
+const TOUCH_HANDEDNESS_MODES: Array[String] = ["RIGHT", "LEFT"]
 
 const DEFAULTS: Dictionary = {
 	"controls": {
@@ -20,6 +22,10 @@ const DEFAULTS: Dictionary = {
 		"brake_deadzone": 0.05,
 		"steering_sensitivity": 1.0,
 		"steering_curve": 1.35,
+		"touch_controls": "AUTO",
+		"touch_control_scale": 1.0,
+		"touch_control_opacity": 0.72,
+		"touch_handedness": "RIGHT",
 	},
 	"camera": {
 		"fov_degrees": 78.0,
@@ -494,6 +500,8 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var unit_mode := str(interface.get("units", "IMPERIAL")).to_upper()
 	var race_difficulty := str(gameplay.get("race_difficulty", "STANDARD")).to_upper()
 	var visual_quality := str(graphics.get("visual_quality", "BALANCED")).to_upper()
+	var touch_controls := str(controls.get("touch_controls", "AUTO")).to_upper()
+	var touch_handedness := str(controls.get("touch_handedness", "RIGHT")).to_upper()
 	var output := {
 		"controls": {
 			"steering_deadzone": clampf(float(controls.get("steering_deadzone", 0.12)), 0.0, 0.5),
@@ -501,6 +509,10 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"brake_deadzone": clampf(float(controls.get("brake_deadzone", 0.05)), 0.0, 0.5),
 			"steering_sensitivity": clampf(float(controls.get("steering_sensitivity", 1.0)), 0.25, 3.0),
 			"steering_curve": clampf(float(controls.get("steering_curve", 1.35)), 0.5, 3.0),
+			"touch_controls": touch_controls if touch_controls in TOUCH_CONTROL_MODES else "AUTO",
+			"touch_control_scale": clampf(float(controls.get("touch_control_scale", 1.0)), 0.75, 1.4),
+			"touch_control_opacity": clampf(float(controls.get("touch_control_opacity", 0.72)), 0.35, 1.0),
+			"touch_handedness": touch_handedness if touch_handedness in TOUCH_HANDEDNESS_MODES else "RIGHT",
 		},
 		"camera": {
 			"fov_degrees": clampf(float(camera.get("fov_degrees", 78.0)), 55.0, 110.0),

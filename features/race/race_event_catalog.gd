@@ -73,7 +73,7 @@ const EVENTS: Dictionary = {
 	&"MESA_PRACTICE": {
 		&"event_id": &"MESA_PRACTICE", &"track_id": &"MESA_MX", &"display_name": "MESA OPEN PRACTICE",
 		&"format": &"PRACTICE", &"session_type": &"PRACTICE", &"championship_id": &"", &"laps": 2, &"opponent_count": 3,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 5.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 5.0,
 		&"rules": {&"weekend_session": true},
 		&"medal_times_usec": {&"gold": 150_000_000, &"silver": 185_000_000, &"bronze": 230_000_000},
 		&"description": "Learn the circuit, discover lines and set a gate-pick baseline.",
@@ -82,7 +82,7 @@ const EVENTS: Dictionary = {
 	&"MESA_QUALIFYING": {
 		&"event_id": &"MESA_QUALIFYING", &"track_id": &"MESA_MX", &"display_name": "MESA QUALIFYING",
 		&"format": &"QUALIFYING", &"session_type": &"QUALIFYING", &"championship_id": &"", &"laps": 2, &"opponent_count": 0,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 0.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 0.0,
 		&"rules": {&"weekend_session": true, &"deterministic_ai_times": true},
 		&"medal_times_usec": {&"gold": 138_000_000, &"silver": 170_000_000, &"bronze": 215_000_000},
 		&"description": "Two clean laps against the clock. Your result chooses the main-event gate.",
@@ -91,7 +91,7 @@ const EVENTS: Dictionary = {
 	&"MESA_HEAT": {
 		&"event_id": &"MESA_HEAT", &"track_id": &"MESA_MX", &"display_name": "RED MESA HEAT",
 		&"format": &"HEAT", &"session_type": &"HEAT", &"championship_id": &"", &"laps": 3, &"opponent_count": 11,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 6.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 6.0,
 		&"rules": {&"weekend_session": true, &"transfer_count": 6},
 		&"medal_times_usec": {&"gold": 222_000_000, &"silver": 270_000_000, &"bronze": 335_000_000},
 		&"description": "A seeded three-lap heat. The first six riders transfer directly to the main.",
@@ -100,7 +100,7 @@ const EVENTS: Dictionary = {
 	&"MESA_LCQ": {
 		&"event_id": &"MESA_LCQ", &"track_id": &"MESA_MX", &"display_name": "RED MESA LCQ",
 		&"format": &"LCQ", &"session_type": &"LCQ", &"championship_id": &"", &"laps": 2, &"opponent_count": 5,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"DUSK", &"finish_grace_seconds": 5.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"DUSK", &"finish_grace_seconds": 5.0,
 		&"rules": {&"weekend_session": true, &"transfer_count": 4},
 		&"medal_times_usec": {&"gold": 150_000_000, &"silver": 185_000_000, &"bronze": 230_000_000},
 		&"description": "Two urgent laps for the final four transfer positions in the main event.",
@@ -109,7 +109,7 @@ const EVENTS: Dictionary = {
 	&"MESA_MX": {
 		&"event_id": &"MESA_MX", &"track_id": &"MESA_MX", &"display_name": "RED MESA MX MAIN",
 		&"format": &"CIRCUIT", &"session_type": &"MAIN", &"laps": 3, &"opponent_count": 11,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 7.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"CLEAR", &"finish_grace_seconds": 7.0,
 		&"rules": {&"weekend_session": true, &"championship_round": &"MESA_OPENER"},
 		&"medal_times_usec": {&"gold": 225_000_000, &"silver": 270_000_000, &"bronze": 330_000_000},
 		&"description": "Three-lap motocross main with a gate drop, rhythm decisions and a full classification.",
@@ -118,7 +118,7 @@ const EVENTS: Dictionary = {
 	&"MESA_ELIMINATION": {
 		&"event_id": &"MESA_ELIMINATION", &"track_id": &"MESA_MX", &"display_name": "LAST RIDER OUT",
 		&"format": &"ELIMINATION", &"session_type": &"SPECIAL", &"laps": 4, &"opponent_count": 7,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"DUSK",
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"DUSK",
 		&"medal_times_usec": {&"gold": 300_000_000, &"silver": 360_000_000, &"bronze": 430_000_000},
 		&"rules": {&"eliminate_last_each_lap": true},
 		&"description": "The last active rider is eliminated at every lap line.",
@@ -127,7 +127,7 @@ const EVENTS: Dictionary = {
 	&"MESA_RIVAL": {
 		&"event_id": &"MESA_RIVAL", &"track_id": &"MESA_MX", &"display_name": "ROOK: HEAD TO HEAD",
 		&"format": &"RIVAL", &"session_type": &"SPECIAL", &"laps": 2, &"opponent_count": 1,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"SUNSET",
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"SUNSET",
 		&"rules": {&"rival_only": true},
 		&"medal_times_usec": {&"gold": 146_000_000, &"silver": 178_000_000, &"bronze": 220_000_000},
 		&"description": "Two laps, two riders, no traffic to blame.",
@@ -136,7 +136,7 @@ const EVENTS: Dictionary = {
 	&"MESA_ENDURANCE": {
 		&"event_id": &"MESA_ENDURANCE", &"track_id": &"MESA_MX", &"display_name": "MESA SIX-LAP",
 		&"format": &"ENDURANCE", &"session_type": &"SPECIAL", &"laps": 6, &"opponent_count": 11,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"VARIABLE", &"finish_grace_seconds": 8.0,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"VARIABLE", &"finish_grace_seconds": 8.0,
 		&"medal_times_usec": {&"gold": 445_000_000, &"silver": 525_000_000, &"bronze": 630_000_000},
 		&"description": "A longer main where consistency, condition and changing grip matter.",
 		&"meta": "6 LAPS  //  12 RIDERS  //  VARIABLE GRIP", &"unlock_rep": 170,
@@ -160,7 +160,7 @@ const EVENTS: Dictionary = {
 	&"MESA_RHYTHM": {
 		&"event_id": &"MESA_RHYTHM", &"track_id": &"MESA_MX", &"display_name": "RHYTHM ATTACK",
 		&"format": &"RHYTHM", &"session_type": &"SPECIAL", &"laps": 1, &"opponent_count": 5,
-		&"route_version": 1, &"checkpoint_count": 8, &"weather": &"NIGHT",
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"NIGHT",
 		&"rules": {&"airtime_bonus": true},
 		&"medal_times_usec": {&"gold": 72_000_000, &"silver": 90_000_000, &"bronze": 115_000_000},
 		&"description": "One lap. Chain the fastest jump combinations without throwing away landings.",
@@ -423,7 +423,7 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 		&"championship_id": &"",
 		&"laps": lap_count,
 		&"opponent_count": opponents,
-		&"route_version": 1,
+		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION,
 		&"checkpoint_count": 10,
 		&"weather": &"CLEAR",
 		&"surface_modifier": &"PACKED",

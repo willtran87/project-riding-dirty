@@ -126,7 +126,7 @@ func _generate(kind: String, start_unix: int, duration_seconds: int, player_tier
 	for index in mini(modifier_count, modifier_pool.size()):
 		selected_modifiers.append(modifier_pool[index])
 	var challenge_id := "%s_%d_%08x" % [kind, start_unix, seed_value]
-	var route_version := 19 if track_id == "QUARRY" else (4 if track_id == "PINE" else 1)
+	var route_version := 19 if track_id == "QUARRY" else (4 if track_id == "PINE" else CourseCatalog.MESA_MX_ROUTE_VERSION)
 	var challenge := {
 		"version": 2,
 		"challenge_id": challenge_id,

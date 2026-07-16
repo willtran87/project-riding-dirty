@@ -1,6 +1,6 @@
 # Riding Dirty
 
-*Riding Dirty* is a stylized 3D dirt-bike racing tour built with Godot 4.7. Racecraft V27 includes 18 playable events across Quarry Trail, Pine Ridge, and Red Mesa MX; full championship weekends and replayable seasons; named multi-bike fields; tactile arcade handling; bike building and tuning; competitive challenges; replay and ghost systems; an eight-lesson Riding Academy; and persistent progression.
+*Riding Dirty* is a stylized 3D dirt-bike racing tour built with Godot 4.7. Racecraft V28 includes 18 playable events across Quarry Trail, Pine Ridge, and Red Mesa MX; full championship weekends and replayable seasons; named multi-bike fields; tactile arcade handling; adaptive touch controls; bike building and tuning; competitive challenges; replay and ghost systems; an eight-lesson Riding Academy; and persistent progression.
 
 ## Local browser build
 
@@ -26,7 +26,7 @@ The responsive frontend and current Godot WebAssembly release live under `web/`.
 python .\serve_web.py
 ```
 
-Then open [http://127.0.0.1:8777/](http://127.0.0.1:8777/). Click **Start the Tour**, click the game once to give it keyboard/audio focus, and use the controls below. A desktop keyboard or gamepad is recommended; the page is responsive on narrow screens, but the game does not yet include touch riding controls.
+Then open [http://127.0.0.1:8777/](http://127.0.0.1:8777/). Click **Start the Tour**, click or tap the game once to give it input/audio focus, and use the controls below. Phones and tablets receive adaptive Garage and riding controls; rotate to landscape for the full course view.
 
 To produce and verify the browser release after a game change, install the Godot 4.7 export templates and run:
 
@@ -38,25 +38,25 @@ The deterministic release script exports Godot, content-addresses the pack and t
 
 ## Controls
 
-| Action | Keyboard | Gamepad |
-| --- | --- | --- |
-| Throttle | W | Right trigger |
-| Brake / reverse | S | Left trigger |
-| Steer | A / D | Left stick |
-| Lean in the air | Up / Down | Right stick |
-| Preload / hop | Space | A / Cross |
-| Context Flow | Shift | Left shoulder |
-| Racecraft technique | C | Right shoulder |
-| Reset bike | R | Y / Triangle |
-| Restart run | Enter | X / Square |
-| Pause | Escape | Start |
-| Open garage | G | B / Circle |
-| Repair in garage | F | Right shoulder |
-| Cycle handling assist in garage | H | Left-stick click |
-| Open race workshop | Tab | X / Square |
-| Settings / accessibility | F1 | Back / Select |
-| Replay | V | - |
-| Photo mode | P | - |
+| Action | Keyboard | Gamepad | Touch |
+| --- | --- | --- | --- |
+| Throttle | W | Right trigger | Hold THROTTLE |
+| Brake / reverse | S | Left trigger | Hold BRAKE |
+| Steer | A / D | Left stick | Drag the ride pad left / right |
+| Lean in the air | Up / Down | Right stick | Drag the ride pad up / down |
+| Preload / hop | Space | A / Cross | Hold HOP, then release |
+| Context Flow | Shift | Left shoulder | Tap FLOW |
+| Racecraft technique | C | Right shoulder | Tap TECH |
+| Reset bike | R | Y / Triangle | Tap RESET |
+| Restart run | Enter | X / Square | Results action |
+| Pause | Escape | Start | Tap PAUSE |
+| Open garage | G | B / Circle | Tap GARAGE |
+| Repair in garage | F | Right shoulder | Tap REPAIR |
+| Cycle handling assist in garage | H | Left-stick click | Tap ASSIST |
+| Open race workshop | Tab | X / Square | Tap WORKSHOP |
+| Settings / accessibility | F1 | Back / Select | Tap SETTINGS |
+| Replay | V | - | - |
+| Photo mode | P | - | - |
 
 The garage uses `Q` / `E` or the horizontal D-pad to change setups, `W` / `S` or the vertical D-pad to change events, and `Enter` / `A` to purchase or ride. Medal finishes award cash plus activity-specific Racer, Freestyler, or Explorer reputation; profile progress and personal-best records persist between sessions.
 
@@ -64,7 +64,7 @@ Clean landings and well-executed racecraft earn **Flow**. `Shift` or the left sh
 
 ### Settings and accessibility
 
-Open the five-page settings surface with `F1` or Back/Select. Every numeric and enumerated option can be changed with keyboard, gamepad, or the on-screen minus/plus controls, and long pages keep the selected row in view.
+Open the five-page settings surface with `F1`, Back/Select, or the touch SETTINGS button. Every numeric and enumerated option can be changed with keyboard, gamepad, or the on-screen minus/plus controls, and long pages keep the selected row in view. The Input page can force touch controls on or off, swap handedness, and tune control size and opacity.
 
 - **Race difficulty:** Relaxed, Standard, and Expert apply a bounded `-1`, `0`, or `+1` offset to the authored AI tier in ordinary offline races. Daily/weekly challenges and Riding Academy grading remain locked to their authored rules, and difficulty is included in the run signature so unlike sessions do not share records.
 - **Visual quality:** Performance uses a 75% 3D render scale without MSAA, Balanced uses 90% with 2x MSAA, and Quality uses 100% with up to 4x MSAA. Web builds cap Quality at 2x MSAA. These presets affect rendering only; race simulation, physics, timing, and signatures do not change.
@@ -72,7 +72,7 @@ Open the five-page settings surface with `F1` or Back/Select. Every numeric and 
 
 Settings use a versioned, checksum-verified format with temporary-write verification, a rotating backup, legacy migration, and automatic primary repair after backup recovery.
 
-## Racecraft V27 systems
+## Racecraft V28 systems
 
 - **Authoritative tracks:** One route geometry drives the visible riding surface, collision, map, checkpoints, barriers, reset poses, rivals, and race pack. Quarry and Pine are traversable point-to-point courses; Mesa is a traversable closed circuit; all three have automated topology, clipping, barrier, ground-cover, and terrain-clearance validation. Pine's creek and ridge trails are legal, progress-mapped branches that rejoin the same authoritative course.
 - **Full race weekends:** Practice, qualifying, heats, LCQ transfers, main events, flags, sectors, penalties, classifications, DNFs, championship points, standings, and countback rules.
@@ -88,7 +88,7 @@ Settings use a versioned, checksum-verified format with temporary-write verifica
 - **Fair progression:** Race reputation starts from medal value, adds bounded placement and personal-best bonuses, and preserves full value for first clears, first wins, and new bests. Non-improving repeat finishes award 35% reputation while retaining their cash reward, making practice useful without letting repetition overwhelm new-event progress. Overtakes, contacts, crashes, recoveries, clean rides, and related achievements are calculated from the player's bike rather than aggregate NPC activity.
 - **Competition:** Deterministic daily and weekly events, exact run signatures, local leaderboards, optional queued HTTP submissions, personal-best ghosts, replay, hotseat challenges, and tamper-checked ghost import/export.
 - **Riding Academy:** Eight progressive lessons with live ride metrics, prerequisites, explicit rematches, grading, stars, rewards, and a two-objective live lesson HUD. The syllabus now grades rut rails, controlled slides, pumps, clean landings, skill lines, scrubs, Compose saves, dabs, rejoins, drafting passes, and clean contact management.
-- **Player options:** Five-page settings for audio, ride, camera/graphics, accessibility, and input; persisted Relaxed/Standard/Expert race difficulty; Performance/Balanced/Quality visual presets; Reduced Motion; dual-device keyboard/gamepad/mouse rebinding with conflict protection; assist modes; metric or imperial units; FOV, camera shake, deadzone, sensitivity, response curve, haptic strength, text scale, high contrast, and color-safe flag colors.
+- **Player options:** Five-page settings for audio, ride, camera/graphics, accessibility, and input; persisted Relaxed/Standard/Expert race difficulty; Performance/Balanced/Quality visual presets; Reduced Motion; adaptive multitouch riding and Garage controls with handedness, scale, and opacity options; keyboard/gamepad/mouse rebinding with conflict protection; assist modes; metric or imperial units; FOV, camera shake, deadzone, sensitivity, response curve, haptic strength, text scale, high contrast, and color-safe flag colors.
 - **Reliable saves and lifecycle:** Desktop profiles use verified temporary replacement plus a rotating recovery copy. Browser profiles and ghosts use checksum-verified primary/backup storage and repair a damaged primary from the backup. Hiding the browser pauses and mutes the game without overwriting a pause or mute the player already owned.
 - **Audio identity:** Quarry, Pine, and Mesa use distinct procedural score palettes; standard, weekend, finale, and challenge events adapt through base, drive, tension, and results stems with smooth transitions and separate Music/SFX buses.
 - **Production pass:** Tracks stream behind event briefings, Pine's signature-validated baked dressing and exact terrain index preserve authored density while shortening preparation, and a live route-derived fallback prevents stale bakes from becoming authoritative. Adaptive music synthesis overlaps district loading, the Garage presents the selected bike and rider as a readable hero composition, dense dressing is batched and spatially indexed, minimap geometry is cached, release probes are excluded, threaded Web payloads negotiate gzip, and the browser wrapper prioritizes a large readable 16:9 canvas at laptop and high-resolution desktop sizes.

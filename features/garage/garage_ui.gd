@@ -1182,6 +1182,8 @@ func _format_modifiers(modifiers: Dictionary) -> String:
 
 
 func _is_workshop_toggle(event: InputEvent) -> bool:
+	if event.is_action_pressed(InputRouter.OPEN_WORKSHOP):
+		return true
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
 		return key_event.pressed and (key_event.physical_keycode == KEY_TAB or key_event.keycode == KEY_TAB)
@@ -1192,6 +1194,8 @@ func _is_workshop_toggle(event: InputEvent) -> bool:
 
 
 func _is_continue_weekend_input(event: InputEvent) -> bool:
+	if event.is_action_pressed(InputRouter.CONTINUE_WEEKEND):
+		return true
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
 		return key_event.pressed and (key_event.physical_keycode == KEY_C or key_event.keycode == KEY_C)

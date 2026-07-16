@@ -2,6 +2,12 @@ extends Node
 ## Defines semantic controls and exposes normalized keyboard/gamepad state.
 
 signal device_changed(using_gamepad: bool)
+signal input_mode_changed(mode: StringName)
+
+const INPUT_MODE_KEYBOARD_MOUSE: StringName = &"KEYBOARD_MOUSE"
+const INPUT_MODE_GAMEPAD: StringName = &"GAMEPAD"
+const INPUT_MODE_TOUCH: StringName = &"TOUCH"
+const MOUSE_AFTER_TOUCH_GUARD_USEC: int = 850_000
 
 const THROTTLE: StringName = &"throttle"
 const BRAKE: StringName = &"brake"
@@ -19,6 +25,8 @@ const GARAGE_LEFT: StringName = &"garage_left"
 const GARAGE_RIGHT: StringName = &"garage_right"
 const CONFIRM: StringName = &"confirm_selection"
 const OPEN_GARAGE: StringName = &"open_garage"
+const OPEN_WORKSHOP: StringName = &"open_workshop"
+const CONTINUE_WEEKEND: StringName = &"continue_weekend"
 const EVENT_PREVIOUS: StringName = &"event_previous"
 const EVENT_NEXT: StringName = &"event_next"
 const REPAIR_BIKE: StringName = &"repair_bike"
@@ -29,6 +37,9 @@ const TOGGLE_PHOTO_MODE: StringName = &"toggle_photo_mode"
 const SPECTATOR_NEXT: StringName = &"spectator_next"
 
 var using_gamepad: bool = false
+var using_touch: bool = false
+var input_mode: StringName = INPUT_MODE_KEYBOARD_MOUSE
+var _last_touch_input_usec: int = -MOUSE_AFTER_TOUCH_GUARD_USEC
 var steering_deadzone: float = 0.12
 var throttle_deadzone: float = 0.05
 var brake_deadzone: float = 0.05
@@ -41,12 +52,40 @@ func _ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	var next_uses_gamepad := event is InputEventJoypadButton or event is InputEventJoypadMotion
-	if event is InputEventKey or event is InputEventMouse:
-		next_uses_gamepad = false
-	if next_uses_gamepad != using_gamepad:
-		using_gamepad = next_uses_gamepad
+	var next_mode := input_mode
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		_last_touch_input_usec = Time.get_ticks_usec()
+		next_mode = INPUT_MODE_TOUCH
+	elif event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		next_mode = INPUT_MODE_GAMEPAD
+	elif event is InputEventKey or event is InputEventMouse:
+		# Browsers and mobile platforms may synthesize a mouse event immediately
+		# after each screen touch. Keep TOUCH authoritative through that companion
+		# event while allowing a real mouse to take over after a short idle window.
+		if event is InputEventMouse and Time.get_ticks_usec() - _last_touch_input_usec <= MOUSE_AFTER_TOUCH_GUARD_USEC:
+			return
+		next_mode = INPUT_MODE_KEYBOARD_MOUSE
+	_set_input_mode(next_mode)
+
+
+func note_touch_input() -> void:
+	## Virtual controls inject semantic InputEventAction instances after the raw
+	## screen event. Keep the originating device explicit so action injection can
+	## never make the HUD fall back to keyboard prompts.
+	_last_touch_input_usec = Time.get_ticks_usec()
+	_set_input_mode(INPUT_MODE_TOUCH)
+
+
+func _set_input_mode(next_mode: StringName) -> void:
+	if next_mode == input_mode:
+		return
+	var previously_using_gamepad := using_gamepad
+	input_mode = next_mode
+	using_gamepad = input_mode == INPUT_MODE_GAMEPAD
+	using_touch = input_mode == INPUT_MODE_TOUCH
+	if using_gamepad != previously_using_gamepad:
 		device_changed.emit(using_gamepad)
+	input_mode_changed.emit(input_mode)
 
 
 func get_throttle() -> float:
@@ -141,6 +180,10 @@ func _register_actions() -> void:
 	_add_button(CONFIRM, JOY_BUTTON_A)
 	_add_key(OPEN_GARAGE, KEY_G)
 	_add_button(OPEN_GARAGE, JOY_BUTTON_B)
+	_add_key(OPEN_WORKSHOP, KEY_TAB)
+	_add_button(OPEN_WORKSHOP, JOY_BUTTON_X)
+	_add_key(CONTINUE_WEEKEND, KEY_C)
+	_add_button(CONTINUE_WEEKEND, JOY_BUTTON_Y)
 	_add_key(EVENT_PREVIOUS, KEY_W)
 	_add_key(EVENT_PREVIOUS, KEY_UP)
 	_add_button(EVENT_PREVIOUS, JOY_BUTTON_DPAD_UP)
