@@ -140,6 +140,24 @@ button, a { font: inherit; }
 
 #gameFrame { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; border: 0; background: #111; }
 
+.orientation-notice {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  color: var(--ink);
+  text-align: center;
+  background: rgba(10, 12, 10, .94);
+}
+
+.orientation-notice span { color: var(--orange); font-size: 58px; line-height: 1; }
+.orientation-notice strong { font-size: 24px; letter-spacing: .13em; }
+.orientation-notice small { color: var(--muted); font: 700 12px/1.4 system-ui, sans-serif; }
+
 /* The Godot viewport is authored at 16:9. Once live, keep the host frame on
    that same stage ratio so "keep" stretch never crops the sides of the HUD. */
 .game-stage.is-running {
@@ -288,6 +306,22 @@ button, a { font: inherit; }
   .ride-card { grid-template-columns: 1fr; }
   .controls-grid { grid-template-columns: 1fr; }
   .save-note { grid-column: auto; }
+}
+
+@media (pointer: coarse) and (orientation: landscape) {
+  .app-shell.is-playing {
+    --playing-chrome: calc(max(4px, env(safe-area-inset-top)) + max(4px, env(safe-area-inset-bottom)));
+    padding-top: max(4px, env(safe-area-inset-top));
+    padding-right: max(4px, env(safe-area-inset-right));
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    padding-left: max(4px, env(safe-area-inset-left));
+  }
+  .app-shell.is-playing .topbar { display: none; }
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .app-shell.is-playing .orientation-notice { display: grid; }
+  .app-shell.is-playing #gameFrame { filter: saturate(.4) brightness(.32); pointer-events: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

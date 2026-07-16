@@ -11,9 +11,9 @@
       "sha256": "5b476a9c9ce642c0ee4256436d1bc31d9c38f868aca0f9a8e2a57c18d2dec2a3"
     },
     "pck": {
-      "bytes": 4897448,
-      "file": "index.cc0b70f35486.pck",
-      "sha256": "cc0b70f3548626a23b5b942c183516878d0b8ede0a572bf36288e735ec00ec83"
+      "bytes": 4932284,
+      "file": "index.f5fcda8895d5.pck",
+      "sha256": "f5fcda8895d53df876025cdf6f07d62e027d58b9fb4df617f2d9f833b33a1015"
     },
     "wasm": {
       "bytes": 38814086,
@@ -22,6 +22,6 @@
       "sha256": "5f424353884e68cd480a813678be02e0e4525531764c36002980c1c2c927b0da"
     }
   },
-  "build": "racecraft-v27",
-  "version": "0.3.7-racecraft-v27"
+  "build": "racecraft-v28",
+  "version": "0.3.8-racecraft-v28"
 }
