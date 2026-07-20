@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -25,6 +28,28 @@ WORKLET_SOURCES = {
     "audio_worklet": "index.audio.worklet.js",
     "audio_position_worklet": "index.audio.position.worklet.js",
 }
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Replace a release metadata file without exposing a partial write.
+
+    Godot can briefly retain a Windows handle after export. Writing through a
+    sibling temporary file keeps the old release valid and lets us retry the
+    final replace until that transient handle is released.
+    """
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8", newline="\n")
+    try:
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                return
+            except OSError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.05 * (2**attempt))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def project_version() -> str:
@@ -109,19 +134,66 @@ def install_host_handshake(html: str) -> str:
     return html
 
 
-def content_address_assets(html: str) -> tuple[str, dict[str, object]]:
+def _runtime_sources(html: str) -> tuple[Path, Path, dict[str, Path], bool]:
     wasm_source = GAME_ROOT / "index.wasm"
     pck_source = GAME_ROOT / "index.pck"
-    worklet_sources = {
+    worklet_sources: dict[str, Path] = {
         key: GAME_ROOT / filename for key, filename in WORKLET_SOURCES.items()
     }
     required_sources = [wasm_source, pck_source, *worklet_sources.values()]
     missing_sources = [source.name for source in required_sources if not source.is_file()]
-    if missing_sources:
+    if not missing_sources:
+        return wasm_source, pck_source, worklet_sources, True
+    if len(missing_sources) != len(required_sources):
         raise RuntimeError(
-            "Expected fresh unversioned Godot runtime assets after export: "
+            "Incomplete unversioned Godot runtime export: "
             + ", ".join(missing_sources)
         )
+
+    # Recover an interrupted stamping pass. Older versions of this builder
+    # moved all four assets before updating index.html, so the shell may still
+    # name `index` even though exactly one complete hashed bundle is present.
+    config_match = CONFIG_PATTERN.search(html)
+    if config_match:
+        config = json.loads(config_match.group(1))
+        executable = str(config.get("executable", ""))
+        main_pack = str(config.get("mainPack", ""))
+        referenced = (
+            GAME_ROOT / f"{executable}.wasm",
+            GAME_ROOT / main_pack,
+            {
+                key: GAME_ROOT / f"{executable}{filename.removeprefix('index')}"
+                for key, filename in WORKLET_SOURCES.items()
+            },
+        )
+        if executable != "index" and all(
+            path.is_file()
+            for path in [referenced[0], referenced[1], *referenced[2].values()]
+        ):
+            return referenced[0], referenced[1], referenced[2], False
+
+    wasm_candidates = sorted(GAME_ROOT.glob("index.*.wasm"))
+    pck_candidates = sorted(GAME_ROOT.glob("index.*.pck"))
+    complete_bundles: list[tuple[Path, dict[str, Path]]] = []
+    for wasm_candidate in wasm_candidates:
+        executable = wasm_candidate.name.removesuffix(".wasm")
+        candidate_worklets = {
+            key: GAME_ROOT / f"{executable}{filename.removeprefix('index')}"
+            for key, filename in WORKLET_SOURCES.items()
+        }
+        if all(path.is_file() for path in candidate_worklets.values()):
+            complete_bundles.append((wasm_candidate, candidate_worklets))
+    if len(complete_bundles) == 1 and len(pck_candidates) == 1:
+        recovered_wasm, recovered_worklets = complete_bundles[0]
+        return recovered_wasm, pck_candidates[0], recovered_worklets, False
+    raise RuntimeError(
+        "Expected one complete fresh or content-addressed Godot runtime bundle; "
+        f"found bundles={len(complete_bundles)} packs={len(pck_candidates)}"
+    )
+
+
+def content_address_assets(html: str) -> tuple[str, dict[str, object]]:
+    wasm_source, pck_source, worklet_sources, fresh_export = _runtime_sources(html)
 
     wasm_sha = digest(wasm_source)
     pck_sha = digest(pck_source)
@@ -131,17 +203,15 @@ def content_address_assets(html: str) -> tuple[str, dict[str, object]]:
     pck_name = f"index.{pck_sha[:12]}.pck"
     executable_name = wasm_name.removesuffix(".wasm")
     worklet_names = {
-        key: f"{executable_name}{source.name.removeprefix('index')}"
-        for key, source in worklet_sources.items()
+        key: f"{executable_name}{WORKLET_SOURCES[key].removeprefix('index')}"
+        for key in worklet_sources
     }
 
-    for candidate in GAME_ROOT.iterdir():
-        if candidate.is_file() and HASHED_ASSET_PATTERN.fullmatch(candidate.name):
-            candidate.unlink()
-    wasm_source.replace(GAME_ROOT / wasm_name)
-    pck_source.replace(GAME_ROOT / pck_name)
-    for key, source in worklet_sources.items():
-        source.replace(GAME_ROOT / worklet_names[key])
+    if fresh_export:
+        shutil.copy2(wasm_source, GAME_ROOT / wasm_name)
+        shutil.copy2(pck_source, GAME_ROOT / pck_name)
+        for key, source in worklet_sources.items():
+            shutil.copy2(source, GAME_ROOT / worklet_names[key])
 
     config_match = CONFIG_PATTERN.search(html)
     if not config_match:
@@ -174,6 +244,23 @@ def content_address_assets(html: str) -> tuple[str, dict[str, object]]:
     return html, manifest
 
 
+def finalize_content_addressed_assets(asset_manifest: dict[str, object]) -> None:
+    keep = {
+        str(asset["file"])
+        for asset in asset_manifest.values()
+        if isinstance(asset, dict) and "file" in asset
+    }
+    for filename in ["index.wasm", "index.pck", *WORKLET_SOURCES.values()]:
+        (GAME_ROOT / filename).unlink(missing_ok=True)
+    for candidate in GAME_ROOT.iterdir():
+        if (
+            candidate.is_file()
+            and HASHED_ASSET_PATTERN.fullmatch(candidate.name)
+            and candidate.name not in keep
+        ):
+            candidate.unlink()
+
+
 def stamp_wrapper(version: str, release_id: str) -> None:
     html = OUTER_HTML.read_text(encoding="utf-8")
     # Replace the prior named release slug while preserving cache-stamp dates
@@ -182,15 +269,14 @@ def stamp_wrapper(version: str, release_id: str) -> None:
     version_number = re.search(r"v(\d+)$", release_id, re.IGNORECASE)
     if version_number:
         html = re.sub(r"V\d+", f"V{version_number.group(1)}", html)
-    OUTER_HTML.write_text(html, encoding="utf-8", newline="\n")
+    atomic_write_text(OUTER_HTML, html)
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     manifest["version"] = version
     manifest["build"] = release_id
-    MANIFEST_PATH.write_text(
+    atomic_write_text(
+        MANIFEST_PATH,
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
     )
 
 
@@ -238,14 +324,14 @@ def main() -> int:
     html = INNER_HTML.read_text(encoding="utf-8")
     html, asset_manifest = content_address_assets(html)
     html = install_host_handshake(html)
-    INNER_HTML.write_text(html, encoding="utf-8", newline="\n")
-    MANIFEST_PATH.write_text(
+    atomic_write_text(INNER_HTML, html)
+    atomic_write_text(
+        MANIFEST_PATH,
         json.dumps({"version": version, "build": release_id, "assets": asset_manifest}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
     )
     # stamp_wrapper reads and extends the just-created manifest.
     stamp_wrapper(version, release_id)
+    finalize_content_addressed_assets(asset_manifest)
     verify_release()
     if not args.skip_tests:
         subprocess.run(

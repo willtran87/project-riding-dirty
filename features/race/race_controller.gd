@@ -7,6 +7,8 @@ const RacePackController = preload("res://features/race/race_pack.gd")
 const PLAYER_RACE_METRICS_SCRIPT := preload("res://features/race/player_race_metrics.gd")
 const GATE_LAUNCH_SCRIPT := preload("res://features/race/race_gate_launch.gd")
 const REPUTATION_POLICY_SCRIPT := preload("res://features/race/race_reputation_policy.gd")
+const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
+const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 const AIRTIME_REWARD_CAP := 600
 
 signal time_updated(elapsed_usec: int, best_usec: int, checkpoint: int, total: int)
@@ -30,8 +32,8 @@ var ghost: GhostController
 var _gates: Array[Area3D] = []
 var _gate_materials: Array[StandardMaterial3D] = []
 var _expected_checkpoint: int = 0
-var _start_usec: int = 0
 var _elapsed_usec: int = 0
+var _run_clock: SimulationClock = SIMULATION_CLOCK_SCRIPT.new()
 var _countdown_remaining: float = 0.0
 var _last_countdown_value: int = -1
 var _spawn_transform: Transform3D = Transform3D.IDENTITY
@@ -40,6 +42,7 @@ var _gold_usec: int = 165_000_000
 var _silver_usec: int = 220_000_000
 var _bronze_usec: int = 300_000_000
 var _activity_id: StringName = &"CIRCUIT"
+var _competitive_signature_cache := ""
 var _track_id: StringName = &"QUARRY"
 var _authoritative_route := PackedVector3Array()
 var _authoritative_surface_root: Node3D
@@ -57,9 +60,11 @@ var _best_lap_usec: int = -1
 var _flag: StringName = &"NONE"
 var _player_finished: bool = false
 var _player_finish_usec: int = -1
+var _player_elimination_lap: int = -1
 var _player_penalty_usec: int = 0
 var _finish_grace_remaining: float = 0.0
 var _last_result: Dictionary = {}
+var _race_attempt_context: Dictionary = {}
 var _is_new_best: bool = false
 var _field_sample_remaining: float = 0.0
 var _field_position: int = -1
@@ -94,6 +99,7 @@ func _ready() -> void:
 	_race_pack.name = "RacePack"
 	add_child(_race_pack)
 	_race_pack.rider_finished.connect(_on_pack_rider_finished)
+	_race_pack.rider_eliminated.connect(_on_pack_rider_eliminated)
 	_race_pack.holeshot_decided.connect(_on_holeshot_decided)
 	_race_pack.player_overtook.connect(_on_player_overtook)
 	_race_pack.player_was_overtaken.connect(_on_player_was_overtaken)
@@ -114,7 +120,7 @@ func _physics_process(delta: float) -> void:
 			if _countdown_remaining <= 0.0:
 				_start_race()
 		State.RACING:
-			_elapsed_usec = Time.get_ticks_usec() - _start_usec
+			_elapsed_usec = _run_clock.advance(delta)
 			_update_academy_metrics()
 			_update_integrity(delta)
 			_race_pack.set_player_race_state(_laps_completed, -1, _player_penalty_usec, &"RUNNING")
@@ -189,6 +195,8 @@ func configure_session(
 	_silver_usec = int(medal_times.get(&"silver", 220_000_000))
 	_bronze_usec = int(medal_times.get(&"bronze", 300_000_000))
 	_activity_id = _session_config.event_id
+	_competitive_signature_cache = ""
+	_competitive_signature_cache = _build_competitive_signature()
 	_active_session_surface = _surface_for_lap(1)
 	_rival_target_usec = CourseCatalog.get_rival_target_usec(_track_id)
 	_race_pack.configure(_track_id, _authoritative_route, _authoritative_surface_root, _session_config)
@@ -197,7 +205,10 @@ func configure_session(
 	_configure_integrity_tracker()
 	if ghost != null:
 		var record_slot := CourseCatalog.get_record_slot(_track_id)
-		if _activity_id not in [&"CIRCUIT", &"PINE_ENDURO"]:
+		var competition_id := StringName(_session_config.rules.get(&"competition_id", &""))
+		if not competition_id.is_empty():
+			record_slot = StringName("%s_R%d_L%d" % [String(competition_id), _session_config.route_version, _session_config.laps])
+		elif _activity_id not in [&"CIRCUIT", &"PINE_ENDURO"]:
 			record_slot = StringName("%s_R%d_L%d" % [String(_activity_id), _session_config.route_version, _session_config.laps])
 		record_slot = StringName("%s_RC%d" % [String(record_slot), CompetitiveRunSignature.RACECRAFT_VERSION])
 		ghost.set_record_slot(record_slot)
@@ -223,6 +234,7 @@ func configure_session(
 
 func enter_waiting() -> void:
 	state = State.WAITING
+	_run_clock.reset()
 	_elapsed_usec = 0
 	_expected_checkpoint = 0
 	_current_lap = 1
@@ -232,6 +244,7 @@ func enter_waiting() -> void:
 	_best_lap_usec = -1
 	_player_finished = false
 	_player_finish_usec = -1
+	_player_elimination_lap = -1
 	_player_penalty_usec = 0
 	_last_result.clear()
 	_split_times.clear()
@@ -271,16 +284,43 @@ func reset_run() -> void:
 	_best_lap_usec = -1
 	_player_finished = false
 	_player_finish_usec = -1
+	_player_elimination_lap = -1
 	_player_penalty_usec = 0
 	_finish_grace_remaining = 0.0
 	_last_result.clear()
 	_split_times.clear()
+	_run_clock.reset()
 	_elapsed_usec = 0
 	_reset_field_feedback()
 	_reset_integrity_tracker()
 	_reset_academy_metrics()
 	_gate_launch_evaluator.call(&"reset")
 	_gate_launch_staging_active = false
+	if _activity_id in RaceEventCatalog.RACE_EVENTS:
+		_race_attempt_context = Profile.begin_race_run(
+			_activity_id,
+			_competitive_signature_cache,
+			{
+				&"academy_lesson_id": StringName(_session_config.rules.get(&"academy_lesson_id", &"")),
+				&"challenge_id": StringName(_session_config.rules.get(&"challenge_id", &"")),
+				&"competition_id": StringName(_session_config.rules.get(&"competition_id", &"")),
+				&"weekend_id": StringName(_session_config.rules.get(&"weekend_id", &"")),
+				&"weekend_phase": StringName(_session_config.rules.get(&"weekend_phase", &"")),
+				&"weekend_managed": bool(_session_config.rules.get(&"weekend_managed", false)),
+			}
+		)
+	else:
+		# Synthetic controller probes may use isolated event IDs, but their results
+		# are intentionally untrusted by Profile and can never settle progression.
+		_race_attempt_context = {
+			&"accepted": false,
+			&"reason": &"UNREGISTERED_EVENT",
+			&"run_id": "untrusted-%s-%d" % [String(_activity_id).to_lower(), Time.get_ticks_usec()],
+		}
+	if _activity_id in RaceEventCatalog.RACE_EVENTS and not bool(_race_attempt_context.get(&"accepted", false)):
+		push_error("Race run authority rejected %s: %s" % [
+			String(_activity_id), String(_race_attempt_context.get(&"reason", &"UNKNOWN"))
+		])
 	_countdown_remaining = _session_config.countdown_seconds
 	_last_countdown_value = -1
 	_set_flag(&"YELLOW")
@@ -300,16 +340,21 @@ func reset_run() -> void:
 	_emit_session_snapshot()
 
 
-func request_player_reset() -> void:
+func request_player_reset() -> bool:
 	if bike == null:
-		return
+		return false
+	# The finish line freezes competitive evidence. A reset button pressed while
+	# the field completes cannot alter the official result or PB eligibility.
+	if state in [State.FINISHED, State.RESULTS]:
+		return false
 	_apply_player_recovery(&"MANUAL_RESET")
+	return true
 
 
 func _on_bike_automatic_recovery_requested(reason: StringName) -> void:
 	# Outside a live race the bike observes that no respawn occurred during this
 	# synchronous callback and performs its own penalty-free safe recovery.
-	if state not in [State.RACING, State.FINISHED]:
+	if state != State.RACING:
 		return
 	_apply_player_recovery(reason if not reason.is_empty() else &"AUTO_RECOVERY")
 
@@ -317,7 +362,7 @@ func _on_bike_automatic_recovery_requested(reason: StringName) -> void:
 func _apply_player_recovery(reason: StringName) -> void:
 	if bike == null:
 		return
-	var race_active := state in [State.RACING, State.FINISHED]
+	var race_active := state == State.RACING
 	var rejoin := _spawn_transform
 	var incident_penalty_usec := _session_config.reset_penalty_usec if race_active else 0
 	if _integrity_tracker != null and _integrity_tracker.has_method(&"request_reset"):
@@ -340,9 +385,36 @@ func _apply_player_recovery(reason: StringName) -> void:
 	integrity_updated.emit(_integrity_snapshot.duplicate(true))
 	if race_active:
 		_player_race_metrics.record_recovery(reason)
-		var recovery_label := "SAFE REJOIN" if reason == &"MANUAL_RESET" else "AUTO RECOVERY"
-		race_moment.emit("%s  //  +%.1fs" % [recovery_label, float(incident_penalty_usec) / 1_000_000.0], 0, false)
+		_emit_recovery_feedback(reason, incident_penalty_usec)
 	_emit_session_snapshot()
+
+
+func _emit_recovery_feedback(reason: StringName, incident_penalty_usec: int) -> void:
+	if _session_config.format == &"ACADEMY":
+		var incidents := _integrity_snapshot.get(&"incidents", {}) as Dictionary
+		var reset_count := maxi(int(incidents.get(&"resets_consumed", 0)), 1)
+		var reset_limit := _academy_reset_objective_limit()
+		var recovery_kind := "SAFE REJOIN" if reason == &"MANUAL_RESET" else "AUTO RECOVERY"
+		var label := "COACH  //  %s  //  KEEP GOING" % recovery_kind
+		if reset_limit > 0:
+			label = "COACH  //  %s  //  RESET %d / %d  //  KEEP GOING" % [
+				recovery_kind, reset_count, reset_limit,
+			]
+		race_moment.emit(label, 0, true)
+		return
+	var recovery_label := "SAFE REJOIN" if reason == &"MANUAL_RESET" else "AUTO RECOVERY"
+	race_moment.emit(
+		"%s  //  +%.1fs" % [recovery_label, float(incident_penalty_usec) / 1_000_000.0],
+		0,
+		false
+	)
+
+
+func _academy_reset_objective_limit() -> int:
+	for objective: Dictionary in _session_config.rules.get(&"academy_objectives", []) as Array:
+		if StringName(objective.get(&"metric", &"")) == &"resets":
+			return maxi(roundi(float(objective.get(&"bronze", 0.0))), 0)
+	return 0
 
 
 func _record_fallback_recovery(reason: StringName, penalty_usec: int) -> void:
@@ -406,6 +478,10 @@ func get_gate_launch_snapshot() -> Dictionary:
 	return _gate_launch_evaluator.call(&"get_snapshot") as Dictionary
 
 
+func get_elimination_snapshot() -> Dictionary:
+	return _race_pack.get_elimination_snapshot() if _race_pack != null else {}
+
+
 func get_classification_snapshot() -> Array[Dictionary]:
 	var classification := _race_pack.get_classification_snapshot() if _race_pack != null else [] as Array[Dictionary]
 	var player_metrics := _player_race_metrics.get_snapshot()
@@ -435,12 +511,23 @@ func get_session_snapshot() -> Dictionary:
 		&"state": state,
 		&"phase": presentation_phase,
 		&"event_id": _activity_id,
+		&"challenge_id": str(_session_config.rules.get(&"challenge_id", "")),
+		&"competition_id": StringName(_session_config.rules.get(&"competition_id", &"")),
+		&"challenge_kind": StringName(_session_config.rules.get(&"challenge_kind", &"")),
+		&"competitive_signature": _competitive_signature_cache,
 		&"track_id": _track_id,
+		&"route_version": _session_config.route_version,
+		&"reverse_route": _session_config.reverse_route,
 		&"display_name": _session_config.display_name,
 		&"format": _session_config.format,
 		&"session_type": _session_config.session_type,
 		&"weather": _session_config.weather,
 		&"surface": _active_session_surface,
+		&"medal_times_usec": {
+			&"gold": _gold_usec,
+			&"silver": _silver_usec,
+			&"bronze": _bronze_usec,
+		},
 		&"elapsed_usec": _elapsed_usec,
 		&"countdown": maxf(_countdown_remaining, 0.0),
 		&"current_lap": _current_lap,
@@ -457,6 +544,7 @@ func get_session_snapshot() -> Dictionary:
 		&"best_lap_usec": _best_lap_usec,
 		&"lap_times_usec": _lap_times_usec.duplicate(),
 		&"holeshot_rider_id": _race_pack.get_holeshot_rider_id() if _race_pack != null else &"",
+		&"elimination": get_elimination_snapshot(),
 		&"classification": get_classification_snapshot(),
 		&"integrity": _integrity_snapshot.duplicate(true),
 		&"player_metrics": _player_race_metrics.get_snapshot(),
@@ -509,7 +597,7 @@ func _start_race() -> void:
 	_gate_launch_staging_active = false
 	bike.set_gate_staging_input_enabled(false)
 	state = State.RACING
-	_start_usec = Time.get_ticks_usec()
+	_run_clock.reset()
 	_elapsed_usec = 0
 	_lap_start_usec = 0
 	bike.set_motion_locked(false)
@@ -528,13 +616,19 @@ func _start_race() -> void:
 func _begin_player_finish() -> void:
 	if state != State.RACING:
 		return
-	_elapsed_usec = Time.get_ticks_usec() - _start_usec
+	# A synthetic/test-authority finish can legally emit every ordered gate in the
+	# same physics frame as green. Keep the result nonzero and settlement-valid
+	# using one simulation tick instead of leaking wall-clock scheduling into it.
+	if _elapsed_usec <= 0:
+		_elapsed_usec = _run_clock.advance(maxf(get_physics_process_delta_time(), 1.0 / 120.0))
 	_player_finished = true
 	_player_finish_usec = _elapsed_usec
 	state = State.FINISHED
 	bike.set_gate_staging_input_enabled(false)
 	bike.set_controls_enabled(false)
-	_is_new_best = _player_penalty_usec == 0 and (ghost.best_time_usec < 0 or _elapsed_usec < ghost.best_time_usec)
+	var finish_validity := _evaluate_finish_validity()
+	var finish_record_eligible := bool(finish_validity.get(&"valid", false)) and _player_penalty_usec == 0
+	_is_new_best = finish_record_eligible and (ghost.best_time_usec < 0 or _elapsed_usec < ghost.best_time_usec)
 	var effective_time := _elapsed_usec + _player_penalty_usec
 	var medal := _medal_for_time(effective_time)
 	ghost.finish_run(_elapsed_usec, _is_new_best)
@@ -552,10 +646,13 @@ func _begin_player_finish() -> void:
 		_finalize_results()
 
 
-func _finalize_results() -> void:
+func _finalize_results(classify_survivors: bool = false) -> void:
 	if state not in [State.FINISHED, State.RACING]:
 		return
-	_race_pack.mark_unfinished_dnf()
+	if classify_survivors:
+		_race_pack.mark_running_classified()
+	else:
+		_race_pack.mark_unfinished_dnf()
 	_race_pack.stop_race()
 	state = State.RESULTS
 	_last_result = _build_race_result().to_dictionary()
@@ -576,11 +673,6 @@ func _complete_player_lap() -> void:
 	_best_lap_usec = lap_usec if _best_lap_usec < 0 else mini(_best_lap_usec, lap_usec)
 	_laps_completed += 1
 	lap_completed.emit(_laps_completed, _session_config.laps, lap_usec, _best_lap_usec)
-	if bool(_session_config.rules.get(&"eliminate_last_each_lap", false)) and _laps_completed < _session_config.laps:
-		if _race_pack.has_method(&"eliminate_last_rider"):
-			var eliminated: StringName = _race_pack.call(&"eliminate_last_rider")
-			if not eliminated.is_empty():
-				race_moment.emit("%s ELIMINATED" % String(eliminated), 0, true)
 	if _laps_completed >= _session_config.laps:
 		_current_lap = _session_config.laps
 		_begin_player_finish()
@@ -707,6 +799,43 @@ func _on_gate_entered(body: Node3D, checkpoint_index: int) -> void:
 
 func _on_pack_rider_finished(_rider_id: StringName, _finish_usec: int) -> void:
 	_emit_classification()
+
+
+func _on_pack_rider_eliminated(rider_id: StringName, elimination_lap: int) -> void:
+	var player_eliminated := rider_id == &"PLAYER"
+	var display_name := "YOU"
+	if not player_eliminated:
+		display_name = String(rider_id).replace("_", " ")
+		for racer: Dictionary in _race_pack.get_classification_snapshot(false):
+			if StringName(racer.get(&"rider_id", &"")) == rider_id:
+				display_name = str(racer.get(&"display_name", display_name))
+				break
+	race_moment.emit(
+		"%s  //  ELIMINATED ON LAP %d" % [display_name.to_upper(), elimination_lap],
+		0,
+		not player_eliminated
+	)
+	_emit_classification()
+	_emit_session_snapshot()
+	if not player_eliminated or state != State.RACING:
+		return
+
+	# Elimination is a legitimate loss, not a finish or an invalid run. Cancel PB
+	# capture, lock the bike, and classify the remaining field before results.
+	_player_finished = false
+	_player_finish_usec = -1
+	_player_elimination_lap = elimination_lap
+	_is_new_best = false
+	state = State.FINISHED
+	bike.set_gate_staging_input_enabled(false)
+	bike.set_controls_enabled(false)
+	bike.set_motion_locked(true)
+	ghost.cancel_run()
+	_set_gates_visible(false)
+	_set_flag(&"CHECKERED")
+	phase_changed.emit(&"FINISHING")
+	time_updated.emit(_elapsed_usec, ghost.best_time_usec, _expected_checkpoint, _checkpoint_data.size())
+	_finalize_results(true)
 
 
 func _on_holeshot_decided(rider_id: StringName) -> void:
@@ -862,39 +991,22 @@ func _build_breakdown() -> String:
 
 func _build_race_result() -> RaceResult:
 	var result := RaceResult.new()
-	result.run_id = "%s-%d" % [String(_activity_id), Time.get_ticks_usec()]
+	result.run_id = str(_race_attempt_context.get(&"run_id", ""))
 	var competitive_rules := _session_config.rules
-	var build_signature := ""
-	if not competitive_rules.has(&"challenge_id") and Profile.has_method(&"get_active_bike_setup_snapshot"):
-		build_signature = str((Profile.call(&"get_active_bike_setup_snapshot") as Dictionary).get(&"signature", ""))
-	result.signature = CompetitiveRunSignature.build({
-		"event_id": competitive_rules.get(&"competitive_event_id", _activity_id),
-		"track_id": _track_id,
-		"route_version": _session_config.route_version,
-		"format": _session_config.format,
-		"laps": _session_config.laps,
-		"bike_class": competitive_rules.get(&"competitive_bike_class", _session_config.bike_class),
-		"difficulty": competitive_rules.get(&"competitive_difficulty", _session_config.difficulty),
-		"assist_mode": competitive_rules.get(&"competitive_assist_mode", Profile.assist_mode),
-		"setup_id": competitive_rules.get(&"competitive_setup_id", Profile.current_setup),
-		"tune_signature": build_signature,
-		"weather": _session_config.weather,
-		"surface": _session_config.surface_modifier,
-		"challenge_id": competitive_rules.get(&"challenge_id", ""),
-		"modifiers": competitive_rules.get(&"modifiers", []),
-	})
+	result.signature = _competitive_signature_cache
 	result.event_id = _activity_id
+	result.challenge_id = str(competitive_rules.get(&"challenge_id", ""))
+	result.competition_id = StringName(competitive_rules.get(&"competition_id", &""))
+	result.challenge_kind = StringName(competitive_rules.get(&"challenge_kind", &""))
 	result.track_id = _track_id
 	result.format = _session_config.format
 	result.session_type = _session_config.session_type
 	result.championship_id = _session_config.championship_id
-	result.valid = bool(_integrity_snapshot.get(&"valid", true))
-	var penalties := _integrity_snapshot.get(&"penalties", {}) as Dictionary
-	var validity_reasons := PackedStringArray()
-	if not result.valid:
-		for raw_reason: Variant in penalties.keys():
-			validity_reasons.append(str(raw_reason))
+	var finish_validity := _evaluate_finish_validity()
+	result.valid = bool(finish_validity.get(&"valid", false))
+	var validity_reasons: PackedStringArray = finish_validity.get(&"reasons", PackedStringArray())
 	result.player_time_usec = _player_finish_usec
+	result.player_elimination_lap = _player_elimination_lap
 	result.player_penalty_usec = _player_penalty_usec
 	result.medal = _medal_for_time(_player_finish_usec + _player_penalty_usec)
 	result.classification = get_classification_snapshot()
@@ -930,18 +1042,7 @@ func _build_race_result() -> RaceResult:
 	result.lap_times_usec = _lap_times_usec.duplicate()
 	var point_eligible := result.valid and player_classified and result.session_type == &"MAIN"
 	result.championship_points = RaceEventCatalog.points_for_position(result.player_position) if point_eligible else 0
-	var modifier_names := PackedStringArray()
-	for raw_modifier: Variant in competitive_rules.get(&"modifiers", []):
-		modifier_names.append(str(raw_modifier).to_upper())
-	if "NO_RESETS" in modifier_names and result.reset_count > 0:
-		result.valid = false
-		validity_reasons.append("NO_RESETS")
-	if "ZERO_PENALTIES" in modifier_names and result.player_penalty_usec > 0:
-		result.valid = false
-		validity_reasons.append("ZERO_PENALTIES")
-	if "CLEAN_RIDE" in modifier_names and (result.contacts > 0 or result.crashes > 0 or result.recoveries > 0 or result.off_course_count > 0):
-		result.valid = false
-		validity_reasons.append("CLEAN_RIDE")
+	var modifier_names := _competitive_modifier_names()
 	result.validity_reason = ", ".join(validity_reasons)
 	var reward_eligible := result.valid and player_classified and result.player_time_usec >= 0
 	if not reward_eligible:
@@ -971,7 +1072,7 @@ func _build_race_result() -> RaceResult:
 	var total_cash_reward := roundi(float(base_cash + clean_bonus + placement_bonus + modifier_bonus) * reward_multiplier) if reward_eligible else 0
 	var prior_event_record: Dictionary = {}
 	if Profile.has_method(&"get_event_record"):
-		prior_event_record = Profile.call(&"get_event_record", result.event_id) as Dictionary
+		prior_event_record = Profile.call(&"get_event_record", result.event_id, StringName(result.challenge_id)) as Dictionary
 	var is_first_clear := int(prior_event_record.get(&"finishes", 0)) <= 0
 	var is_first_win := result.player_position == 1 and int(prior_event_record.get(&"wins", 0)) <= 0
 	var reputation_policy := REPUTATION_POLICY_SCRIPT.evaluate({
@@ -1014,6 +1115,74 @@ func _build_race_result() -> RaceResult:
 	}
 	result.academy_metrics = _get_academy_metrics(result)
 	return result
+
+
+func _build_competitive_signature() -> String:
+	var competitive_rules := _session_config.rules
+	var build_signature := ""
+	if not competitive_rules.has(&"challenge_id") and Profile.has_method(&"get_active_bike_setup_snapshot"):
+		build_signature = str((Profile.call(&"get_active_bike_setup_snapshot") as Dictionary).get(&"signature", ""))
+	return CompetitiveRunSignature.build({
+		"event_id": competitive_rules.get(&"competitive_event_id", _activity_id),
+		"track_id": _track_id,
+		"route_version": _session_config.route_version,
+		"format": _session_config.format,
+		"laps": _session_config.laps,
+		"bike_class": competitive_rules.get(&"competitive_bike_class", _session_config.bike_class),
+		"difficulty": competitive_rules.get(&"competitive_difficulty", _session_config.difficulty),
+		"assist_mode": competitive_rules.get(&"competitive_assist_mode", Profile.assist_mode),
+		"setup_id": competitive_rules.get(&"competitive_setup_id", Profile.current_setup),
+		"tune_signature": build_signature,
+		"weather": _session_config.weather,
+		"surface": _session_config.surface_modifier,
+		"challenge_id": competitive_rules.get(&"challenge_id", ""),
+		"modifiers": competitive_rules.get(&"modifiers", []),
+	})
+
+
+func _competitive_modifier_names() -> PackedStringArray:
+	var names := PackedStringArray()
+	for raw_modifier: Variant in _session_config.rules.get(&"modifiers", []):
+		names.append(str(raw_modifier).to_upper())
+	return names
+
+
+func _evaluate_finish_validity() -> Dictionary:
+	## This is the single authority used both before GhostController commits a PB
+	## and when the official RaceResult is built. A modifier-invalid finish must
+	## never become the comparison ghost for later eligible attempts.
+	var valid := bool(_integrity_snapshot.get(&"valid", true))
+	var reasons := PackedStringArray()
+	if not valid:
+		var penalties := _integrity_snapshot.get(&"penalties", {}) as Dictionary
+		for raw_reason: Variant in penalties.keys():
+			var reason := str(raw_reason)
+			if reason not in reasons:
+				reasons.append(reason)
+	var modifier_names := _competitive_modifier_names()
+	var incidents := _integrity_snapshot.get(&"incidents", {}) as Dictionary
+	var player_metrics := _player_race_metrics.get_snapshot()
+	if "NO_RESETS" in modifier_names and int(incidents.get(&"resets_consumed", 0)) > 0:
+		valid = false
+		if "NO_RESETS" not in reasons:
+			reasons.append("NO_RESETS")
+	if "ZERO_PENALTIES" in modifier_names and _player_penalty_usec > 0:
+		valid = false
+		if "ZERO_PENALTIES" not in reasons:
+			reasons.append("ZERO_PENALTIES")
+	if (
+			"CLEAN_RIDE" in modifier_names
+			and (
+				int(player_metrics.get(&"contacts", 0)) > 0
+				or int(player_metrics.get(&"crashes", 0)) > 0
+				or int(player_metrics.get(&"recoveries", 0)) > 0
+				or int(incidents.get(&"off_course", 0)) > 0
+			)
+		):
+		valid = false
+		if "CLEAN_RIDE" not in reasons:
+			reasons.append("CLEAN_RIDE")
+	return {&"valid": valid, &"reasons": reasons}
 
 
 func _reset_academy_metrics() -> void:
@@ -1081,7 +1250,7 @@ func _on_bike_trick_landed(airtime: float, _rotation_amount: float, _landing_int
 
 
 func _on_bike_racecraft_event(kind: StringName, payload: Dictionary) -> void:
-	if state not in [State.RACING, State.FINISHED]:
+	if state != State.RACING:
 		return
 	var metric: StringName = &""
 	match kind:
@@ -1244,7 +1413,17 @@ func _reset_integrity_tracker() -> void:
 
 
 func _update_integrity(delta: float) -> void:
-	if &"--smoke-test" in OS.get_cmdline_user_args():
+	var arguments := OS.get_cmdline_user_args()
+	# Normal smoke assertions isolate the expensive live tracker. Rendered race
+	# captures opt back in so their HUD and handling feedback match real gameplay.
+	if (
+		&"--smoke-test" in arguments
+		and &"--capture-race-visuals" not in arguments
+		and (
+			_session_config.format != &"ACADEMY"
+			or bool(_integrity_snapshot.get(&"stuck_detection_armed", false))
+		)
+	):
 		return
 	if _integrity_tracker == null or bike == null or not _integrity_tracker.has_method(&"update"):
 		return
@@ -1261,12 +1440,20 @@ func _update_integrity(delta: float) -> void:
 			_set_flag(&"GREEN")
 		if _integrity_tracker.has_method(&"has_reset_request") and bool(_integrity_tracker.call(&"has_reset_request")):
 			var reset_data := _integrity_tracker.call(&"consume_reset_request") as Dictionary
+			var recovery_reason := StringName(reset_data.get(&"reason", &"INTEGRITY_RECOVERY"))
 			var rejoin: Variant = reset_data.get(&"transform", _spawn_transform)
 			if rejoin is Transform3D:
 				bike.respawn_at(rejoin)
 				_race_pack.set_contact_immunity(1.5)
 				_race_pack.resync_player_pass_tracking()
-				_player_race_metrics.record_recovery(StringName(reset_data.get(&"reason", &"INTEGRITY_RECOVERY")))
+				_player_race_metrics.record_recovery(recovery_reason)
+				if _integrity_tracker.has_method(&"get_snapshot"):
+					_integrity_snapshot = _integrity_tracker.call(&"get_snapshot") as Dictionary
+					integrity_updated.emit(_integrity_snapshot.duplicate(true))
+				_emit_recovery_feedback(
+					recovery_reason,
+					int(reset_data.get(&"penalty_applied_usec", 0))
+				)
 
 
 func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
@@ -1320,24 +1507,46 @@ func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
 	var bike_forward := -bike.global_transform.basis.z.slide(Vector3.UP).normalized()
 	var route_alignment := bike_forward.dot(current_flat)
 	var lap_progress := clampf(float(integrity.get(&"lap_progress", 0.0)), 0.0, 1.0)
+	var route_length := maxf(float(integrity.get(&"route_length", 0.0)), 0.0)
 	var zone_count := 10 if _track_id == CourseCatalog.MESA_MX_ID else 18 if _track_id == CourseCatalog.PINE_ID else 14
-	var zone_float := lap_progress * float(zone_count)
-	var zone_index := mini(floori(zone_float), zone_count - 1)
-	var zone_phase := zone_float - floorf(zone_float)
-	var zone_kind: StringName
-	var target_lane := 0.0
-	match posmod(zone_index, 3):
-		0:
-			zone_kind = &"RUT_FORK"
-			target_lane = rut_offset * (-1.0 if zone_index % 2 == 0 else 1.0)
-		1:
-			zone_kind = &"BERM_FORK"
-			target_lane = signf(signed_turn) * track_half_width * 0.72 if corner_strength > 0.10 else rut_offset
-		_:
-			zone_kind = &"PUMP_FORK"
-			target_lane = 0.0
+	var guidance: Dictionary = RACECRAFT_RULES.skill_line_guidance(
+		lap_progress,
+		route_length,
+		bike.get_speed_mps(),
+		zone_count
+	)
+	var zone_index := int(guidance.get(&"zone_index", -1))
+	var zone_phase := StringName(guidance.get(&"phase", &"NONE"))
+	if zone_phase == &"PREVIEW" and RACECRAFT_RULES.suppress_wrapped_preview(
+		int(guidance.get(&"lap_offset", 0)),
+		zone_index,
+		_current_lap,
+		_session_config.laps,
+		_expected_checkpoint,
+		_checkpoint_data.size()
+	):
+		zone_index = -1
+		zone_phase = &"NONE"
+	var definition: Dictionary = RACECRAFT_RULES.skill_line_definition(
+		zone_index,
+		track_half_width,
+		rut_offset
+	)
+	var zone_kind := StringName(definition.get(&"kind", &"NONE"))
+	var target_lane := float(definition.get(&"target_lane", 0.0))
+	var target_delta := target_lane - signed_lateral
 	var alignment_width := maxf(track_half_width * 0.48, 1.5)
-	var skill_alignment := 1.0 - clampf(absf(signed_lateral - target_lane) / alignment_width, 0.0, 1.0)
+	var skill_alignment := (
+		1.0 - clampf(absf(target_delta) / alignment_width, 0.0, 1.0)
+		if zone_index >= 0
+		else 0.0
+	)
+	var zone_id := RACECRAFT_RULES.skill_line_zone_key(
+		_track_id,
+		route_line_id,
+		zone_index if zone_phase != &"NONE" else -1,
+		zone_kind
+	)
 	return {
 		&"segment": segment,
 		&"route_line_id": route_line_id,
@@ -1352,12 +1561,16 @@ func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
 		&"route_alignment": route_alignment,
 		&"rut_strength": rut_strength,
 		&"berm_strength": berm_strength,
-		&"skill_zone_id": StringName("%s_%s_L%d_Z%02d_%s" % [
-			String(_track_id), String(route_line_id), _current_lap, zone_index, String(zone_kind)
-		]),
+		&"skill_zone_id": zone_id,
 		&"skill_zone_kind": zone_kind,
-		&"skill_zone_active": zone_phase >= 0.16 and zone_phase <= 0.78,
+		&"skill_zone_phase": zone_phase,
+		&"skill_zone_preview": zone_phase == &"PREVIEW",
+		&"skill_zone_active": bool(guidance.get(&"active", false)),
+		&"skill_line_direction": StringName(definition.get(&"direction", &"CENTER")),
 		&"skill_line_target": target_lane,
+		&"skill_line_target_delta": target_delta,
+		&"skill_line_distance_m": float(guidance.get(&"distance_m", 0.0)),
+		&"skill_line_preview_seconds": float(guidance.get(&"preview_seconds", 0.0)),
 		&"skill_line_alignment": skill_alignment,
 		&"skill_line_difficulty": clampf(0.38 + corner_strength * 0.24 + absf(current_tangent.y) * 0.55, 0.35, 0.82),
 	}

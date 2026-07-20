@@ -27,6 +27,10 @@ const REAR_SLIDE_EXIT_MIN := 0.80
 const REAR_SLIDE_EXIT_MAX := 1.06
 const SKILL_LINE_MOMENTUM_MIN := 0.82
 const SKILL_LINE_MOMENTUM_MAX := 1.06
+const SKILL_LINE_ACTIVE_START := 0.55
+const SKILL_LINE_ACTIVE_END := 0.93
+const SKILL_LINE_PREVIEW_SECONDS := 1.25
+const SKILL_LINE_MIN_PREVIEW_METERS := 24.0
 const RUT_MOMENTUM_MIN := 0.80
 const RUT_MOMENTUM_MAX := 1.04
 
@@ -314,6 +318,197 @@ static func evaluate_roost(
 		&"drive_cost_fraction": cost,
 		&"drive_multiplier": 1.0 - cost,
 	}
+
+
+static func skill_line_guidance(
+	lap_progress: float,
+	route_length: float,
+	speed_mps: float,
+	zone_count: int
+) -> Dictionary:
+	## Returns the next readable decision window without consulting scene state.
+	## A line is previewed early enough for a deliberate lane change, becomes live
+	## for a bounded portion of its zone, then clears until the next cue is useful.
+	var safe_length := maxf(route_length, 0.0)
+	var safe_count := maxi(zone_count, 0)
+	if safe_length <= 0.001 or safe_count <= 0:
+		return {
+			&"phase": &"NONE",
+			&"zone_index": -1,
+			&"lap_offset": 0,
+			&"distance_m": 0.0,
+			&"preview_seconds": 0.0,
+			&"active": false,
+		}
+	var bounded_progress := clampf(lap_progress, 0.0, 0.999999)
+	var scaled_progress := bounded_progress * float(safe_count)
+	var current_zone := clampi(floori(scaled_progress), 0, safe_count - 1)
+	var zone_phase := scaled_progress - floorf(scaled_progress)
+	var zone_span := safe_length / float(safe_count)
+	var safe_speed := maxf(speed_mps, 0.0)
+	var preview_distance := maxf(
+		SKILL_LINE_MIN_PREVIEW_METERS,
+		safe_speed * SKILL_LINE_PREVIEW_SECONDS
+	)
+	var phase: StringName = &"NONE"
+	var target_zone := -1
+	var lap_offset := 0
+	var distance_m := 0.0
+	if zone_phase >= SKILL_LINE_ACTIVE_START and zone_phase <= SKILL_LINE_ACTIVE_END:
+		phase = &"ACTIVE"
+		target_zone = current_zone
+	elif zone_phase < SKILL_LINE_ACTIVE_START:
+		phase = &"PREVIEW"
+		target_zone = current_zone
+		distance_m = (SKILL_LINE_ACTIVE_START - zone_phase) * zone_span
+	else:
+		var next_distance := (1.0 - zone_phase + SKILL_LINE_ACTIVE_START) * zone_span
+		if next_distance <= preview_distance:
+			phase = &"PREVIEW"
+			target_zone = posmod(current_zone + 1, safe_count)
+			lap_offset = 1 if target_zone == 0 else 0
+			distance_m = next_distance
+	return {
+		&"phase": phase,
+		&"zone_index": target_zone,
+		&"lap_offset": lap_offset,
+		&"distance_m": maxf(distance_m, 0.0),
+		&"preview_seconds": distance_m / maxf(safe_speed, 1.0) if phase == &"PREVIEW" else 0.0,
+		&"active": phase == &"ACTIVE",
+		&"zone_phase": zone_phase,
+		&"zone_span_m": zone_span,
+		&"preview_distance_m": preview_distance,
+	}
+
+
+static func skill_line_definition(
+	zone_index: int,
+	track_half_width: float,
+	rut_offset: float
+) -> Dictionary:
+	## The line side is zone-authored rather than derived from a live tangent, so
+	## the arrow can never reverse after the rider has committed to the choice.
+	if zone_index < 0:
+		return {&"kind": &"NONE", &"target_lane": 0.0, &"direction": &"CENTER"}
+	var safe_half_width := maxf(track_half_width, 1.0)
+	var safe_rut_offset := clampf(absf(rut_offset), 0.45, safe_half_width * 0.78)
+	var side := -1.0 if posmod(zone_index, 2) == 0 else 1.0
+	var kind: StringName
+	var target_lane: float
+	match posmod(zone_index, 3):
+		0:
+			kind = &"RUT"
+			target_lane = safe_rut_offset * side
+		1:
+			kind = &"BERM"
+			target_lane = safe_half_width * 0.72 * side
+		_:
+			kind = &"PUMP"
+			target_lane = 0.0
+	var direction: StringName = &"CENTER"
+	if target_lane < -0.1:
+		direction = &"LEFT"
+	elif target_lane > 0.1:
+		direction = &"RIGHT"
+	return {
+		&"kind": kind,
+		&"target_lane": target_lane,
+		&"direction": direction,
+	}
+
+
+static func skill_line_zone_key(
+	track_id: StringName,
+	route_line_id: StringName,
+	zone_index: int,
+	line_kind: StringName
+) -> StringName:
+	## The empty decision window resets bike state between occurrences, so a lap
+	## number is unnecessary. Omitting it also makes the key immune to the two
+	## equivalent projections at a closed spline's start/finish seam.
+	if zone_index < 0 or line_kind == &"NONE":
+		return &""
+	return StringName("%s_%s_Z%02d_%s" % [
+		String(track_id), String(route_line_id), zone_index, String(line_kind)
+	])
+
+
+static func suppress_wrapped_preview(
+	lap_offset: int,
+	zone_index: int,
+	current_lap: int,
+	total_laps: int,
+	completed_checkpoint_count: int,
+	checkpoint_count: int
+) -> bool:
+	## Grid staging sits just before the geometric seam and legitimately previews
+	## zone zero of lap one. At the finish, projection may wrap to the start alias
+	## one physics tick before the checkpoint Area reports the lap, changing the
+	## guidance from lap_offset=1 to zone zero with lap_offset=0. Treat both forms
+	## as beyond-finish only after the final checkpoint has armed the finish.
+	if current_lap < maxi(total_laps, 1):
+		return false
+	var safe_checkpoint_count := maxi(checkpoint_count, 0)
+	var finish_armed := (
+		completed_checkpoint_count > 0
+		if safe_checkpoint_count <= 1
+		else completed_checkpoint_count >= safe_checkpoint_count - 1
+	)
+	return finish_armed and (lap_offset > 0 or zone_index == 0)
+
+
+static func skill_line_commit_intent(
+	line_kind: StringName,
+	target_delta: float,
+	steer_input: float,
+	active_technique: StringName
+) -> bool:
+	## Lateral lines commit only while correcting toward the live target. Pump
+	## lines are exclusive to the contextual Pump technique; ordinary course
+	## steering can never opt the rider into their risk/reward grade.
+	if line_kind == &"PUMP":
+		return active_technique == &"PUMP"
+	if line_kind not in [&"RUT", &"BERM"]:
+		return false
+	var safe_delta := target_delta
+	var safe_steer := clampf(steer_input, -1.0, 1.0)
+	return (
+		absf(safe_delta) > 0.15
+		and absf(safe_steer) >= 0.16
+		and signf(safe_steer) == signf(safe_delta)
+	)
+
+
+static func evaluate_skill_line_choice(
+	committed: bool,
+	rider_skill: float,
+	entry_alignment: float,
+	timing_quality: float,
+	commitment: float,
+	difficulty: float
+) -> Dictionary:
+	## Fast lines are opt-in. Riding the normal course is always neutral; only a
+	## deliberate attempt enters the existing bounded risk/reward calculation.
+	if not committed:
+		return {
+			&"outcome": &"BYPASSED",
+			&"committed": false,
+			&"execution": 0.0,
+			&"required": 0.0,
+			&"margin": 0.0,
+			&"momentum_multiplier": 1.0,
+			&"stability_factor": 1.0,
+			&"flow_reward": 0.0,
+		}
+	var result := evaluate_skill_line(
+		rider_skill,
+		entry_alignment,
+		timing_quality,
+		commitment,
+		difficulty
+	)
+	result[&"committed"] = true
+	return result
 
 
 static func evaluate_skill_line(

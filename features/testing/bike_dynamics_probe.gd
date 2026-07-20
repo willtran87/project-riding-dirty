@@ -34,6 +34,10 @@ func _run() -> void:
 	world.add_child(chase_camera)
 	chase_camera.target = bike
 	chase_camera.snap_to_target()
+	var landing_query := bike.get("_landing_query") as PhysicsRayQueryParameters3D
+	var camera_query := chase_camera.get("_obstruction_query") as PhysicsRayQueryParameters3D
+	var landing_query_id := landing_query.get_instance_id() if landing_query != null else 0
+	var camera_query_id := camera_query.get_instance_id() if camera_query != null else 0
 	var front_ray := bike.get_node("FrontSuspension") as RayCast3D
 	var rear_ray := bike.get_node("RearSuspension") as RayCast3D
 	var reference_contract := (
@@ -286,6 +290,16 @@ func _run() -> void:
 		and float(tuning_snapshot.get(&"front_brake_bias", 0.0)) > 0.333333
 		and float(tuning_snapshot.get(&"preload_impulse", 0.0)) > 230.0
 	)
+	var final_landing_query := bike.get("_landing_query") as PhysicsRayQueryParameters3D
+	var final_camera_query := chase_camera.get("_obstruction_query") as PhysicsRayQueryParameters3D
+	var physics_query_pool_passed := (
+		landing_query_id != 0
+		and camera_query_id != 0
+		and final_landing_query != null
+		and final_camera_query != null
+		and final_landing_query.get_instance_id() == landing_query_id
+		and final_camera_query.get_instance_id() == camera_query_id
+	)
 
 	var passed := (
 		reference_contract
@@ -311,6 +325,7 @@ func _run() -> void:
 		and jump_passed
 		and tipped_recovery_passed
 		and physical_tune_passed
+		and physics_query_pool_passed
 	)
 	_print_turn_case(&"PRO_DIRT", pro_dirt)
 	_print_turn_case(&"PRO_LOAM", pro_loam)
@@ -361,6 +376,10 @@ func _run() -> void:
 			str(opposed_normal_fallback[&"finite"]),
 			str(opposed_normal_fallback_passed),
 		]
+	)
+	print(
+		"PHYSICS QUERY POOL: landing_id=%d camera_id=%d stable=%s"
+		% [landing_query_id, camera_query_id, str(physics_query_pool_passed)]
 	)
 	print(
 		"BIKE DYNAMICS PROBE: reference_contract=%s phantom_clear=%s planted=%s idle_upright=%s drive=%.2fm steer=%.3frad bank=%.1fdeg lateral=%.2fm/s slip_angle=%.3frad recovered_lateral=%.2fm/s recovered_slip=%.3frad planted_grip=%s steering_response=%s contact_delta=%.2fm/s contact_settle=%.2fm/s contact_safe=%s min_up=%.3f final_up=%.3f stable=%s released=%s brake_pop=%.2f air_pitch=%.3f jump_started=%s landed=%s entry=%.2f lip=%.2f retention=%.3f vy=%.2f airtime=%.2fs distance=%.2fm apex_gain=%.2fm recovery_up=%.3f"

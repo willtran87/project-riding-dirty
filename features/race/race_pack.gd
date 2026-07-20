@@ -9,6 +9,8 @@ const ENGINE_AUDIO_SCRIPT = preload("res://entities/bike/engine_audio.gd")
 const RACECRAFT_RULES = preload("res://features/race/racecraft_rules.gd")
 
 signal rider_finished(rider_id: StringName, finish_usec: int)
+signal rider_lap_completed(rider_id: StringName, lap: int, total_laps: int)
+signal rider_eliminated(rider_id: StringName, elimination_lap: int)
 signal holeshot_decided(rider_id: StringName)
 signal player_overtook(rider_id: StringName)
 signal player_was_overtaken(rider_id: StringName)
@@ -35,8 +37,8 @@ const SIDE_SENSOR_LENGTH := 1.15
 const SIDE_SENSOR_WIDTH := 1.45
 const DEFENSE_SENSOR_LENGTH := 12.0
 const DEFENSE_MAX_LANE_MOVE := 1.35
-const CLOSE_ATTACK_MAX_MPS := 0.72
-const AI_DRAFT_MAX_MPS := 0.72
+const CLOSE_ATTACK_MAX_MPS := 1.15
+const AI_DRAFT_MAX_MPS := 1.15
 const PLAYER_ROOST_COOLDOWN_SECONDS := 0.90
 const PLAYER_ROOST_MAX_DRIVE_COST := 0.025
 const RACECRAFT_MAX_HALF_WIDTH := 8.4
@@ -50,7 +52,7 @@ const BERM_LANE_OFFSETS: Dictionary[StringName, float] = {
 	CourseCatalog.PINE_ID: 7.25,
 	CourseCatalog.MESA_MX_ID: 7.55,
 }
-const LATE_RACE_PRESSURE_MAX_MPS := 0.82
+const LATE_RACE_PRESSURE_MAX_MPS := 1.35
 const PASS_INTENT_MIN_SECONDS := 0.90
 const PASS_INTENT_MAX_SECONDS := 1.40
 const DEFENSE_INTENT_SECONDS := 1.05
@@ -79,7 +81,7 @@ const GLOBAL_CONTACT_COOLDOWN := 0.22
 const LAUNCH_LANE_LOCK_SECONDS := 2.5
 const LAUNCH_TACTICS_BLEND_SECONDS := 1.25
 const LAUNCH_FORWARD_RAMP_SECONDS := 1.05
-const LAUNCH_ACCELERATION := 4.6
+const LAUNCH_ACCELERATION := 5.6
 const ORIENTATION_FOLLOW_RATE := 14.0
 const TANGENT_SAMPLE_METERS := 2.5
 const SURFACE_RAY_HEIGHT := 8.0
@@ -91,14 +93,17 @@ const SURFACE_GRAVITY := 19.6
 const SURFACE_MAX_FALL_SPEED := 12.0
 const SURFACE_MAX_LAUNCH_SPEED := 9.0
 const LEGACY_DIRECTOR_MAX_CORRECTION := 0.65
-const DIRECTOR_MAX_CORRECTION := 1.65
-const RACE_PACE_SCALE := 0.87
+const DIRECTOR_MAX_CORRECTION := 2.75
+const LEADER_DRAG_SCALE := 0.60
+const FIELD_COMEBACK_SCALE := 1.65
+const RACE_PACE_SCALE := 0.96
+const ACADEMY_PACE_SCALE := 0.87
 const HOLESHOT_DISTANCE := 48.0
 const AUDIO_POOL_SIZE := 4
 const PLAYER_MODE_PACE_SCALARS: Dictionary[StringName, float] = {
-	&"RELAXED": 0.955,
-	&"STANDARD": 1.0,
-	&"EXPERT": 1.045,
+	&"RELAXED": 0.99,
+	&"STANDARD": 1.08,
+	&"EXPERT": 1.17,
 }
 
 enum RiderMode { RIDING, WOBBLE, CRASHED, RECOVERING }
@@ -117,6 +122,7 @@ var _active: bool = false
 var _race_elapsed: float = 0.0
 var _player: DirtBikeController
 var _player_progress: float = GRID_START_PROGRESS
+var _player_total_progress_m: float = GRID_START_PROGRESS
 var _player_lane: float = 0.0
 var _player_sample_time: float = 0.0
 var _global_contact_cooldown: float = 0.0
@@ -128,7 +134,12 @@ var _player_laps_completed: int = 0
 var _player_finish_usec: int = -1
 var _player_penalty_usec: int = 0
 var _player_status: StringName = &"RUNNING"
+var _player_elimination_lap: int = -1
 var _player_projection_segment: int = -1
+var _closed_route: bool = false
+var _pending_elimination_laps: Array[int] = []
+var _elimination_rounds: Dictionary[int, StringName] = {}
+var _last_eliminated_rider: StringName = &""
 var _contact_immunity_time: float = 0.0
 var _holeshot_rider_id: StringName = &""
 var _audio_pool: Array[AudioStreamPlayer3D] = []
@@ -196,6 +207,10 @@ func configure(
 		if authoritative_route.size() >= 2
 		else CourseCatalog.get_world_riding_points(_track_id)
 	)
+	_closed_route = (
+		_track_points.size() >= 4
+		and _track_points[0].distance_to(_track_points[-1]) <= 0.02
+	)
 	_authoritative_surface_root = authoritative_surface_root
 	# The recovered field races five 2.5 m slots centered at -5..+5 m. Wider
 	# ribbons should provide recovery room for the player, not disperse opponents
@@ -235,6 +250,11 @@ func reset_grid() -> void:
 	_active = false
 	_race_elapsed = 0.0
 	_player_progress = GRID_START_PROGRESS
+	_player_total_progress_m = clampf(
+		GRID_START_PROGRESS,
+		0.0,
+		_track_length * float(_total_laps)
+	)
 	_player_lane = 0.0
 	_player_sample_time = 0.0
 	_player_projection_segment = -1
@@ -242,7 +262,11 @@ func reset_grid() -> void:
 	_player_finish_usec = -1
 	_player_penalty_usec = 0
 	_player_status = &"RUNNING"
+	_player_elimination_lap = -1
 	_player_speed_snapshot = 0.0
+	_pending_elimination_laps.clear()
+	_elimination_rounds.clear()
+	_last_eliminated_rider = &""
 	_clear_player_racecraft_context()
 	_contact_immunity_time = 0.0
 	_holeshot_rider_id = &""
@@ -371,6 +395,7 @@ func reset_grid() -> void:
 		state[&"surface_initialized"] = false
 		state[&"finished"] = false
 		state[&"status"] = &"RUNNING"
+		state[&"elimination_lap"] = -1
 		state[&"laps_completed"] = 0
 		state[&"lap_start_elapsed"] = 0.0
 		state[&"lap_times_usec"] = []
@@ -428,7 +453,8 @@ func simulate_competition_step(
 		return
 	_race_elapsed += delta
 	_player_speed_snapshot = maxf(player_speed, 0.0)
-	if player_total_progress >= 0.0:
+	if player_total_progress >= 0.0 and _player_status != &"ELIMINATED":
+		var previous_player_laps := _player_laps_completed
 		var total_distance := _track_length * float(_total_laps)
 		var bounded_total := clampf(player_total_progress, 0.0, total_distance)
 		_player_laps_completed = mini(
@@ -439,8 +465,12 @@ func simulate_competition_step(
 		if bounded_total >= total_distance - 0.001:
 			_player_laps_completed = _total_laps - 1
 			_player_progress = _track_length
+		_player_total_progress_m = bounded_total
+		for completed_lap: int in range(previous_player_laps + 1, _player_laps_completed + 1):
+			_record_rider_lap_completed(&"PLAYER", completed_lap)
 	for rider_index: int in _riders.size():
 		_integrate_rider_state(rider_index, player_speed, delta)
+	_resolve_pending_eliminations()
 	if resolve_traffic:
 		_resolve_rider_pairs()
 		_apply_player_traffic_plans()
@@ -469,6 +499,11 @@ func _physics_process(delta: float) -> void:
 
 	for index: int in _riders.size():
 		_integrate_rider_state(index, player_speed, delta)
+	_resolve_pending_eliminations()
+	# Player elimination is settled synchronously by RaceController. Do not run
+	# traffic, visual, or contact work after that callback has stopped the pack.
+	if not _active:
+		return
 	_resolve_rider_pairs()
 	_resolve_player_pair_orders()
 	_apply_player_traffic_plans()
@@ -511,6 +546,7 @@ func get_pace_snapshot() -> Dictionary:
 		&"maximum": maximum_speed,
 		&"player": _player.get_speed_mps() if is_instance_valid(_player) else 0.0,
 		&"player_progress": _player_progress,
+		&"player_total_progress": _player_total_progress(),
 		&"field_position": clampi(field_position, 1, _active_rider_count + 1),
 		&"field_size": _active_rider_count + 1,
 		&"gap_ahead": -1.0 if nearest_ahead == INF else nearest_ahead,
@@ -969,11 +1005,12 @@ func get_racer_snapshots() -> Array[Dictionary]:
 			&"is_player": false,
 			&"status": StringName(state.get(&"status", &"RUNNING")),
 			&"finished": bool(state.get(&"finished", false)),
+			&"elimination_lap": int(state.get(&"elimination_lap", -1)),
 			&"laps_completed": laps_completed,
 			&"current_lap": mini(laps_completed + 1, _total_laps),
 			&"total_laps": _total_laps,
 			&"progress": progress,
-			&"total_progress": float(laps_completed) * _track_length + progress,
+			&"total_progress": _state_total_progress(state),
 			&"finish_usec": int(state.get(&"finish_usec", -1)),
 			&"penalty_usec": int(state.get(&"penalty_usec", 0)),
 			&"best_lap_usec": int(state.get(&"best_lap_usec", -1)),
@@ -1009,7 +1046,12 @@ func get_racer_snapshots() -> Array[Dictionary]:
 
 func get_classification_snapshot(include_player: bool = true) -> Array[Dictionary]:
 	var classification := get_racer_snapshots()
-	if include_player and is_instance_valid(_player):
+	if include_player and (is_instance_valid(_player) or simulation_has_player):
+		var player_world_position := Vector3.ZERO
+		if is_instance_valid(_player):
+			player_world_position = _player.global_position
+		elif _track_points.size() >= 2:
+			player_world_position = _track_position_for_distance(clampf(_player_progress, 0.0, _track_length))
 		classification.append({
 			&"rider_id": &"PLAYER",
 			&"display_name": "YOU",
@@ -1017,19 +1059,23 @@ func get_classification_snapshot(include_player: bool = true) -> Array[Dictionar
 			&"color": Color("ffb52d"),
 			&"is_player": true,
 			&"status": _player_status,
-			&"finished": _player_finish_usec >= 0,
+			&"finished": (
+				_player_finish_usec >= 0
+				or _player_status in [&"CLASSIFIED", &"DNF", &"DNS", &"ELIMINATED"]
+			),
+			&"elimination_lap": _player_elimination_lap,
 			&"laps_completed": _player_laps_completed,
 			&"current_lap": mini(_player_laps_completed + 1, _total_laps),
 			&"total_laps": _total_laps,
 			&"progress": _player_progress,
-			&"total_progress": float(_player_laps_completed) * _track_length + _player_progress,
+			&"total_progress": _player_total_progress(),
 			&"finish_usec": _player_finish_usec,
 			&"penalty_usec": _player_penalty_usec,
 			&"best_lap_usec": -1,
 			&"last_lap_usec": -1,
-			&"speed_mps": _player.get_speed_mps(),
+			&"speed_mps": _player.get_speed_mps() if is_instance_valid(_player) else _player_speed_snapshot,
 			&"lane": _player_lane,
-			&"world_position": _player.global_position,
+			&"world_position": player_world_position,
 			&"mode": RiderMode.RIDING,
 			&"line": &"PLAYER",
 			&"jump_plan": &"PLAYER",
@@ -1056,10 +1102,18 @@ func set_player_race_state(
 	penalty_usec: int = 0,
 	status: StringName = &"RUNNING"
 ) -> void:
+	# Once eliminated, the controller's normal per-frame RUNNING synchronization
+	# must not resurrect the player before the synchronous result transition.
+	if _player_status == &"ELIMINATED" and status != &"ELIMINATED":
+		return
+	var previous_laps := _player_laps_completed
 	_player_laps_completed = clampi(laps_completed, 0, _total_laps)
 	_player_finish_usec = finish_usec
 	_player_penalty_usec = maxi(penalty_usec, 0)
 	_player_status = status
+	_player_total_progress_m = _resolve_player_total_progress(_player_progress)
+	for completed_lap: int in range(previous_laps + 1, mini(_player_laps_completed, _total_laps - 1) + 1):
+		_record_rider_lap_completed(&"PLAYER", completed_lap)
 
 
 func record_player_finish(finish_usec: int, penalty_usec: int = 0) -> void:
@@ -1084,25 +1138,141 @@ func mark_unfinished_dnf() -> void:
 		_riders[index] = state
 
 
-func eliminate_last_rider() -> StringName:
-	var last_index := -1
-	var least_progress := INF
+func mark_running_classified() -> void:
+	## Freeze surviving riders as legitimate classified finishers when the player
+	## is knocked out. The ordinary timeout path remains DNF-only.
 	for index: int in _riders.size():
 		var state: Dictionary = _riders[index]
 		if not bool(state.get(&"active", true)) or bool(state.get(&"finished", false)):
 			continue
-		var progress := _state_total_progress(state)
-		if progress < least_progress:
+		state[&"finished"] = true
+		state[&"status"] = &"CLASSIFIED"
+		state[&"speed"] = 0.0
+		_riders[index] = state
+	if _player_status == &"RUNNING":
+		_player_status = &"CLASSIFIED"
+
+
+static func select_elimination_candidate(classification: Array[Dictionary]) -> StringName:
+	## Pick the least-progressed active racer. Reverse rider-id ordering breaks an
+	## exact progress tie because the normal classifier places the smaller id ahead.
+	var candidate_id: StringName = &""
+	var least_progress := INF
+	for racer: Dictionary in classification:
+		var status := StringName(racer.get(&"status", &"RUNNING"))
+		if status in [&"FINISHED", &"CLASSIFIED", &"DNF", &"DNS", &"ELIMINATED"]:
+			continue
+		var rider_id := StringName(racer.get(&"rider_id", &""))
+		if rider_id.is_empty():
+			continue
+		var progress := float(racer.get(&"total_progress", 0.0))
+		if (
+			progress < least_progress
+			or (
+				is_equal_approx(progress, least_progress)
+				and String(rider_id) > String(candidate_id)
+			)
+		):
 			least_progress = progress
-			last_index = index
-	if last_index < 0:
-		return &""
-	var eliminated: Dictionary = _riders[last_index]
-	eliminated[&"finished"] = true
-	eliminated[&"status"] = &"ELIMINATED"
-	eliminated[&"speed"] = 0.0
-	_riders[last_index] = eliminated
-	return StringName(eliminated.get(&"rider_id", &"NPC"))
+			candidate_id = rider_id
+	return candidate_id
+
+
+func eliminate_rider(rider_id: StringName, elimination_lap: int) -> bool:
+	var bounded_lap := clampi(elimination_lap, 1, maxi(_total_laps - 1, 1))
+	if rider_id.is_empty() or _elimination_rounds.has(bounded_lap):
+		return false
+	if rider_id == &"PLAYER":
+		if _player_status in [&"FINISHED", &"CLASSIFIED", &"DNF", &"DNS", &"ELIMINATED"]:
+			return false
+		_player_status = &"ELIMINATED"
+		_player_finish_usec = -1
+		_player_elimination_lap = bounded_lap
+	else:
+		var rider_index := -1
+		for index: int in _riders.size():
+			var state: Dictionary = _riders[index]
+			if (
+				bool(state.get(&"active", true))
+				and not bool(state.get(&"finished", false))
+				and StringName(state.get(&"rider_id", &"")) == rider_id
+			):
+				rider_index = index
+				break
+		if rider_index < 0:
+			return false
+		var eliminated: Dictionary = _riders[rider_index]
+		eliminated[&"finished"] = true
+		eliminated[&"status"] = &"ELIMINATED"
+		eliminated[&"elimination_lap"] = bounded_lap
+		eliminated[&"speed"] = 0.0
+		_riders[rider_index] = eliminated
+	_elimination_rounds[bounded_lap] = rider_id
+	_last_eliminated_rider = rider_id
+	rider_eliminated.emit(rider_id, bounded_lap)
+	return true
+
+
+func eliminate_last_rider() -> StringName:
+	## Compatibility entry point. Production elimination rounds are queued from
+	## lap crossings and resolved only after the complete field has integrated.
+	var candidate := select_elimination_candidate(get_classification_snapshot())
+	var round_lap := clampi(_highest_completed_lap(), 1, maxi(_total_laps - 1, 1))
+	return candidate if eliminate_rider(candidate, round_lap) else &""
+
+
+func get_elimination_snapshot() -> Dictionary:
+	return {
+		&"enabled": bool(_session_config.rules.get(&"eliminate_last_each_lap", false)),
+		&"round_count": _elimination_rounds.size(),
+		&"rounds": _elimination_rounds.duplicate(),
+		&"pending_laps": _pending_elimination_laps.duplicate(),
+		&"last_rider_id": _last_eliminated_rider,
+		&"player_elimination_lap": _player_elimination_lap,
+		&"player_status": _player_status,
+	}
+
+
+func _highest_completed_lap() -> int:
+	var highest := _player_laps_completed
+	for state: Dictionary in _riders:
+		if bool(state.get(&"active", true)):
+			highest = maxi(highest, int(state.get(&"laps_completed", 0)))
+	return highest
+
+
+func _record_rider_lap_completed(rider_id: StringName, completed_lap: int) -> void:
+	if completed_lap <= 0 or completed_lap > _total_laps:
+		return
+	rider_lap_completed.emit(rider_id, completed_lap, _total_laps)
+	if (
+		bool(_session_config.rules.get(&"eliminate_last_each_lap", false))
+		and completed_lap < _total_laps
+		and not _elimination_rounds.has(completed_lap)
+		and completed_lap not in _pending_elimination_laps
+	):
+		_pending_elimination_laps.append(completed_lap)
+
+
+func _resolve_pending_eliminations() -> void:
+	if _pending_elimination_laps.is_empty():
+		return
+	# NPC progress is integrated every physics tick, while the ordinary player
+	# projection is intentionally sampled at 10 Hz. Refresh only at this rare
+	# adjudication boundary so a close cutoff compares equally current positions.
+	if is_instance_valid(_player):
+		_update_player_progress()
+	_pending_elimination_laps.sort()
+	var rounds_to_resolve := _pending_elimination_laps.duplicate()
+	_pending_elimination_laps.clear()
+	for elimination_lap: int in rounds_to_resolve:
+		if _elimination_rounds.has(elimination_lap):
+			continue
+		var candidate := select_elimination_candidate(get_classification_snapshot())
+		if not candidate.is_empty():
+			eliminate_rider(candidate, elimination_lap)
+		if not _active:
+			break
 
 
 func set_contact_immunity(seconds: float) -> void:
@@ -1259,11 +1429,19 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 		LAUNCH_LANE_LOCK_SECONDS + LAUNCH_TACTICS_BLEND_SECONDS + 1.5,
 		_race_elapsed
 	)
-	target_speed *= lerpf(1.0, RACE_PACE_SCALE, settled_pace_blend)
+	# Academy opponents retain the authored teaching pace. Competitive fields
+	# carry enough sustained speed to remain relevant once the player has learned
+	# lines, upgrades and repeatable Flow Surge use.
+	var settled_pace_scale := (
+		ACADEMY_PACE_SCALE
+		if _session_config.event_id == &"ACADEMY"
+		else RACE_PACE_SCALE
+	)
+	target_speed *= lerpf(1.0, settled_pace_scale, settled_pace_blend)
 	var acceleration := (
 		LAUNCH_ACCELERATION * float(state.get(&"launch_acceleration_scale", 1.0))
 		if _race_elapsed < LAUNCH_LANE_LOCK_SECONDS
-		else 3.2
+		else 4.1
 	)
 	match int(state[&"mode"]):
 		RiderMode.WOBBLE:
@@ -1333,9 +1511,20 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 	# lanes are locked lets same-column rows visually compress into one another.
 	var pace_wave := sin(_race_elapsed * 1.3 + float(state[&"phase"])) * 0.52 * tactics_blend
 	state[&"progress"] = float(state[&"progress"]) + maxf(float(state[&"speed"]) + pace_wave, 0.0) * launch_ratio * delta
+	var completed_lap := -1
+	var finished_now := false
 	if float(state[&"progress"]) >= _track_length - 0.05:
 		state = _complete_rider_lap(index, state)
+		completed_lap = int(state.get(&"laps_completed", 0))
+		finished_now = bool(state.get(&"finished", false))
 	_riders[index] = state
+	# Store the completed lap before notifying observers so classification and
+	# elimination always see one coherent full-field state.
+	if completed_lap >= 0:
+		var rider_id := StringName(state.get(&"rider_id", &"NPC"))
+		_record_rider_lap_completed(rider_id, completed_lap)
+		if finished_now:
+			rider_finished.emit(rider_id, int(state.get(&"finish_usec", -1)))
 
 
 func _plan_reference_line(index: int, state: Dictionary) -> void:
@@ -1889,12 +2078,13 @@ func _update_player_progress() -> void:
 		_distances,
 		_player_projection_segment,
 		60,
-		_track_id == CourseCatalog.MESA_MX_ID
+		_closed_route
 	)
 	if projection.is_empty():
 		return
 	_player_projection_segment = int(projection[&"segment"])
 	_player_progress = clampf(float(projection[&"chainage"]), 0.0, _track_length)
+	_player_total_progress_m = _resolve_player_total_progress(_player_progress)
 	_player_lane = clampf(float(projection[&"lateral"]), -_racecraft_lane_limit, _racecraft_lane_limit)
 
 
@@ -1929,6 +2119,12 @@ static func calculate_gap_pace_adjustment(
 	elif progress_gap < -close_gap:
 		var field_comeback_scale := lerpf(0.78, 1.18, difficulty_unit)
 		correction = float(retention_contract.get(&"trailer_boost_mps", 0.0)) * strength * distance_weight * field_comeback_scale
+	if session_config.event_id != &"ACADEMY":
+		# Competitive riders concede less pace while leading and can answer a
+		# Flow-assisted breakaway with their own bounded attack reserve. This is
+		# still gap-based rather than a copy of player velocity, and the existing
+		# final-lap fade below returns the finish entirely to rider performance.
+		correction *= LEADER_DRAG_SCALE if correction < 0.0 else FIELD_COMEBACK_SCALE
 	var final_lap_scale := clampf(float(retention_contract.get(&"final_lap_scale", 0.45)), 0.0, 1.0)
 	var safe_completion := clampf(race_completion, 0.0, 1.0)
 	var final_lap_fade := smoothstep(0.72, 0.90, safe_completion)
@@ -1969,10 +2165,11 @@ func _late_race_pressure_mps(state: Dictionary, progress_gap: float) -> float:
 	var comeback_skill := clampf(float(state.get(&"comeback_skill", 0.85)), 0.0, 1.0)
 	var racecraft_skill := comeback_skill if progress_gap < 0.0 else pressure_skill
 	var difficulty_scale := 0.76 if _player_difficulty_mode == &"RELAXED" else 1.12 if _player_difficulty_mode == &"EXPERT" else 1.0
+	var pressure_cap := 0.82 if _session_config.event_id == &"ACADEMY" else LATE_RACE_PRESSURE_MAX_MPS
 	return clampf(
-		LATE_RACE_PRESSURE_MAX_MPS * phase * lerpf(0.42, 1.0, racecraft_skill) * difficulty_scale,
+		pressure_cap * phase * lerpf(0.42, 1.0, racecraft_skill) * difficulty_scale,
 		0.0,
-		LATE_RACE_PRESSURE_MAX_MPS
+		pressure_cap
 	)
 
 
@@ -2029,10 +2226,11 @@ func _close_trailing_attack_mps(index: int, state: Dictionary, player_speed: flo
 	var aggression := clampf(float(state.get(&"aggression", 0.6)), 0.0, 1.0)
 	var pressure_skill := clampf(float(state.get(&"pressure_skill", 0.75)), 0.0, 1.0)
 	var attack_skill := aggression * 0.55 + pressure_skill * 0.45
+	var attack_cap := 0.72 if _session_config.event_id == &"ACADEMY" else CLOSE_ATTACK_MAX_MPS
 	return clampf(
-		AI_DRAFT_MAX_MPS * best_draft * closing_headroom * lerpf(0.45, 1.0, attack_skill),
+		attack_cap * best_draft * closing_headroom * lerpf(0.45, 1.0, attack_skill),
 		0.0,
-		minf(CLOSE_ATTACK_MAX_MPS, AI_DRAFT_MAX_MPS)
+		attack_cap
 	)
 
 
@@ -2102,11 +2300,55 @@ func _record_pressure_metrics(
 
 
 func _state_total_progress(state: Dictionary) -> float:
-	return float(int(state.get(&"laps_completed", 0))) * _track_length + float(state.get(&"progress", 0.0))
+	return clampf(
+		float(int(state.get(&"laps_completed", 0))) * _track_length + float(state.get(&"progress", 0.0)),
+		0.0,
+		_track_length * float(_total_laps)
+	)
 
 
 func _player_total_progress() -> float:
-	return float(_player_laps_completed) * _track_length + _player_progress
+	return clampf(_player_total_progress_m, 0.0, _track_length * float(_total_laps))
+
+
+func _resolve_player_total_progress(chainage: float) -> float:
+	var race_distance := _track_length * float(_total_laps)
+	if race_distance <= 0.001:
+		return 0.0
+	if _player_finish_usec >= 0 or _player_laps_completed >= _total_laps:
+		return race_distance
+	var lap_chainage := clampf(chainage, 0.0, _track_length)
+	var candidate := clampf(
+		float(_player_laps_completed) * _track_length + lap_chainage,
+		0.0,
+		race_distance
+	)
+	if not _closed_route or _track_length <= 0.001:
+		return candidate
+	# The duplicated start/finish point can report either the terminal or opening
+	# chainage while RaceController advances the authoritative lap on an adjacent
+	# tick. Reconcile only inside that seam window, leaving real reversing and
+	# recovery movement elsewhere untouched.
+	var seam_window := minf(
+		maxf(28.0, CourseCatalog.get_track_width(_track_id) * 1.25),
+		_track_length * 0.15
+	)
+	var prior_mod := fposmod(_player_total_progress_m, _track_length)
+	var current_near_seam := minf(lap_chainage, _track_length - lap_chainage) <= seam_window
+	var prior_near_seam := minf(prior_mod, _track_length - prior_mod) <= seam_window
+	if not current_near_seam or not prior_near_seam:
+		return candidate
+	var best := candidate
+	var best_delta := absf(best - _player_total_progress_m)
+	for alias: float in [candidate - _track_length, candidate + _track_length]:
+		var bounded_alias := clampf(alias, 0.0, race_distance)
+		var alias_delta := absf(bounded_alias - _player_total_progress_m)
+		if alias_delta < best_delta:
+			best = bounded_alias
+			best_delta = alias_delta
+	# Projection may flicker between the equivalent aliases for several samples.
+	# Never let that forward crossing present as a whole-lap loss to gaps/AI.
+	return maxf(best, _player_total_progress_m)
 
 
 func _racecraft_pose_for_state(state: Dictionary) -> Dictionary:
@@ -2359,7 +2601,6 @@ func _complete_rider_lap(index: int, state: Dictionary) -> Dictionary:
 		state[&"status"] = &"FINISHED"
 		state[&"finish_usec"] = maxi(int(_race_elapsed * 1_000_000.0), 1)
 		state[&"speed"] = maxf(float(state.get(&"speed", 0.0)) * 0.72, 0.0)
-		rider_finished.emit(StringName(state.get(&"rider_id", &"NPC")), int(state[&"finish_usec"]))
 	else:
 		state[&"progress"] = maxf(float(state.get(&"progress", 0.0)) - _track_length, 0.0)
 	return state

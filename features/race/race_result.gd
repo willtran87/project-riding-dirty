@@ -5,6 +5,9 @@ class_name RaceResult
 var run_id: String = ""
 var signature: String = ""
 var event_id: StringName = &"CIRCUIT"
+var challenge_id: String = ""
+var competition_id: StringName = &""
+var challenge_kind: StringName = &""
 var track_id: StringName = &"QUARRY"
 var format: StringName = &"SPRINT"
 var session_type: StringName = &"MAIN"
@@ -15,6 +18,7 @@ var medal: StringName = &"FINISHER"
 var classification: Array[Dictionary] = []
 var player_position: int = 1
 var player_time_usec: int = -1
+var player_elimination_lap: int = -1
 var player_penalty_usec: int = 0
 var fastest_lap_usec: int = -1
 var fastest_rider_id: StringName = &""
@@ -40,6 +44,9 @@ func to_dictionary() -> Dictionary:
 		&"run_id": run_id,
 		&"signature": signature,
 		&"event_id": event_id,
+		&"challenge_id": challenge_id,
+		&"competition_id": competition_id,
+		&"challenge_kind": challenge_kind,
 		&"track_id": track_id,
 		&"format": format,
 		&"session_type": session_type,
@@ -50,6 +57,7 @@ func to_dictionary() -> Dictionary:
 		&"classification": classification.duplicate(true),
 		&"player_position": player_position,
 		&"player_time_usec": player_time_usec,
+		&"player_elimination_lap": player_elimination_lap,
 		&"player_penalty_usec": player_penalty_usec,
 		&"fastest_lap_usec": fastest_lap_usec,
 		&"fastest_rider_id": fastest_rider_id,

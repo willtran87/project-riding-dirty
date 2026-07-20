@@ -98,11 +98,17 @@ func _audit_tension() -> Dictionary:
 	for event_id: StringName in [&"CIRCUIT", &"MESA_PRACTICE", &"MESA_QUALIFYING", &"MESA_MX", &"MESA_LCQ"]:
 		for gap: float in [-120.0, -60.0, -12.0, 0.0, 12.0, 60.0, 120.0]:
 			bounded = bounded and absf(_adjustment(event_id, gap, 0.5)) <= RacePack.DIRECTOR_MAX_CORRECTION + 0.001
+	var restrained_leader_drag := (
+		circuit_player_chase < -0.50
+		and absf(circuit_player_chase) <= RacePack.LEGACY_DIRECTOR_MAX_CORRECTION + 0.001
+	)
+	var comeback_outweighs_drag := main_field_chase > absf(circuit_player_chase) * 2.5
 	var passed := (
-		circuit_player_chase < -RacePack.LEGACY_DIRECTOR_MAX_CORRECTION
+		restrained_leader_drag
 		and absf(practice_player_chase) < 0.10
 		and is_zero_approx(qualifying_adjustment)
 		and main_field_chase > RacePack.LEGACY_DIRECTOR_MAX_CORRECTION
+		and comeback_outweighs_drag
 		and absf(lcq_player_chase) > absf(circuit_player_chase)
 		and absf(circuit_final_chase) < 0.10
 		and absf(main_final_chase) < 0.10
@@ -117,6 +123,8 @@ func _audit_tension() -> Dictionary:
 		&"main_field_chase": snappedf(main_field_chase, 0.001),
 		&"main_final_chase": snappedf(main_final_chase, 0.001),
 		&"lcq_player_chase": snappedf(lcq_player_chase, 0.001),
+		&"restrained_leader_drag": restrained_leader_drag,
+		&"comeback_outweighs_drag": comeback_outweighs_drag,
 		&"bounded": bounded,
 		&"passed": passed,
 	}

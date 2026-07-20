@@ -176,7 +176,9 @@ func _validate_profile_consumers(npc_result: Dictionary, player_result: Dictiona
 	})
 	profile._ensure_full_race_defaults()
 	profile.race_statistics[&"overtakes"] = 99
-	profile.record_race_result(npc_result, false)
+	var authorized_npc_result := _authorize_profile_result(profile, npc_result)
+	var npc_summary: Dictionary = profile.record_race_result(authorized_npc_result, false)
+	_check(bool(npc_summary.get(&"accepted", false)), "NPC telemetry result settles through issued race authority", "summary=%s" % str(npc_summary))
 	var after_npc: Dictionary = profile.get_race_statistics() as Dictionary
 	var npc_excluded: bool = (
 		int(after_npc.get(&"overtakes", -1)) == 99
@@ -186,16 +188,41 @@ func _validate_profile_consumers(npc_result: Dictionary, player_result: Dictiona
 	)
 	_check(npc_excluded, "NPC-only chaos cannot alter profile stats or PASS_MASTER", "stats=%s achievements=%s" % [str(after_npc), str(profile.get_achievement_ids())])
 
-	profile.record_race_result(player_result, false)
+	var authorized_player_result := _authorize_profile_result(profile, player_result)
+	var player_summary: Dictionary = profile.record_race_result(authorized_player_result, false)
+	_check(bool(player_summary.get(&"accepted", false)), "invalid player result settles through issued race authority", "summary=%s" % str(player_summary))
 	var after_player: Dictionary = profile.get_race_statistics() as Dictionary
 	var player_included: bool = (
-		int(after_player.get(&"overtakes", 0)) >= 100
+		# CLEAN_RIDE correctly invalidates this result. Real incidents remain useful
+		# audit telemetry, while untrusted performance fields cannot cross an
+		# achievement threshold after the classification has been rejected.
+		int(after_player.get(&"overtakes", 0)) == 99
 		and int(after_player.get(&"contacts", 0)) == 1
 		and int(after_player.get(&"crashes", 0)) == 1
-		and profile.get_achievement_ids().has(&"PASS_MASTER")
+		and int(after_player.get(&"resets", 0)) == 1
+		and int(after_player.get(&"dsqs", 0)) == 1
+		and not profile.get_achievement_ids().has(&"PASS_MASTER")
 	)
-	_check(player_included, "player events update profile stats and achievements", "stats=%s achievements=%s" % [str(after_player), str(profile.get_achievement_ids())])
+	_check(
+		player_included,
+		"invalid player incidents remain audited without performance awards",
+		"stats=%s achievements=%s" % [str(after_player), str(profile.get_achievement_ids())]
+	)
 	profile.free()
+
+
+func _authorize_profile_result(profile: Variant, source_result: Dictionary) -> Dictionary:
+	# The race simulation uses descriptive probe-only session IDs. Profile authority
+	# deliberately accepts production catalog events only, so settle the captured
+	# telemetry as a CIRCUIT attempt without changing any result metrics.
+	var result := source_result.duplicate(true)
+	result[&"event_id"] = &"CIRCUIT"
+	var signature := str(result.get(&"signature", ""))
+	var authority: Dictionary = profile.begin_race_run(&"CIRCUIT", signature)
+	_check(bool(authority.get(&"accepted", false)), "Profile issues race authority for captured telemetry", "authority=%s" % str(authority))
+	result[&"run_id"] = str(authority.get(&"run_id", ""))
+	result[&"signature"] = str(authority.get(&"signature", signature))
+	return result
 
 
 func _make_session_config(event_id: StringName, opponent_count: int) -> RaceSessionConfig:

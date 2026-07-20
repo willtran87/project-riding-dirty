@@ -1168,6 +1168,9 @@ func _make_terrain_surface_profile(centerline: PackedVector3Array, width: float,
 				query_indices.append(index)
 				last_query_distance = frame_distance
 	var query_spatial_index := _build_terrain_profile_query_index(frames, query_indices)
+	var resolved_frame_span := maxf(maximum_frame_span, 0.1)
+	var influence_radius := TERRAIN_CELL_DIAGONAL + resolved_frame_span
+	var clearance_bounds_radius := half_width + shoulder_width + influence_radius
 	return {
 		&"frames": frames,
 		&"query_indices": query_indices,
@@ -1176,7 +1179,11 @@ func _make_terrain_surface_profile(centerline: PackedVector3Array, width: float,
 		&"outer_half_width": half_width + shoulder_width,
 		&"offsets": offsets,
 		&"heights": heights,
-		&"maximum_frame_span": maxf(maximum_frame_span, 0.1),
+		&"maximum_frame_span": resolved_frame_span,
+		# These radii are invariant for the profile. Terrain generation calls the
+		# context query thousands of times, so avoid rebuilding them in that loop.
+		&"terrain_influence_radius": influence_radius,
+		&"clearance_bounds_radius_squared": clearance_bounds_radius * clearance_bounds_radius,
 		# Exact centerline bounds let terrain queries reject a profile only when
 		# the distance to this rectangle already proves it cannot be the nearest
 		# route or influence the ribbon-clearance ceiling. This is especially
@@ -1235,23 +1242,31 @@ func _terrain_surface_context(x: float, z: float) -> Dictionary:
 	var point := Vector2(x, z)
 	var nearest: Dictionary = {}
 	var nearest_distance := INF
+	var nearest_distance_squared := INF
 	var clearance_ceiling := INF
 	for profile_index: int in _terrain_surface_profiles.size():
 		var profile := _terrain_surface_profiles[profile_index]
-		var bounds_distance := sqrt(_distance_squared_to_profile_bounds(point, profile))
-		var frame_padding: float = profile[&"maximum_frame_span"]
-		var influence_radius := TERRAIN_CELL_DIAGONAL + frame_padding
-		var outer_half_width: float = profile[&"outer_half_width"]
-		var could_be_nearest := bounds_distance < nearest_distance
-		var could_affect_clearance := bounds_distance <= outer_half_width + influence_radius
-		if not could_be_nearest and not could_affect_clearance:
-			continue
+		var influence_radius: float = profile[&"terrain_influence_radius"]
+		# Until a valid profile establishes a nearest distance, every profile can
+		# still win. In the normal case the main route is first, which makes its
+		# bounds calculation pure overhead. For later profiles, squared distances
+		# preserve the exact rejection test without a square root per profile.
+		if nearest_distance_squared < INF:
+			var bounds_distance_squared := _distance_squared_to_profile_bounds(point, profile)
+			var could_be_nearest := bounds_distance_squared < nearest_distance_squared
+			var could_affect_clearance := (
+				bounds_distance_squared
+				<= float(profile[&"clearance_bounds_radius_squared"])
+			)
+			if not could_be_nearest and not could_affect_clearance:
+				continue
 		var sample := _nearest_terrain_profile_sample(profile, point)
 		if sample.is_empty():
 			continue
 		var distance: float = sample[&"distance"]
 		if distance < nearest_distance:
 			nearest_distance = distance
+			nearest_distance_squared = float(sample[&"distance_squared"])
 			sample[&"profile_index"] = profile_index
 			nearest = sample
 		if float(sample[&"edge_distance"]) <= influence_radius:
@@ -1296,6 +1311,7 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 			best_segment = frame_index
 			best_weight = weight
 
+	var distance := sqrt(best_distance_squared)
 	var frame_a: Dictionary = frames[best_segment]
 	var frame_b: Dictionary = frames[best_segment + 1]
 	var position_a: Vector3 = frame_a[&"position"]
@@ -1315,8 +1331,9 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 		best_weight
 	)
 	return {
-		&"distance": sqrt(best_distance_squared),
-		&"edge_distance": maxf(sqrt(best_distance_squared) - outer_half_width, 0.0),
+		&"distance": distance,
+		&"distance_squared": best_distance_squared,
+		&"edge_distance": maxf(distance - outer_half_width, 0.0),
 		&"center_height": center.y,
 		&"surface_height": surface_height,
 		&"signed_offset": signed_offset,

@@ -6,6 +6,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"CONTROL_BASICS", &"display_name": "Throttle and Brake Control", &"category": &"FOUNDATIONS",
 		&"description": "Hold a clean line through the marked gates without panic inputs.", &"sort_order": 0,
+		&"presentation": {&"racecraft_focus": &"NONE", &"show_flow_meter": false},
+		&"coach_template": "GATES: HOLD {THROTTLE}; GUIDE WITH {STEER}; {BRAKE} BEFORE EACH TURN, THEN RELEASE. USE {RESET} ONLY IF STRANDED.",
+		&"coach_actions": [&"throttle", &"steer_left", &"steer_right", &"brake", &"reset_bike"],
 		&"required_reputation": 0, &"prerequisites": [], &"rewards": {&"credits": 500, &"reputation": 5},
 		&"objectives": [
 			{&"metric": &"gates_completed", &"comparison": &"AT_LEAST", &"bronze": 6.0, &"silver": 8.0, &"gold": 10.0},
@@ -15,6 +18,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"GATE_DROP", &"display_name": "Gate Drop and Holeshot", &"category": &"STARTS",
 		&"description": "Balance revs, reaction, and traction through the first turn.", &"sort_order": 1,
+		&"presentation": {&"racecraft_focus": &"NONE", &"show_flow_meter": false},
+		&"coach_template": "STAGE: HOLD {THROTTLE} + {BRAKE}. RELEASE {BRAKE} JUST BEFORE GREEN; KEEP {THROTTLE} PINNED FOR FOUR SECONDS.",
+		&"coach_actions": [&"throttle", &"brake"],
 		&"required_reputation": 0, &"prerequisites": [&"CONTROL_BASICS"], &"rewards": {&"credits": 650, &"reputation": 6},
 		&"objectives": [
 			{&"metric": &"reaction_seconds", &"comparison": &"AT_MOST", &"bronze": 0.55, &"silver": 0.38, &"gold": 0.26},
@@ -24,6 +30,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"BERM_LINES", &"display_name": "Inside and Outside Berms", &"category": &"CORNERING",
 		&"description": "Capture the physical rut, then rear-brake slide into a supported berm exit.", &"sort_order": 2,
+		&"presentation": {&"racecraft_focus": &"CORNERING", &"show_flow_meter": false},
+		&"coach_template": "RUT: ENTER WITH {STEER} AND HOLD ALIGNMENT 0.6 SEC. SLIDE: ABOVE 6 M/S, HOLD {BRAKE} + {STEER} 0.4 SEC; FEED {THROTTLE} TO CATCH IT.",
+		&"coach_actions": [&"steer_left", &"steer_right", &"brake", &"throttle"],
 		&"required_reputation": 10, &"prerequisites": [&"CONTROL_BASICS"], &"rewards": {&"credits": 800, &"reputation": 8},
 		&"objectives": [
 			{&"metric": &"rut_rails", &"comparison": &"AT_LEAST", &"bronze": 1.0, &"silver": 2.0, &"gold": 3.0},
@@ -33,6 +42,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"PRELOAD_LANDING", &"display_name": "Preload and Landing", &"category": &"JUMPING",
 		&"description": "Load the suspension, press technique through compression, and match the receiver.", &"sort_order": 3,
+		&"presentation": {&"racecraft_focus": &"JUMPING", &"show_flow_meter": false},
+		&"coach_template": "JUMP: HOLD {PRELOAD}, RELEASE ON THE LOADED LIP; MATCH THE RECEIVER WITH {LEAN_STEER}. PUMP: TAP {TECHNIQUE} WITH BOTH WHEELS LOADED.",
+		&"coach_actions": [&"preload", &"lean_forward", &"lean_back", &"steer_left", &"steer_right", &"racecraft_technique"],
 		&"required_reputation": 20, &"prerequisites": [&"BERM_LINES"], &"rewards": {&"credits": 950, &"reputation": 10},
 		&"objectives": [
 			{&"metric": &"pumps", &"comparison": &"AT_LEAST", &"bronze": 1.0, &"silver": 2.0, &"gold": 3.0},
@@ -42,6 +54,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"RHYTHM_CHOICES", &"display_name": "Rhythm Combinations", &"category": &"JUMPING",
 		&"description": "Read each highlighted inside, rut, or berm fork and commit before entry.", &"sort_order": 4,
+		&"presentation": {&"racecraft_focus": &"FAST_LINE", &"show_flow_meter": false},
+		&"coach_template": "FAST LINE: HOLD {STEER} TOWARD RUT / BERM BEFORE ACTIVE. FOR PUMP, TAP {TECHNIQUE} ON TWO-WHEEL COMPRESSION; MATCH LANDINGS WITH {LEAN}.",
+		&"coach_actions": [&"steer_left", &"steer_right", &"racecraft_technique", &"lean_forward", &"lean_back"],
 		&"required_reputation": 40, &"prerequisites": [&"PRELOAD_LANDING"], &"rewards": {&"credits": 1_200, &"reputation": 12},
 		&"objectives": [
 			{&"metric": &"clean_skill_lines", &"comparison": &"AT_LEAST", &"bronze": 2.0, &"silver": 3.0, &"gold": 4.0},
@@ -51,6 +66,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"AIR_CONTROL", &"display_name": "Scrub and Air Control", &"category": &"ADVANCED",
 		&"description": "Lean forward to scrub excess height, then spend Context Flow to compose a receiver.", &"sort_order": 5,
+		&"presentation": {&"racecraft_focus": &"AIR_FLOW", &"show_flow_meter": true},
+		&"coach_template": "SCRUB: WHILE RISING, HOLD {LEAN_FORWARD} FOR 0.25 SEC. COMPOSE: BANK 24 FLOW, THEN TAP {FLOW} AIRBORNE NEAR THE RECEIVER.",
+		&"coach_actions": [&"lean_forward", &"flow_boost"],
 		&"required_reputation": 80, &"prerequisites": [&"RHYTHM_CHOICES"], &"rewards": {&"credits": 1_500, &"reputation": 15},
 		&"objectives": [
 			{&"metric": &"scrubs", &"comparison": &"AT_LEAST", &"bronze": 1.0, &"silver": 3.0, &"gold": 5.0},
@@ -60,6 +78,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"SAFE_RECOVERY", &"display_name": "Recovery and Rejoin", &"category": &"RACECRAFT",
 		&"description": "Use a low-speed foot dab to catch the bike, then rejoin without contact.", &"sort_order": 6,
+		&"presentation": {&"racecraft_focus": &"RECOVERY", &"show_flow_meter": false},
+		&"coach_template": "DAB: {BRAKE} BELOW 5 M/S WITH BOTH WHEELS DOWN, THEN TAP {TECHNIQUE}. REJOIN WITH {STEER} + {THROTTLE}; {RESET} ONLY IF STRANDED.",
+		&"coach_actions": [&"brake", &"racecraft_technique", &"steer_left", &"steer_right", &"throttle", &"reset_bike"],
 		&"required_reputation": 55, &"prerequisites": [&"BERM_LINES"], &"rewards": {&"credits": 1_000, &"reputation": 10},
 		&"objectives": [
 			{&"metric": &"dabs", &"comparison": &"AT_LEAST", &"bronze": 1.0, &"silver": 2.0, &"gold": 3.0},
@@ -69,6 +90,9 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	{
 		&"lesson_id": &"PASSING_RACECRAFT", &"display_name": "Passing Racecraft", &"category": &"RACECRAFT",
 		&"description": "Sit in clean air, pull from the roost, and slingshot past without contact.", &"sort_order": 7,
+		&"presentation": {&"racecraft_focus": &"PASSING", &"show_flow_meter": false},
+		&"coach_template": "DRAFT: TUCK DIRECTLY BEHIND TO 28%+. SLINGSHOT WITH {STEER} + {THROTTLE} WITHIN ONE SECOND; USE {BRAKE} TO ABORT CONTACT.",
+		&"coach_actions": [&"steer_left", &"steer_right", &"throttle", &"brake"],
 		&"required_reputation": 100, &"prerequisites": [&"GATE_DROP", &"RHYTHM_CHOICES"], &"rewards": {&"credits": 1_800, &"reputation": 18},
 		&"objectives": [
 			{&"metric": &"draft_slingshots", &"comparison": &"AT_LEAST", &"bronze": 1.0, &"silver": 2.0, &"gold": 3.0},
@@ -105,6 +129,9 @@ func configure(source: Array[Dictionary]) -> void:
 		lesson[&"display_name"] = str(lesson.get(&"display_name", String(lesson_id).capitalize()))
 		lesson[&"category"] = StringName(lesson.get(&"category", &"FOUNDATIONS"))
 		lesson[&"description"] = str(lesson.get(&"description", ""))
+		lesson[&"coach_template"] = str(lesson.get(&"coach_template", "")).strip_edges().substr(0, 320)
+		lesson[&"coach_actions"] = _unique_string_name_array(lesson.get(&"coach_actions", []), 10)
+		lesson[&"presentation"] = _normalize_presentation(lesson.get(&"presentation", {}))
 		lesson[&"sort_order"] = int(lesson.get(&"sort_order", source_index))
 		lesson[&"required_reputation"] = maxi(int(lesson.get(&"required_reputation", 0)), 0)
 		lesson[&"prerequisites"] = _string_name_array(lesson.get(&"prerequisites", []))
@@ -232,9 +259,36 @@ static func _normalize_objectives(value: Variant) -> Array[Dictionary]:
 	return output
 
 
+static func _normalize_presentation(value: Variant) -> Dictionary:
+	## Academy owns its goals, rewards, and coaching. Ordinary event overlays stay
+	## opt-in so a lesson never teaches several unrelated systems at once.
+	var source := value as Dictionary if value is Dictionary else {}
+	var focus := StringName(source.get(&"racecraft_focus", &"NONE"))
+	if focus not in [&"NONE", &"CORNERING", &"JUMPING", &"FAST_LINE", &"AIR_FLOW", &"RECOVERY", &"PASSING"]:
+		focus = &"NONE"
+	return {
+		&"racecraft_focus": focus,
+		&"show_flow_meter": bool(source.get(&"show_flow_meter", false)),
+		&"show_line_feedback": bool(source.get(&"show_line_feedback", false)),
+		&"show_sponsor_contract": bool(source.get(&"show_sponsor_contract", false)),
+		&"show_daily_modifier": bool(source.get(&"show_daily_modifier", false)),
+	}
+
+
 static func _string_name_array(value: Variant) -> Array[StringName]:
 	var output: Array[StringName] = []
 	if value is Array or value is PackedStringArray:
 		for entry: Variant in value:
 			output.append(StringName(entry))
+	return output
+
+
+static func _unique_string_name_array(value: Variant, limit: int) -> Array[StringName]:
+	var output: Array[StringName] = []
+	for entry: StringName in _string_name_array(value):
+		if entry.is_empty() or entry in output:
+			continue
+		output.append(entry)
+		if output.size() >= limit:
+			break
 	return output

@@ -9,6 +9,7 @@ const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
 const GATE_LAUNCH_MIN_MULTIPLIER := 0.94
 const GATE_LAUNCH_MAX_MULTIPLIER := 1.08
 const GATE_LAUNCH_DEFAULT_DURATION := 0.90
+const FLOW_DENIED_HAPTIC_COOLDOWN := 0.24
 
 class WheelContact:
 	var colliding: bool = false
@@ -256,6 +257,9 @@ var _target_bank_angle: float = 0.0
 var _priority_haptic_time: float = 0.0
 var _haptics_enabled: bool = true
 var _haptics_intensity: float = 0.8
+var _flow_denied_haptic_cooldown: float = 0.0
+var _last_haptic_request: Dictionary = {}
+var _haptic_request_count: int = 0
 var _base_center_of_mass: Vector3 = Vector3(0.0, -0.22, 0.1)
 var _low_speed_forward: Vector3 = Vector3.FORWARD
 var _weight_shift: float = 0.0
@@ -264,6 +268,7 @@ var _landing_target_valid: bool = false
 var _landing_target_normal: Vector3 = Vector3.UP
 var _landing_target_distance: float = INF
 var _landing_alignment_weight: float = 0.0
+var _landing_query := PhysicsRayQueryParameters3D.create(Vector3.ZERO, Vector3.ZERO)
 var _tipped_recovery_time: float = 0.0
 var _brake_was_pressed: bool = false
 var _pack_contact_cooldown: float = 0.0
@@ -281,6 +286,8 @@ var _skill_zone_id: StringName = &""
 var _skill_zone_time: float = 0.0
 var _skill_zone_resolved: bool = false
 var _skill_line_outcome: StringName = &"NONE"
+var _skill_line_committed: bool = false
+var _skill_line_commit_time: float = 0.0
 var _course_racecraft_context: Dictionary = {}
 var _pack_racecraft_context: Dictionary = {
 	&"draft_strength": 0.0,
@@ -313,6 +320,8 @@ func _ready() -> void:
 		_rear_barrier_cast,
 		_handlebar_barrier_cast,
 	])
+	_landing_query.collision_mask = collision_mask
+	_landing_query.exclude = [get_rid()]
 
 
 func _physics_process(delta: float) -> void:
@@ -332,6 +341,7 @@ func _physics_process(delta: float) -> void:
 	_update_center_of_mass(lean, brake if controls_enabled else 0.0, delta)
 	_update_steering_input(raw_steer, delta)
 	_priority_haptic_time = maxf(_priority_haptic_time - delta, 0.0)
+	_flow_denied_haptic_cooldown = maxf(_flow_denied_haptic_cooldown - delta, 0.0)
 	_pack_contact_cooldown = maxf(_pack_contact_cooldown - delta, 0.0)
 	_technique_cooldown = maxf(_technique_cooldown - delta, 0.0)
 	_recent_draft_time = maxf(_recent_draft_time - delta, 0.0)
@@ -559,6 +569,8 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_target_ground_yaw_rate = 0.0
 	_target_bank_angle = 0.0
 	_priority_haptic_time = 0.0
+	_flow_denied_haptic_cooldown = 0.0
+	_last_haptic_request.clear()
 	_weight_shift = 0.0
 	_air_brake_pop_used = false
 	_landing_target_valid = false
@@ -582,6 +594,8 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_skill_zone_time = 0.0
 	_skill_zone_resolved = false
 	_skill_line_outcome = &"NONE"
+	_skill_line_committed = false
+	_skill_line_commit_time = 0.0
 	_active_flow_mode = &"NONE"
 	_recommended_flow_mode = &"SURGE"
 	_flow_mode_time = 0.0
@@ -859,6 +873,14 @@ func get_racecraft_snapshot() -> Dictionary:
 		&"rut": _rut_snapshot.duplicate(true),
 		&"berm_strength": clampf(float(_course_racecraft_context.get(&"berm_strength", 0.0)), 0.0, 1.0),
 		&"skill_zone": _skill_zone_id,
+		&"skill_zone_kind": StringName(_course_racecraft_context.get(&"skill_zone_kind", &"NONE")),
+		&"skill_zone_phase": StringName(_course_racecraft_context.get(&"skill_zone_phase", &"NONE")),
+		&"skill_line_direction": StringName(_course_racecraft_context.get(&"skill_line_direction", &"CENTER")),
+		&"skill_line_target_delta": float(_course_racecraft_context.get(&"skill_line_target_delta", 0.0)),
+		&"skill_line_distance_m": maxf(float(_course_racecraft_context.get(&"skill_line_distance_m", 0.0)), 0.0),
+		&"skill_line_preview_seconds": maxf(float(_course_racecraft_context.get(&"skill_line_preview_seconds", 0.0)), 0.0),
+		&"skill_line_alignment": clampf(float(_course_racecraft_context.get(&"skill_line_alignment", 0.0)), 0.0, 1.0),
+		&"skill_line_committed": _skill_line_committed,
 		&"skill_line_outcome": _skill_line_outcome,
 		&"draft_strength": clampf(float(_pack_racecraft_context.get(&"draft_strength", 0.0)), 0.0, 1.0),
 		&"recent_draft_strength": _recent_draft_strength,
@@ -916,7 +938,10 @@ func apply_setup(setup: StringName) -> void:
 			maximum_speed_mps = 33.0
 			maximum_lean_degrees = 44.0
 		_:
-			engine_force = 1200.0
+			# Balanced is the first-run baseline. Give it enough launch authority to
+			# stay within the authored Standard field's opening pace without erasing
+			# Trail's control bias or Attack's stronger, less planted delivery.
+			engine_force = 1300.0
 			reverse_force = 1050.0
 			lateral_grip = 620.0
 			spring_stiffness = 20000.0
@@ -1689,6 +1714,12 @@ func _handle_flow_boost(delta: float, brake: float, steer: float) -> void:
 	_recommended_flow_mode = StringName(evaluation.get(&"technique", RACECRAFT_RULES.FLOW_SURGE))
 	if controls_enabled and InputRouter.is_flow_boost_just_pressed():
 		if not bool(evaluation.get(&"affordable", false)):
+			if _flow_denied_haptic_cooldown <= 0.0:
+				# A short low-motor refusal reads as a blocked action without the
+				# celebratory punch used by successful Context Flow techniques.
+				_priority_haptic_time = maxf(_priority_haptic_time, 0.16)
+				_flow_denied_haptic_cooldown = FLOW_DENIED_HAPTIC_COOLDOWN
+				_play_haptic(0.12, 0.035, 0.10, &"FLOW_DENIED")
 			_emit_racecraft_event(&"FLOW_DENIED", {
 				&"technique": _recommended_flow_mode,
 				&"required": float(evaluation.get(&"cost", 0.0)),
@@ -1945,18 +1976,39 @@ func _update_rut_state(steer: float, speed: float, delta: float) -> void:
 
 func _update_skill_line(delta: float) -> void:
 	var next_zone := StringName(_course_racecraft_context.get(&"skill_zone_id", &""))
-	var active := bool(_course_racecraft_context.get(&"skill_zone_active", false)) and not next_zone.is_empty()
 	if next_zone != _skill_zone_id:
 		_skill_zone_id = next_zone
 		_skill_zone_time = 0.0
 		_skill_zone_resolved = false
 		_skill_line_outcome = &"NONE"
-	if not active or _skill_zone_resolved or not controls_enabled:
+		_skill_line_committed = false
+		_skill_line_commit_time = 0.0
+	if next_zone.is_empty() or _skill_zone_resolved or not controls_enabled:
+		return
+	var alignment := clampf(float(_course_racecraft_context.get(&"skill_line_alignment", 0.0)), 0.0, 1.0)
+	var target_delta := float(_course_racecraft_context.get(&"skill_line_target_delta", 0.0))
+	var zone_kind := StringName(_course_racecraft_context.get(&"skill_zone_kind", &"NONE"))
+	var commit_intent := RACECRAFT_RULES.skill_line_commit_intent(
+		zone_kind,
+		target_delta,
+		_steer_input,
+		_active_technique if _technique_display_time > 0.0 else &"NONE"
+	)
+	if commit_intent and alignment >= 0.35:
+		_skill_line_commit_time += delta
+	elif not _skill_line_committed:
+		_skill_line_commit_time = maxf(_skill_line_commit_time - delta * 0.5, 0.0)
+	if _skill_line_commit_time >= 0.18:
+		_skill_line_committed = true
+	var active := (
+		bool(_course_racecraft_context.get(&"skill_zone_active", false))
+		and StringName(_course_racecraft_context.get(&"skill_zone_phase", &"NONE")) == &"ACTIVE"
+	)
+	if not active:
 		return
 	_skill_zone_time += delta
 	if _skill_zone_time < 0.62:
 		return
-	var alignment := clampf(float(_course_racecraft_context.get(&"skill_line_alignment", 0.0)), 0.0, 1.0)
 	var timing := clampf(maxf(
 		_suspension_activity,
 		maxf(
@@ -1966,7 +2018,8 @@ func _update_skill_line(delta: float) -> void:
 	), 0.0, 1.0)
 	var commitment := clampf(maxf(_last_throttle, absf(_steer_input) * 0.72), 0.0, 1.0)
 	var difficulty := clampf(float(_course_racecraft_context.get(&"skill_line_difficulty", 0.55)), 0.0, 1.0)
-	var result: Dictionary = RACECRAFT_RULES.evaluate_skill_line(
+	var result: Dictionary = RACECRAFT_RULES.evaluate_skill_line_choice(
+		_skill_line_committed,
 		0.72 + _assist_strength * 0.12,
 		alignment,
 		timing,
@@ -1975,6 +2028,8 @@ func _update_skill_line(delta: float) -> void:
 	)
 	_skill_zone_resolved = true
 	_skill_line_outcome = StringName(result.get(&"outcome", &"MISSED"))
+	if _skill_line_outcome == &"BYPASSED":
+		return
 	var multiplier := float(result.get(&"momentum_multiplier", 1.0))
 	var planar := linear_velocity.slide(_get_ground_normal())
 	if planar.length_squared() > 0.1:
@@ -2025,7 +2080,28 @@ func configure_feedback(values: Dictionary) -> void:
 		Input.stop_joy_vibration(0)
 
 
-func _play_haptic(low_motor: float, high_motor: float, duration: float) -> void:
+func get_haptic_feedback_snapshot() -> Dictionary:
+	return {
+		&"last_request": _last_haptic_request.duplicate(true),
+		&"request_count": _haptic_request_count,
+		&"flow_denied_cooldown": _flow_denied_haptic_cooldown,
+	}
+
+
+func _play_haptic(
+	low_motor: float,
+	high_motor: float,
+	duration: float,
+	kind: StringName = &"GENERIC"
+) -> void:
+	_last_haptic_request = {
+		&"kind": kind,
+		&"low_motor": clampf(low_motor, 0.0, 1.0),
+		&"high_motor": clampf(high_motor, 0.0, 1.0),
+		&"duration": maxf(duration, 0.0),
+		&"enabled": _haptics_enabled and _haptics_intensity > 0.0,
+	}
+	_haptic_request_count += 1
 	if not _haptics_enabled or _haptics_intensity <= 0.0:
 		return
 	Input.start_joy_vibration(
@@ -2182,10 +2258,10 @@ func _sample_landing_target() -> void:
 		lead = planar_velocity.normalized() * clampf(planar_velocity.length() * 0.085, 0.45, 1.7)
 	var origin := global_position + Vector3.UP * 0.35
 	var destination := origin + lead + Vector3.DOWN * landing_alignment_probe_distance
-	var query := PhysicsRayQueryParameters3D.create(origin, destination)
-	query.collision_mask = collision_mask
-	query.exclude = [get_rid()]
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
+	_landing_query.from = origin
+	_landing_query.to = destination
+	_landing_query.collision_mask = collision_mask
+	var result := get_world_3d().direct_space_state.intersect_ray(_landing_query)
 	if result.is_empty():
 		return
 	var hit_normal: Vector3 = result.get(&"normal", Vector3.UP).normalized()

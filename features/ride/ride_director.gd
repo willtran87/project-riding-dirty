@@ -9,6 +9,7 @@ signal route_discovered(title: String)
 signal feat_unlocked(title: String)
 
 const CHAIN_WINDOW := 4.5
+const CONTRACT_RETRY_INTERVAL := 1.0
 const ROUTES: Array[Dictionary] = [
 	# Quarry route gates now reward committed main-line sections. Their former
 	# locations sat on removed optional branches and visually instructed riders
@@ -52,8 +53,15 @@ var _contract_progress: int = 0
 var _contract_target: int = 2
 var _contract_complete: bool = false
 var _contract_id: String = ""
+var _contract_retry_time: float = 0.0
+var _pending_contracts: Dictionary[String, Dictionary] = {}
+var _pending_feats: Dictionary[String, String] = {}
+var _feat_retry_time: float = 0.0
 var _no_reset: bool = true
 var _initial_prompt_time: float = 0.0
+var _line_enabled: bool = true
+var _contract_enabled: bool = true
+var _modifier_enabled: bool = true
 
 
 func _ready() -> void:
@@ -62,13 +70,16 @@ func _ready() -> void:
 	EventBus.activity_started.connect(_on_activity_started)
 	EventBus.race_reset.connect(_on_race_reset)
 	EventBus.race_finished.connect(_on_run_finished)
+	EventBus.race_results_ready.connect(_on_race_results_ready)
 	EventBus.activity_completed.connect(_on_activity_completed)
 
 
 func _physics_process(delta: float) -> void:
+	_retry_pending_contract(delta)
+	_retry_pending_feat(delta)
 	if not _active or _bike == null:
 		return
-	if _initial_prompt_time > 0.0:
+	if _line_enabled and _initial_prompt_time > 0.0:
 		_initial_prompt_time = maxf(_initial_prompt_time - delta, 0.0)
 		if _initial_prompt_time <= 0.0 and _chain == 0 and _line_score == 0:
 			line_updated.emit("", 0, 1.0, 0, 0.0)
@@ -100,8 +111,18 @@ func get_modifier() -> StringName:
 	return _modifier
 
 
+func get_presentation_snapshot() -> Dictionary:
+	return {
+		&"activity": _activity,
+		&"line_enabled": _line_enabled,
+		&"contract_enabled": _contract_enabled,
+		&"modifier_enabled": _modifier_enabled,
+		&"modifier": _modifier,
+	}
+
+
 func register_competition_event(label: String, base_points: int, positive: bool) -> void:
-	if not _active or _activity not in RaceEventCatalog.RACE_EVENTS or not positive or base_points <= 0:
+	if not _active or not _line_enabled or _activity not in RaceEventCatalog.RACE_EVENTS or not positive or base_points <= 0:
 		return
 	_register_line_event(label, base_points)
 
@@ -126,6 +147,10 @@ func get_first_route_transform(activity: StringName) -> Transform3D:
 
 func _on_activity_started(activity: StringName) -> void:
 	_activity = activity
+	var presentation := get_activity_presentation_policy(activity)
+	_line_enabled = bool(presentation.get(&"show_line_feedback", true))
+	_contract_enabled = bool(presentation.get(&"show_sponsor_contract", true))
+	_modifier_enabled = bool(presentation.get(&"show_daily_modifier", true))
 	_active = true
 	_chain = 0
 	_line_score = 0
@@ -133,13 +158,20 @@ func _on_activity_started(activity: StringName) -> void:
 	_visited_routes.clear()
 	_near_miss_hits.clear()
 	_no_reset = true
-	_initial_prompt_time = 3.0
-	_select_daily_modifier()
-	_select_contract()
+	_initial_prompt_time = 3.0 if _line_enabled else 0.0
+	if _modifier_enabled:
+		_select_daily_modifier()
+	else:
+		_modifier = &"STANDARD"
+		modifier_updated.emit("", "")
+	if _contract_enabled:
+		_select_contract()
+	else:
+		_disable_contract()
 	_set_route_visibility()
 	_set_surface_visibility()
 	_bike.apply_run_modifier(_modifier)
-	line_updated.emit("BUILD THE LINE", 0, 1.0, 0, 0.0)
+	line_updated.emit("BUILD THE LINE" if _line_enabled else "", 0, 1.0, 0, 0.0)
 	contract_updated.emit(_contract_title, 0, _contract_target, false)
 
 
@@ -156,7 +188,7 @@ func _on_race_reset() -> void:
 
 
 func _on_run_finished(_time_usec: int, _medal: StringName, _is_new_best: bool) -> void:
-	if _active and _no_reset:
+	if _active and _line_enabled and _no_reset:
 		# Bank the flawless bonus silently: the finish card owns the screen now.
 		_line_score += 500
 		_award_feat("IRON_LINE", "IRON LINE  //  NO-RESET FINISH")
@@ -166,11 +198,26 @@ func _on_run_finished(_time_usec: int, _medal: StringName, _is_new_best: bool) -
 	_bike.set_surface(&"PACKED")
 
 
-func _on_activity_completed(_activity_id: StringName, _result: int, _medal: StringName, _is_new_best: bool) -> void:
+func _on_race_results_ready(_result: Dictionary) -> void:
+	# A classified finish already ended the director through race_finished. Loss
+	# results such as elimination bypass that success signal and still need to
+	# retire run-scoped routes, modifiers, and score processing.
+	if not _active:
+		return
 	_active = false
 	_set_route_visibility()
 	_set_surface_visibility()
-	_bike.set_surface(&"PACKED")
+	if _bike != null:
+		_bike.apply_run_modifier(&"STANDARD")
+		_bike.set_surface(&"PACKED")
+
+
+func _on_activity_completed(_summary: Dictionary) -> void:
+	_active = false
+	_set_route_visibility()
+	_set_surface_visibility()
+	if _bike != null:
+		_bike.set_surface(&"PACKED")
 
 
 func _on_bike_respawned() -> void:
@@ -179,15 +226,19 @@ func _on_bike_respawned() -> void:
 	_no_reset = false
 	_chain = 0
 	_chain_time = 0.0
-	line_updated.emit("LINE BROKEN", 0, 1.0, _line_score, 0.0)
+	if _line_enabled:
+		line_updated.emit("LINE BROKEN", 0, 1.0, _line_score, 0.0)
 
 
 func _on_style_event(label: StringName, base_points: int) -> void:
 	if not _active:
 		return
-	_register_line_event(String(label), base_points)
-	if _chain >= 4:
+	if _line_enabled:
+		_register_line_event(String(label), base_points)
+	if _line_enabled and _chain >= 4:
 		_award_feat("CHAIN_REACTION", "CHAIN REACTION  //  FOUR-MOVE LINE")
+	if not _contract_enabled:
+		return
 	if _contract_kind == &"CLEAN" and label == &"CLEAN LANDING":
 		_contract_progress += 1
 	elif _contract_kind == &"CHAIN":
@@ -206,9 +257,53 @@ func _register_line_event(label: String, base_points: int) -> void:
 func _update_contract() -> void:
 	_contract_progress = mini(_contract_progress, _contract_target)
 	if not _contract_complete and _contract_progress >= _contract_target:
-		_contract_complete = true
-		Profile.complete_contract(_contract_id, _activity)
+		_contract_complete = (
+			Profile.complete_contract(_contract_id, _activity)
+			or Profile.completed_contracts.has(_contract_id)
+		)
+		_contract_retry_time = 0.0 if _contract_complete else CONTRACT_RETRY_INTERVAL
+		if _contract_complete:
+			_pending_contracts.erase(_contract_id)
+		else:
+			_pending_contracts[_contract_id] = {
+				&"contract_id": _contract_id,
+				&"activity": _activity,
+				&"title": _contract_title,
+				&"current": _contract_progress,
+				&"target": _contract_target,
+			}
 	contract_updated.emit(_contract_title, _contract_progress, _contract_target, _contract_complete)
+
+
+func _retry_pending_contract(delta: float) -> void:
+	if _pending_contracts.is_empty():
+		return
+	_contract_retry_time = maxf(_contract_retry_time - delta, 0.0)
+	if _contract_retry_time > 0.0:
+		return
+	var contract_id: String = _pending_contracts.keys()[0]
+	var pending: Dictionary = _pending_contracts[contract_id]
+	var activity := StringName(pending.get(&"activity", &""))
+	var settled := (
+		Profile.completed_contracts.has(contract_id)
+		or Profile.complete_contract(contract_id, activity)
+	)
+	if not settled:
+		_contract_retry_time = CONTRACT_RETRY_INTERVAL
+		return
+	var completed := pending.duplicate(true)
+	_pending_contracts.erase(contract_id)
+	_contract_retry_time = 0.0
+	if contract_id == _contract_id:
+		_contract_complete = true
+		contract_updated.emit(
+			str(completed.get(&"title", _contract_title)),
+			int(completed.get(&"current", _contract_progress)),
+			int(completed.get(&"target", _contract_target)),
+			true
+		)
+	if not _pending_contracts.is_empty():
+		_contract_retry_time = CONTRACT_RETRY_INTERVAL
 
 
 func _select_daily_modifier() -> void:
@@ -242,6 +337,7 @@ func _select_contract() -> void:
 			_contract_target = 2
 	_contract_progress = 0
 	_contract_complete = false
+	_contract_retry_time = 0.0
 	var date := Time.get_date_dict_from_system()
 	_contract_id = "%04d-%02d-%02d_%s_%s" % [int(date.get("year", 2026)), int(date.get("month", 1)), int(date.get("day", 1)), String(_activity), String(_contract_kind)]
 	if Profile.completed_contracts.has(_contract_id):
@@ -249,7 +345,36 @@ func _select_contract() -> void:
 		_contract_complete = true
 
 
+func _disable_contract() -> void:
+	_contract_title = ""
+	_contract_kind = &"NONE"
+	_contract_progress = 0
+	_contract_target = 0
+	_contract_complete = false
+	_contract_id = ""
+	_contract_retry_time = 0.0
+
+
+static func get_activity_presentation_policy(activity: StringName) -> Dictionary:
+	if activity != &"ACADEMY":
+		return {
+			&"show_line_feedback": true,
+			&"show_sponsor_contract": true,
+			&"show_daily_modifier": true,
+		}
+	var lesson := RaceEventCatalog.get_active_academy_lesson()
+	var value: Variant = lesson.get(&"presentation", {})
+	var source := value as Dictionary if value is Dictionary else {}
+	return {
+		&"show_line_feedback": bool(source.get(&"show_line_feedback", false)),
+		&"show_sponsor_contract": bool(source.get(&"show_sponsor_contract", false)),
+		&"show_daily_modifier": bool(source.get(&"show_daily_modifier", false)),
+	}
+
+
 func _check_near_misses() -> void:
+	if not _line_enabled:
+		return
 	var positions: Array = NEAR_MISSES.get(_activity, [])
 	if _bike.get_speed_mps() < 10.0:
 		return
@@ -389,5 +514,26 @@ func _set_surface_visibility() -> void:
 
 
 func _award_feat(feat_id: String, title: String) -> void:
+	if Profile.unlocked_feats.has(feat_id):
+		_pending_feats.erase(feat_id)
+		return
 	if Profile.unlock_feat(feat_id):
+		_pending_feats.erase(feat_id)
 		feat_unlocked.emit(title)
+		return
+	_pending_feats[feat_id] = title
+	_feat_retry_time = CONTRACT_RETRY_INTERVAL
+
+
+func _retry_pending_feat(delta: float) -> void:
+	if _pending_feats.is_empty():
+		return
+	_feat_retry_time = maxf(_feat_retry_time - delta, 0.0)
+	if _feat_retry_time > 0.0:
+		return
+	var feat_id: String = _pending_feats.keys()[0]
+	var title: String = _pending_feats[feat_id]
+	if Profile.unlocked_feats.has(feat_id) or Profile.unlock_feat(feat_id):
+		_pending_feats.erase(feat_id)
+		feat_unlocked.emit(title)
+	_feat_retry_time = CONTRACT_RETRY_INTERVAL if not _pending_feats.is_empty() else 0.0

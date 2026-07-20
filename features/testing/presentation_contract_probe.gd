@@ -64,6 +64,31 @@ func _run() -> void:
 	hud.update_line("CLEAN LANDING", 2, 1.25, 450, 2.0)
 	_check(line_score_label != null and line_score_label.text.contains("LINE 000450"), "active line feedback is unavailable")
 
+	var denial_payload := {&"technique": &"SURGE", &"required": 35.0, &"available": 0.0}
+	hud.update_flow(0.0, false)
+	hud.show_racecraft_event(&"FLOW_DENIED", denial_payload)
+	var denial_feedback := hud.get_flow_denied_feedback_snapshot()
+	_check(
+		str(denial_feedback.get(&"text", "")) == "NEED 35 FLOW FOR SURGE  //  0 AVAILABLE",
+		"Flow denial does not explain the required and available resource"
+	)
+	_check(
+		bool(denial_feedback.get(&"active", false))
+		and bool(denial_feedback.get(&"warning_polarity", false))
+		and bool(denial_feedback.get(&"flow_meter_warning", false))
+		and str(denial_feedback.get(&"racecraft_text", "")).contains("NEED 35 FLOW"),
+		"Flow denial lacks warning polarity or meter emphasis"
+	)
+	var camera_before_denial := float(camera.get_motion_accessibility_snapshot().get(&"racecraft_kick", -1.0))
+	camera.apply_racecraft_feedback(&"FLOW_DENIED", denial_payload)
+	var camera_after_denial := float(camera.get_motion_accessibility_snapshot().get(&"racecraft_kick", -1.0))
+	camera.apply_racecraft_feedback(&"FLOW_RAIL", {&"intensity": 0.8})
+	var camera_after_success := float(camera.get_motion_accessibility_snapshot().get(&"racecraft_kick", 0.0))
+	_check(
+		is_equal_approx(camera_after_denial, camera_before_denial) and camera_after_success > camera_after_denial,
+		"camera treats a denied Flow press like a successful physical technique"
+	)
+
 	Profile.reward_granted.emit(500, 50)
 	Profile.achievement_unlocked.emit(&"FIRST_WIN")
 	await get_tree().process_frame
@@ -77,7 +102,7 @@ func _run() -> void:
 	_check(str(achievement_state.get(&"text", "")).contains("Win a classified race"), "achievement feedback has no goal context")
 
 	print(
-		"PRESENTATION CONTRACT: camera=%.1f-%.1f cruise_headroom=%.1f hint_size=%s race_hold=%.2fs pause_context=%s passed=%s"
+		"PRESENTATION CONTRACT: camera=%.1f-%.1f cruise_headroom=%.1f hint_size=%s race_hold=%.2fs pause_context=%s flow_denied=%s passed=%s"
 		% [
 			camera.base_fov,
 			camera.maximum_fov,
@@ -85,6 +110,7 @@ func _run() -> void:
 			str(panel_size),
 			float(race_hint.get(&"hold_seconds", 0.0)),
 			str(bool(paused_hint.get(&"pinned", false)) and not bool(resumed_hint.get(&"pinned", true))),
+			str(bool(denial_feedback.get(&"active", false)) and camera_after_success > camera_after_denial),
 			str(_passed),
 		]
 	)

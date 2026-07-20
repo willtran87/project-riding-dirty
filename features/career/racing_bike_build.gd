@@ -129,7 +129,7 @@ static func runtime_projection(
 	tune_data: Dictionary = {}
 ) -> Dictionary:
 	var baseline := {
-		&"engine_force": 1200.0,
+		&"engine_force": 1300.0,
 		&"lateral_grip": 620.0,
 		&"spring_stiffness": 20_000.0,
 		&"maximum_speed_mps": 30.0,

@@ -20,6 +20,7 @@ const CONTROL_HINT_STAGE_SECONDS := 8.0
 const CONTROL_HINT_RACE_SECONDS := 4.5
 const CONTROL_HINT_CONTEXT_SECONDS := 3.5
 const CONTROL_HINT_FADE_SECONDS := 0.9
+const FLOW_DENIED_FEEDBACK_SECONDS := 1.45
 
 var _timer_label: Label
 var _best_label: Label
@@ -56,12 +57,21 @@ var _standings_panel: Control
 var _standings_title: Label
 var _standings_rows: Array[Label] = []
 var _academy_panel: PanelContainer
+var _academy_stack: VBoxContainer
 var _academy_title_label: Label
 var _academy_description_label: Label
+var _academy_coach_label: Label
 var _academy_objective_labels: Array[Label] = []
 var _results_panel: PanelContainer
+var _results_margin: MarginContainer
+var _results_stack: VBoxContainer
 var _results_title: Label
 var _results_summary: Label
+var _results_payoff_panel: PanelContainer
+var _results_payoff_flow: HFlowContainer
+var _results_payout_label: Label
+var _results_unlock_label: Label
+var _results_goal_label: Label
 var _results_competition: Label
 var _results_heading_label: Label
 var _results_scroll: ScrollContainer
@@ -98,6 +108,7 @@ var _control_hint_hold_time: float = 0.0
 var _control_hint_opacity: float = 1.0
 var _control_hint_pinned: bool = false
 var _academy_lesson: Dictionary = {}
+var _academy_presentation: Dictionary = {}
 var _academy_live_metrics: Dictionary = {}
 var _last_academy_evaluation: Dictionary = {}
 var _last_result: Dictionary = {}
@@ -108,6 +119,12 @@ var _replay_hid_results: bool = false
 var _gate_launch_feedback_time: float = 0.0
 var _last_gate_launch_result_attempt: int = -1
 var _racecraft_snapshot: Dictionary = {}
+var _flow_denied_feedback_time: float = 0.0
+var _last_flow_denied_feedback: Dictionary = {}
+var _completion_message_prefix: String = ""
+var _academy_layout_refresh_queued: bool = false
+var _results_layout_refresh_queued: bool = false
+var _last_career_payoff: Dictionary = {}
 
 
 func _ready() -> void:
@@ -127,6 +144,7 @@ func _ready() -> void:
 	Profile.reward_granted.connect(_on_reward_granted)
 	Profile.achievement_unlocked.connect(_on_achievement_unlocked)
 	InputRouter.input_mode_changed.connect(_on_input_mode_changed)
+	InputRouter.bindings_changed.connect(_on_bindings_changed)
 	_on_input_mode_changed(InputRouter.input_mode)
 
 
@@ -261,6 +279,9 @@ func update_integrity(snapshot: Dictionary) -> void:
 		_set_flag(&"RED")
 	elif flag not in [&"CLEAR", &"NONE", &""]:
 		_set_flag(flag)
+	if _activity == &"ACADEMY":
+		_update_academy_integrity_feedback(snapshot)
+		return
 	var warning := str(snapshot.get(&"message", ""))
 	if warning.is_empty():
 		warning = str(snapshot.get(&"warning", ""))
@@ -294,6 +315,29 @@ func update_integrity(snapshot: Dictionary) -> void:
 	_last_integrity_warning = warning
 
 
+func _update_academy_integrity_feedback(snapshot: Dictionary) -> void:
+	var warning_code := StringName(snapshot.get(&"warning", &"NONE"))
+	var warning := ""
+	match warning_code:
+		&"WRONG_WAY": warning = "COACH  //  TURN BACK TOWARD THE NEXT GATE"
+		&"OFF_COURSE": warning = "COACH  //  RETURN TO THE LIT RIBBON"
+		&"CUT", &"CUT_DETECTED": warning = "COACH  //  FOLLOW EVERY GATE  //  TRY AGAIN"
+		&"STUCK": warning = "COACH  //  BIKE STUCK  //  RETURNING TO A SAFE GATE"
+		&"MANUAL_RESET": warning = "COACH  //  SAFE REJOIN  //  KEEP GOING"
+		&"AUTO_RECOVERY", &"AUTO_TIPPED", &"AUTO_WORLD_FALL":
+			warning = "COACH  //  AUTO RECOVERY  //  KEEP GOING"
+	_integrity_label.text = warning
+	_integrity_label.visible = not warning.is_empty()
+	var needs_correction := warning_code in [&"WRONG_WAY", &"OFF_COURSE", &"CUT", &"CUT_DETECTED", &"STUCK"]
+	_integrity_label.modulate = AMBER if needs_correction else Color("7bd66f")
+	if not warning.is_empty() and warning != _last_integrity_warning:
+		if needs_correction:
+			_pulse_warning()
+		else:
+			_pulse_highlight()
+	_last_integrity_warning = warning
+
+
 func set_integrity_snapshot(snapshot: Dictionary) -> void:
 	update_integrity(snapshot)
 
@@ -316,9 +360,20 @@ func show_holeshot(rider_id: StringName, display_name: String = "") -> void:
 
 func show_results(result: Dictionary) -> void:
 	dismiss_control_hints()
-	if str(_last_result.get(&"signature", "")) != str(result.get(&"signature", "")):
+	_completion_message_prefix = ""
+	var result_identity_changed := (
+		str(_last_result.get(&"signature", "")) != str(result.get(&"signature", ""))
+		or StringName(_last_result.get(&"competition_id", &"")) != StringName(result.get(&"competition_id", &""))
+	)
+	if result_identity_changed:
 		_last_leaderboard_result.clear()
+		_replay_summary.clear()
+		_replay_available = false
 	_last_result = result.duplicate(true)
+	var payoff_value: Variant = result.get(&"career_payoff", {})
+	_last_career_payoff = (
+		(payoff_value as Dictionary).duplicate(true) if payoff_value is Dictionary else {}
+	)
 	var academy_value: Variant = result.get(&"academy_evaluation", {})
 	_last_academy_evaluation = (academy_value as Dictionary).duplicate(true) if academy_value is Dictionary else {}
 	_holeshot_rider_id = StringName(result.get(&"holeshot_rider_id", _holeshot_rider_id))
@@ -327,6 +382,7 @@ func show_results(result: Dictionary) -> void:
 		update_classification(classification_value as Array)
 	_results_title.text = _results_heading(result)
 	_results_summary.text = _results_summary_text(result)
+	_refresh_results_payoff(result)
 	_results_competition.visible = _last_academy_evaluation.is_empty()
 	_refresh_results_competition()
 	if not _last_academy_evaluation.is_empty():
@@ -342,15 +398,13 @@ func show_results(result: Dictionary) -> void:
 		var next_lesson_id := StringName(result.get(&"academy_next_lesson_id", lesson_id))
 		var next_lesson_name := str(result.get(&"academy_next_lesson_name", "ACADEMY LESSON")).to_upper()
 		var passed := bool(_last_academy_evaluation.get(&"passed", false))
-		var action_text := "RETRY LESSON"
-		if passed and next_lesson_id != lesson_id:
-			action_text = "NEXT LESSON"
-		elif passed:
-			action_text = "REPLAY LESSON"
-		_results_footer.text = "ACADEMY NEXT  %s     //     ENTER / X  %s     G / B  GARAGE" % [next_lesson_name, action_text]
+		_results_footer.text = _academy_results_footer_text(
+			lesson_id, next_lesson_id, next_lesson_name, passed
+		)
 	else:
 		_refresh_results_footer(next_event_name)
 	_results_panel.visible = true
+	_queue_results_layout_refresh()
 	_queue_results_selection_visibility()
 	if _academy_panel != null:
 		_academy_panel.visible = false
@@ -364,6 +418,19 @@ func show_results(result: Dictionary) -> void:
 
 func present_results(result: Dictionary) -> void:
 	show_results(result)
+
+
+func show_activity_progression_payoff(payoff: Dictionary) -> void:
+	## Freestyle and Discovery use the compact completion card rather than the
+	## classification Results panel. Append the same authoritative run delta after
+	## their completion handler has installed its persistent message.
+	if payoff.is_empty() or _completion_message_prefix.is_empty():
+		return
+	var career_line := _activity_progression_line(payoff)
+	if career_line.is_empty():
+		return
+	_completion_message_prefix += "\n%s" % career_line
+	_refresh_completion_message()
 
 
 func hide_results() -> void:
@@ -403,8 +470,48 @@ func get_displayed_classification() -> Array[Dictionary]:
 
 func configure_academy_lesson(lesson: Dictionary) -> void:
 	_academy_lesson = lesson.duplicate(true)
+	var presentation_value: Variant = _academy_lesson.get(&"presentation", {})
+	_academy_presentation = (
+		(presentation_value as Dictionary).duplicate(true)
+		if presentation_value is Dictionary else {}
+	)
 	_academy_live_metrics.clear()
+	_apply_activity_presentation_scope()
 	_refresh_academy_panel()
+
+
+func _apply_activity_presentation_scope() -> void:
+	var academy_active := _activity == &"ACADEMY"
+	var show_line := not academy_active or bool(_academy_presentation.get(&"show_line_feedback", false))
+	var show_contract := not academy_active or bool(_academy_presentation.get(&"show_sponsor_contract", false))
+	var show_modifier := not academy_active or bool(_academy_presentation.get(&"show_daily_modifier", false))
+	var show_flow := not academy_active or bool(_academy_presentation.get(&"show_flow_meter", false))
+	var racecraft_focus := StringName(_academy_presentation.get(&"racecraft_focus", &"NONE"))
+	var show_racecraft := not academy_active or racecraft_focus != &"NONE"
+	if _line_label != null:
+		_line_label.visible = show_line
+		if not show_line:
+			_line_label.text = ""
+	if _line_score_label != null:
+		_line_score_label.visible = show_line
+		if not show_line:
+			_line_score_label.text = ""
+	if _contract_label != null:
+		_contract_label.visible = show_contract
+		if not show_contract:
+			_contract_label.text = ""
+	if _modifier_label != null:
+		_modifier_label.visible = show_modifier
+		if not show_modifier:
+			_modifier_label.text = ""
+	if _flow_label != null:
+		_flow_label.visible = show_flow
+	if _flow_bar != null:
+		_flow_bar.visible = show_flow
+	if _racecraft_label != null:
+		_racecraft_label.visible = show_racecraft
+		if not show_racecraft:
+			_racecraft_label.text = ""
 
 
 func get_academy_presentation_snapshot() -> Dictionary:
@@ -416,8 +523,34 @@ func get_academy_presentation_snapshot() -> Dictionary:
 		&"lesson_id": StringName(_academy_lesson.get(&"lesson_id", &"")),
 		&"title": _academy_title_label.text if _academy_title_label != null else "",
 		&"description": _academy_description_label.text if _academy_description_label != null else "",
+		&"coach": _academy_coach_label.text if _academy_coach_label != null else "",
+		&"coach_visible": _academy_coach_label != null and _academy_coach_label.visible,
 		&"objectives": objective_texts,
 		&"visible": _academy_panel != null and _academy_panel.visible,
+		&"presentation": _academy_presentation.duplicate(true),
+		&"line_visible": _line_label != null and _line_label.visible,
+		&"line_text": _line_label.text if _line_label != null else "",
+		&"line_score_visible": _line_score_label != null and _line_score_label.visible,
+		&"line_score_text": _line_score_label.text if _line_score_label != null else "",
+		&"contract_visible": _contract_label != null and _contract_label.visible,
+		&"contract_text": _contract_label.text if _contract_label != null else "",
+		&"modifier_visible": _modifier_label != null and _modifier_label.visible,
+		&"modifier_text": _modifier_label.text if _modifier_label != null else "",
+		&"racecraft_visible": _racecraft_label != null and _racecraft_label.visible,
+		&"racecraft_text": _racecraft_label.text if _racecraft_label != null else "",
+		&"flow_meter_visible": _flow_label != null and _flow_label.visible and _flow_bar != null and _flow_bar.visible,
+		&"integrity_visible": _integrity_label != null and _integrity_label.visible,
+		&"integrity_text": _integrity_label.text if _integrity_label != null else "",
+		&"message_text": _message_label.text if _message_label != null else "",
+		&"message_positive": _message_label != null and _message_label.modulate.is_equal_approx(CYAN),
+		&"input_mode": InputRouter.input_mode,
+		&"binding_revision": InputRouter.binding_revision,
+		&"text_scale": _text_scale,
+		&"panel_rect": _academy_panel.get_global_rect() if _academy_panel != null else Rect2(),
+		&"content_rect": _academy_stack.get_global_rect() if _academy_stack != null else Rect2(),
+		&"coach_rect": _academy_coach_label.get_global_rect() if _academy_coach_label != null else Rect2(),
+		&"content_fits": _academy_content_fits(),
+		&"line_fit": _academy_line_fit_snapshot(),
 		&"live_metrics": _academy_live_metrics.duplicate(true),
 		&"evaluation": _last_academy_evaluation.duplicate(true),
 		&"results_title": _results_title.text if _results_title != null else "",
@@ -445,8 +578,15 @@ func update_leaderboard_result(result: Dictionary) -> void:
 
 
 func update_replay_available(summary: Dictionary) -> void:
-	_replay_summary = summary.duplicate(true)
-	_replay_available = not summary.is_empty() and int(summary.get(&"samples", 0)) >= 2
+	var replay_competition_id := StringName(summary.get(&"competition_id", &""))
+	var result_competition_id := StringName(_last_result.get(&"competition_id", &""))
+	var identity_matches := not _last_result.is_empty() and replay_competition_id == result_competition_id
+	_replay_summary = summary.duplicate(true) if identity_matches else {}
+	_replay_available = (
+		identity_matches
+		and int(summary.get(&"samples", 0)) >= 2
+		and int(summary.get(&"duration_usec", 0)) > 0
+	)
 	_refresh_results_competition()
 	if not _last_result.is_empty():
 		_refresh_results_footer(str(_last_result.get(&"next_event_name", "")).strip_edges())
@@ -469,12 +609,17 @@ func update_replay_state(active: bool) -> void:
 func get_competition_presentation_snapshot() -> Dictionary:
 	return {
 		&"visible": _results_competition != null and _results_competition.visible,
+		&"title": _results_title.text if _results_title != null else "",
+		&"summary": _results_summary.text if _results_summary != null else "",
 		&"text": _results_competition.text if _results_competition != null else "",
 		&"footer": _results_footer.text if _results_footer != null else "",
 		&"replay_available": _replay_available,
 		&"replay": _replay_summary.duplicate(true),
 		&"leaderboard": _last_leaderboard_result.duplicate(true),
 		&"result_event": StringName(_last_result.get(&"event_id", &"")),
+		&"result_challenge_id": StringName(_last_result.get(&"challenge_id", &"")),
+		&"result_competition_id": StringName(_last_result.get(&"competition_id", &"")),
+		&"replay_competition_id": StringName(_replay_summary.get(&"competition_id", &"")),
 		&"results_visible": _results_panel != null and _results_panel.visible,
 	}
 
@@ -503,6 +648,21 @@ func get_results_navigation_snapshot() -> Dictionary:
 		&"scroll_vertical": _results_scroll.scroll_vertical if _results_scroll != null else 0,
 		&"maximum_scroll": maximum_scroll,
 		&"mouse_scroll_enabled": _results_scroll != null and _results_scroll.mouse_filter != Control.MOUSE_FILTER_IGNORE,
+		&"navigation_prompt": _results_navigation_prompt(),
+		&"input_mode": InputRouter.input_mode,
+		&"panel_rect": _results_panel.get_global_rect() if _results_panel != null else Rect2(),
+		&"content_rect": _results_stack.get_global_rect() if _results_stack != null else Rect2(),
+		&"payoff_rect": _results_payoff_panel.get_global_rect() if _results_payoff_panel != null and _results_payoff_panel.visible else Rect2(),
+		&"classification_rect": _results_scroll.get_global_rect() if _results_scroll != null else Rect2(),
+		&"footer_rect": _results_footer.get_global_rect() if _results_footer != null else Rect2(),
+		&"viewport_rect": get_viewport().get_visible_rect(),
+		&"content_fits": _results_content_fits(),
+		&"line_fit": _results_line_fit_snapshot(),
+		&"horizontal_scroll_disabled": _results_scroll != null and _results_scroll.horizontal_scroll_mode == ScrollContainer.SCROLL_MODE_DISABLED,
+		&"payoff": _last_career_payoff.duplicate(true),
+		&"payout_text": _results_payout_label.text if _results_payout_label != null else "",
+		&"career_text": _results_unlock_label.text if _results_unlock_label != null else "",
+		&"goal_text": _results_goal_label.text if _results_goal_label != null else "",
 	}
 
 
@@ -511,26 +671,19 @@ func _handle_results_navigation_input(event: InputEvent) -> bool:
 		return false
 	if not _last_academy_evaluation.is_empty() or _results_row_panels.is_empty():
 		return false
-	if event.is_echo():
-		return false
 	var command := &""
-	if event is InputEventKey and (event as InputEventKey).pressed:
-		var key := (event as InputEventKey).physical_keycode
-		if key == KEY_NONE:
-			key = (event as InputEventKey).keycode
-		match key:
-			KEY_UP, KEY_W: command = &"PREVIOUS"
-			KEY_DOWN, KEY_S: command = &"NEXT"
-			KEY_PAGEUP: command = &"PAGE_PREVIOUS"
-			KEY_PAGEDOWN: command = &"PAGE_NEXT"
-			KEY_HOME: command = &"FIRST"
-			KEY_END: command = &"LAST"
-	elif event is InputEventJoypadButton and (event as InputEventJoypadButton).pressed:
-		match (event as InputEventJoypadButton).button_index:
-			JOY_BUTTON_DPAD_UP: command = &"PREVIOUS"
-			JOY_BUTTON_DPAD_DOWN: command = &"NEXT"
-			JOY_BUTTON_LEFT_SHOULDER: command = &"PAGE_PREVIOUS"
-			JOY_BUTTON_RIGHT_SHOULDER: command = &"PAGE_NEXT"
+	if event.is_action_pressed(InputRouter.EVENT_PREVIOUS, true):
+		command = &"PREVIOUS"
+	elif event.is_action_pressed(InputRouter.EVENT_NEXT, true):
+		command = &"NEXT"
+	elif event.is_action_pressed(InputRouter.PAGE_PREVIOUS, true):
+		command = &"PAGE_PREVIOUS"
+	elif event.is_action_pressed(InputRouter.PAGE_NEXT, true):
+		command = &"PAGE_NEXT"
+	elif event.is_action_pressed(InputRouter.RESULTS_FIRST) and not event.is_echo():
+		command = &"FIRST"
+	elif event.is_action_pressed(InputRouter.RESULTS_LAST) and not event.is_echo():
+		command = &"LAST"
 	if command.is_empty():
 		return false
 	match command:
@@ -540,6 +693,7 @@ func _handle_results_navigation_input(event: InputEvent) -> bool:
 		&"PAGE_NEXT": _move_results_selection(5)
 		&"FIRST": _set_results_selection(0)
 		&"LAST": _set_results_selection(_results_row_panels.size() - 1)
+	EventBus.interface_feedback_requested.emit(&"NAVIGATE", &"RESULTS_SELECTION")
 	return true
 
 
@@ -563,6 +717,7 @@ func _handle_results_mouse_scroll(event: InputEvent) -> bool:
 	var direction := -1 if mouse_event.button_index == MOUSE_BUTTON_WHEEL_UP else 1
 	var step := maxi(roundi(maxf(48.0, _results_scroll.size.y * 0.18) * maxf(mouse_event.factor, 1.0)), 1)
 	_results_scroll.scroll_vertical = clampi(_results_scroll.scroll_vertical + direction * step, 0, maximum_scroll)
+	EventBus.interface_feedback_requested.emit(&"NAVIGATE", &"RESULTS_SCROLL")
 	return true
 
 
@@ -621,6 +776,22 @@ func get_control_hint_state() -> Dictionary:
 		&"hold_seconds": _control_hint_hold_time,
 		&"pinned": _control_hint_pinned,
 		&"panel_size": _controls_panel.size if _controls_panel != null else Vector2.ZERO,
+		&"text": _controls_label.text if _controls_label != null else "",
+		&"input_mode": InputRouter.input_mode,
+		&"binding_revision": InputRouter.binding_revision,
+	}
+
+
+func get_control_prompt_snapshot() -> Dictionary:
+	return {
+		&"input_mode": InputRouter.input_mode,
+		&"binding_revision": InputRouter.binding_revision,
+		&"controls": _controls_label.text if _controls_label != null else "",
+		&"racecraft": _racecraft_label.text if _racecraft_label != null else "",
+		&"paused": _paused_label.text if _paused_label != null else "",
+		&"message": _message_label.text if _message_label != null else "",
+		&"results_footer": _results_footer.text if _results_footer != null else "",
+		&"results_competition": _results_competition.text if _results_competition != null else "",
 	}
 
 
@@ -670,6 +841,7 @@ func _update_gate_launch_feedback(snapshot: Dictionary, phase: StringName) -> vo
 
 func _process(delta: float) -> void:
 	_update_control_hints(delta)
+	_update_flow_denied_feedback(delta)
 	if _gate_launch_feedback_time > 0.0:
 		_gate_launch_feedback_time = maxf(_gate_launch_feedback_time - delta, 0.0)
 		if _gate_launch_feedback_time <= 0.0 and _gate_launch_label != null:
@@ -706,6 +878,8 @@ func apply_accessibility(interface: Dictionary) -> void:
 	_color_safe_mode = StringName(str(interface.get("color_safe_mode", "OFF")).to_upper())
 	_text_scale = clampf(float(interface.get("text_scale", 1.0)), 0.8, 1.75)
 	_apply_text_scale(_hud_root, _text_scale)
+	_queue_academy_layout_refresh()
+	_queue_results_layout_refresh()
 	if _speed_units_label != null:
 		_speed_units_label.text = "KPH" if _unit_mode == &"METRIC" else "MPH"
 	if _speed_bar != null:
@@ -753,7 +927,42 @@ func update_flow(value: float, boosting: bool) -> void:
 		if active_mode != &"NONE"
 		else "FLOW  %03d" % int(round(value))
 	)
-	_flow_label.modulate = CYAN if boosting else CREAM
+	if _flow_denied_feedback_time <= 0.0:
+		_flow_label.modulate = CYAN if boosting else CREAM
+		_flow_bar.modulate = Color.WHITE
+
+
+static func format_flow_denied_feedback(payload: Dictionary) -> String:
+	var technique := StringName(payload.get(&"technique", &"SURGE"))
+	var required := maxi(roundi(float(payload.get(&"required", 0.0))), 0)
+	var available := maxi(roundi(float(payload.get(&"available", 0.0))), 0)
+	return "NEED %d FLOW FOR %s  //  %d AVAILABLE" % [
+		required,
+		String(technique).replace("_", " "),
+		available,
+	]
+
+
+static func format_fast_line_cue(snapshot: Dictionary) -> String:
+	var phase := StringName(snapshot.get(&"skill_zone_phase", &"NONE"))
+	if phase not in [&"PREVIEW", &"ACTIVE"] or StringName(snapshot.get(&"skill_zone", &"")).is_empty():
+		return ""
+	var direction := StringName(snapshot.get(&"skill_line_direction", &"CENTER"))
+	var arrow := "◆"
+	if direction == &"LEFT":
+		arrow = "◀"
+	elif direction == &"RIGHT":
+		arrow = "▶"
+	var kind := String(snapshot.get(&"skill_zone_kind", &"LINE")).replace("_", " ")
+	if phase == &"PREVIEW":
+		return "FAST LINE %s %s  ·  %dm" % [
+			arrow,
+			kind,
+			maxi(roundi(float(snapshot.get(&"skill_line_distance_m", 0.0))), 0),
+		]
+	var alignment := roundi(clampf(float(snapshot.get(&"skill_line_alignment", 0.0)), 0.0, 1.0) * 100.0)
+	var intent := "SET" if bool(snapshot.get(&"skill_line_committed", false)) else "MOVE"
+	return "FAST LINE %s %s  ·  %02d%% %s" % [arrow, kind, alignment, intent]
 
 
 func update_racecraft_state(snapshot: Dictionary) -> void:
@@ -761,33 +970,109 @@ func update_racecraft_state(snapshot: Dictionary) -> void:
 	update_flow(float(snapshot.get(&"flow", _flow_bar.value)), StringName(snapshot.get(&"active_flow_mode", &"NONE")) == &"SURGE")
 	if _racecraft_label == null:
 		return
+	if _activity == &"ACADEMY":
+		_update_academy_racecraft_state(snapshot)
+		return
+	if _flow_denied_feedback_time > 0.0 and not _last_flow_denied_feedback.is_empty():
+		_racecraft_label.text = "RACECRAFT  //  %s" % str(_last_flow_denied_feedback.get(&"text", ""))
+		_racecraft_label.modulate = WARNING
+		return
 	var tokens: PackedStringArray = []
+	var fast_line_cue := format_fast_line_cue(snapshot)
+	if not fast_line_cue.is_empty():
+		tokens.append(fast_line_cue)
 	var technique := StringName(snapshot.get(&"technique", &"NONE"))
-	if technique != &"NONE":
-		tokens.append(String(technique).replace("_", " "))
-	if bool(snapshot.get(&"slide_active", false)):
-		tokens.append("SLIDE")
-	var rut_value: Variant = snapshot.get(&"rut", {})
-	if rut_value is Dictionary and not (rut_value as Dictionary).is_empty():
-		var rut_outcome := StringName((rut_value as Dictionary).get(&"outcome", &""))
-		if not rut_outcome.is_empty():
-			tokens.append(String(rut_outcome).replace("_", " "))
 	var draft := clampf(float(snapshot.get(&"draft_strength", 0.0)), 0.0, 1.0)
-	if draft >= 0.08:
-		tokens.append("DRAFT %02d%%" % roundi(draft * 100.0))
 	var roost := clampf(float(snapshot.get(&"roost_pressure", 0.0)), 0.0, 1.0)
-	if roost >= 0.08:
+	if fast_line_cue.is_empty():
+		if technique != &"NONE":
+			tokens.append(String(technique).replace("_", " "))
+		if bool(snapshot.get(&"slide_active", false)):
+			tokens.append("SLIDE")
+		var rut_value: Variant = snapshot.get(&"rut", {})
+		if rut_value is Dictionary and not (rut_value as Dictionary).is_empty():
+			var rut_outcome := StringName((rut_value as Dictionary).get(&"outcome", &""))
+			if not rut_outcome.is_empty():
+				tokens.append(String(rut_outcome).replace("_", " "))
+		if draft >= 0.08:
+			tokens.append("DRAFT %02d%%" % roundi(draft * 100.0))
+		if roost >= 0.08:
+			tokens.append("ROOST %02d%%" % roundi(roost * 100.0))
+	elif roost >= 0.45:
+		# Preserve the handling warning without drowning out the line decision.
 		tokens.append("ROOST %02d%%" % roundi(roost * 100.0))
 	if tokens.is_empty():
 		var recommended := StringName(snapshot.get(&"recommended_flow_mode", &"SURGE"))
 		var cost := roundi(float(snapshot.get(&"recommended_flow_cost", 0.0)))
-		tokens.append("SHIFT: %s  %d FLOW" % [String(recommended), cost])
+		var flow_binding := "FLOW" if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.FLOW_BOOST, InputRouter.input_mode, 2)
+		tokens.append("%s: %s  %d FLOW" % [flow_binding, String(recommended), cost])
 	_racecraft_label.text = "RACECRAFT  //  " + "  //  ".join(tokens)
-	_racecraft_label.modulate = WARNING if roost >= 0.45 else CYAN if draft >= 0.35 or technique != &"NONE" else CREAM
+	var skill_phase := StringName(snapshot.get(&"skill_zone_phase", &"NONE"))
+	var skill_needs_commitment := skill_phase == &"ACTIVE" and not bool(snapshot.get(&"skill_line_committed", false))
+	_racecraft_label.modulate = (
+		WARNING if roost >= 0.45
+		else AMBER if skill_needs_commitment
+		else CYAN if not fast_line_cue.is_empty() or draft >= 0.35 or technique != &"NONE"
+		else CREAM
+	)
+
+
+func _update_academy_racecraft_state(snapshot: Dictionary) -> void:
+	var focus := StringName(_academy_presentation.get(&"racecraft_focus", &"NONE"))
+	var tokens: PackedStringArray = []
+	var technique := StringName(snapshot.get(&"technique", &"NONE"))
+	var draft := clampf(float(snapshot.get(&"draft_strength", 0.0)), 0.0, 1.0)
+	var roost := clampf(float(snapshot.get(&"roost_pressure", 0.0)), 0.0, 1.0)
+	if focus == &"AIR_FLOW" and _flow_denied_feedback_time > 0.0 and not _last_flow_denied_feedback.is_empty():
+		tokens.append(str(_last_flow_denied_feedback.get(&"text", "")))
+	elif focus == &"FAST_LINE":
+		var fast_line_cue := format_fast_line_cue(snapshot)
+		if not fast_line_cue.is_empty():
+			tokens.append(fast_line_cue)
+		elif technique != &"NONE":
+			tokens.append(String(technique).replace("_", " "))
+	elif focus == &"CORNERING":
+		if technique != &"NONE":
+			tokens.append(String(technique).replace("_", " "))
+		if bool(snapshot.get(&"slide_active", false)):
+			tokens.append("SLIDE")
+		var rut_value: Variant = snapshot.get(&"rut", {})
+		if rut_value is Dictionary:
+			var rut_outcome := StringName((rut_value as Dictionary).get(&"outcome", &""))
+			if not rut_outcome.is_empty():
+				tokens.append(String(rut_outcome).replace("_", " "))
+	elif focus in [&"JUMPING", &"AIR_FLOW", &"RECOVERY"]:
+		if technique != &"NONE":
+			tokens.append(String(technique).replace("_", " "))
+	elif focus == &"PASSING":
+		if draft >= 0.08:
+			tokens.append("DRAFT %02d%%" % roundi(draft * 100.0))
+		if roost >= 0.08:
+			tokens.append("ROOST %02d%%" % roundi(roost * 100.0))
+		if technique != &"NONE":
+			tokens.append(String(technique).replace("_", " "))
+	_racecraft_label.text = "" if tokens.is_empty() else "RACECRAFT  //  " + "  //  ".join(tokens)
+	_racecraft_label.modulate = WARNING if roost >= 0.45 else CYAN if not tokens.is_empty() else CREAM
 
 
 func show_racecraft_event(kind: StringName, payload: Dictionary) -> void:
-	if kind in [&"LANDING", &"FLOW_DENIED", &"SLIDE_EXIT"]:
+	if _activity == &"ACADEMY":
+		var focus := StringName(_academy_presentation.get(&"racecraft_focus", &"NONE"))
+		if focus == &"NONE" or (kind == &"FLOW_DENIED" and focus != &"AIR_FLOW") or (kind == &"SKILL_LINE" and focus != &"FAST_LINE"):
+			return
+	if kind == &"FLOW_DENIED":
+		var text := format_flow_denied_feedback(payload)
+		_last_flow_denied_feedback = payload.duplicate(true)
+		_last_flow_denied_feedback[&"text"] = text
+		_flow_denied_feedback_time = FLOW_DENIED_FEEDBACK_SECONDS
+		_racecraft_label.text = "RACECRAFT  //  %s" % text
+		_racecraft_label.modulate = WARNING
+		_update_flow_denied_feedback(0.0)
+		show_race_moment(text, 0, false)
+		return
+	if kind in [&"LANDING", &"SLIDE_EXIT"]:
+		return
+	if kind == &"SKILL_LINE" and StringName(payload.get(&"outcome", &"")) == &"BYPASSED":
 		return
 	var label := String(kind).replace("_", " ")
 	if kind == &"SKILL_LINE":
@@ -795,7 +1080,58 @@ func show_racecraft_event(kind: StringName, payload: Dictionary) -> void:
 	show_race_moment(label, 0, kind not in [&"FLOW_DENIED"])
 
 
+func get_flow_denied_feedback_snapshot() -> Dictionary:
+	return {
+		&"active": _flow_denied_feedback_time > 0.0,
+		&"seconds_remaining": _flow_denied_feedback_time,
+		&"text": str(_last_flow_denied_feedback.get(&"text", "")),
+		&"message_text": _message_label.text if _message_label != null else "",
+		&"racecraft_text": _racecraft_label.text if _racecraft_label != null else "",
+		&"technique": StringName(_last_flow_denied_feedback.get(&"technique", &"")),
+		&"required": float(_last_flow_denied_feedback.get(&"required", 0.0)),
+		&"available": float(_last_flow_denied_feedback.get(&"available", 0.0)),
+		&"warning_polarity": _message_label != null and _message_label.modulate.is_equal_approx(WARNING),
+		&"flow_meter_warning": _flow_bar != null and not _flow_bar.modulate.is_equal_approx(Color.WHITE),
+	}
+
+
+func _update_flow_denied_feedback(delta: float) -> void:
+	if _flow_denied_feedback_time <= 0.0:
+		return
+	_flow_denied_feedback_time = maxf(_flow_denied_feedback_time - delta, 0.0)
+	if _flow_denied_feedback_time <= 0.0:
+		_flow_bar.modulate = Color.WHITE
+		var active_mode := StringName(_racecraft_snapshot.get(&"active_flow_mode", &"NONE"))
+		_flow_label.modulate = CYAN if active_mode == &"SURGE" else CREAM
+		if not _racecraft_snapshot.is_empty():
+			update_racecraft_state(_racecraft_snapshot)
+		elif _racecraft_label != null:
+			_racecraft_label.text = ""
+			_racecraft_label.modulate = CREAM
+		return
+	var elapsed := FLOW_DENIED_FEEDBACK_SECONDS - _flow_denied_feedback_time
+	var pulse := 0.5 + sin(elapsed * TAU * 4.2) * 0.5
+	_flow_label.modulate = WARNING.lerp(CREAM, 0.10 + pulse * 0.12)
+	_flow_bar.modulate = WARNING.lerp(Color.WHITE, 0.16 + pulse * 0.14)
+
+
+func _clear_flow_denied_feedback() -> void:
+	_flow_denied_feedback_time = 0.0
+	_last_flow_denied_feedback.clear()
+	if _flow_bar != null:
+		_flow_bar.modulate = Color.WHITE
+	if _flow_label != null:
+		_flow_label.modulate = CREAM
+	if _racecraft_label != null:
+		_racecraft_label.text = ""
+		_racecraft_label.modulate = CREAM
+
+
 func update_line(label: String, chain: int, multiplier: float, score: int, time_left: float) -> void:
+	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_line_feedback", false)):
+		_line_label.text = ""
+		_line_score_label.text = ""
+		return
 	_line_label.text = label
 	_line_label.modulate = CYAN if chain >= 4 else AMBER
 	var has_active_line := not label.strip_edges().is_empty() or chain > 1 or score > 0
@@ -809,11 +1145,17 @@ func update_line(label: String, chain: int, multiplier: float, score: int, time_
 
 
 func update_contract(title: String, current: int, target: int, completed: bool) -> void:
+	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_sponsor_contract", false)):
+		_contract_label.text = ""
+		return
 	_contract_label.text = "%s   //   %s" % [title, "COMPLETE +$350 +1 TOKEN" if completed else "%d / %d" % [current, target]]
 	_contract_label.modulate = CYAN if completed else CREAM
 
 
 func update_modifier(title: String, description: String) -> void:
+	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_daily_modifier", false)):
+		_modifier_label.text = ""
+		return
 	_modifier_label.text = "DAILY: %s   //   %s" % [title, description]
 
 
@@ -886,6 +1228,8 @@ func _build_hud() -> void:
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
+	root.resized.connect(_queue_academy_layout_refresh)
+	root.resized.connect(_queue_results_layout_refresh)
 
 	var top_band := ColorRect.new()
 	top_band.color = Color(0.02, 0.025, 0.03, 0.7)
@@ -965,7 +1309,7 @@ func _build_hud() -> void:
 	_flow_bar.add_theme_stylebox_override(&"fill", flow_fill)
 	root.add_child(_flow_bar)
 
-	_racecraft_label = _make_label(root, "RACECRAFT  //  SHIFT: SURGE  35 FLOW", 14, CREAM)
+	_racecraft_label = _make_label(root, "", 14, CREAM)
 	_racecraft_label.name = "RacecraftStatusLabel"
 	_racecraft_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_racecraft_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -1055,7 +1399,7 @@ func _build_hud() -> void:
 	_build_academy_panel(root)
 	_build_results_panel(root)
 
-	_paused_label = _make_label(root, "PAUSED\nESC / START  RESUME\nF1 / BACK  SETTINGS", 48, CREAM)
+	_paused_label = _make_label(root, "", 48, CREAM)
 	_paused_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_paused_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_paused_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -1115,13 +1459,20 @@ func _build_academy_panel(root: Control) -> void:
 	var stack := VBoxContainer.new()
 	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stack.add_theme_constant_override(&"separation", 5)
+	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	margin.add_child(stack)
+	_academy_stack = stack
 	_academy_title_label = _make_label(stack, "ACADEMY", 17, Color("7bd66f"))
-	_academy_title_label.clip_text = true
-	_academy_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_academy_title_label.clip_text = false
+	_academy_title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_academy_description_label = _make_label(stack, "", 12, CREAM)
 	_academy_description_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_academy_description_label.custom_minimum_size.y = 38.0
+	_academy_coach_label = _make_label(stack, "", 13, CYAN)
+	_academy_coach_label.name = "AcademyCoach"
+	_academy_coach_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_academy_coach_label.custom_minimum_size.y = 48.0
 	for index: int in ACADEMY_OBJECTIVE_LIMIT:
 		var objective_label := _make_label(stack, "", 14, CREAM)
 		objective_label.name = "AcademyObjective%d" % (index + 1)
@@ -1129,6 +1480,7 @@ func _build_academy_panel(root: Control) -> void:
 		objective_label.custom_minimum_size.y = 30.0
 		_academy_objective_labels.append(objective_label)
 	_academy_panel.visible = false
+	_queue_academy_layout_refresh()
 
 
 func _build_results_panel(root: Control) -> void:
@@ -1136,41 +1488,72 @@ func _build_results_panel(root: Control) -> void:
 	_results_panel.name = "FullRaceResults"
 	_results_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_results_panel.add_theme_stylebox_override(&"panel", _make_panel_style(Color(0.018, 0.026, 0.032, 0.97), AMBER, 3))
-	_anchor_rect(_results_panel, Vector2(0.5, 0.5), Rect2(-470.0, -315.0, 940.0, 630.0))
+	_anchor_rect(_results_panel, Vector2(0.5, 0.5), Rect2(-520.0, -350.0, 1040.0, 700.0))
 	root.add_child(_results_panel)
 
-	var margin := MarginContainer.new()
-	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	margin.add_theme_constant_override(&"margin_left", 28)
-	margin.add_theme_constant_override(&"margin_right", 28)
-	margin.add_theme_constant_override(&"margin_top", 20)
-	margin.add_theme_constant_override(&"margin_bottom", 18)
-	_results_panel.add_child(margin)
-	var stack := VBoxContainer.new()
-	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	stack.add_theme_constant_override(&"separation", 6)
-	margin.add_child(stack)
+	_results_margin = MarginContainer.new()
+	_results_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_results_margin.add_theme_constant_override(&"margin_left", 28)
+	_results_margin.add_theme_constant_override(&"margin_right", 28)
+	_results_margin.add_theme_constant_override(&"margin_top", 20)
+	_results_margin.add_theme_constant_override(&"margin_bottom", 18)
+	_results_panel.add_child(_results_margin)
+	_results_stack = VBoxContainer.new()
+	_results_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_results_stack.add_theme_constant_override(&"separation", 6)
+	_results_margin.add_child(_results_stack)
 
-	_results_title = _make_label(stack, "RACE COMPLETE", 34, AMBER)
+	_results_title = _make_label(_results_stack, "RACE COMPLETE", 34, AMBER)
 	_results_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_results_summary = _make_label(stack, "", 18, CREAM)
+	_results_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_results_title.clip_text = false
+	_results_summary = _make_label(_results_stack, "", 18, CREAM)
 	_results_summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_results_competition = _make_label(stack, "", 13, CYAN)
+	_results_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_results_summary.clip_text = false
+
+	_results_payoff_panel = PanelContainer.new()
+	_results_payoff_panel.name = "CareerPayoff"
+	_results_payoff_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_results_payoff_panel.add_theme_stylebox_override(
+		&"panel", _make_panel_style(Color(0.035, 0.055, 0.065, 0.96), Color("397f8f"), 1)
+	)
+	_results_stack.add_child(_results_payoff_panel)
+	var payoff_margin := MarginContainer.new()
+	payoff_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	payoff_margin.add_theme_constant_override(&"margin_left", 12)
+	payoff_margin.add_theme_constant_override(&"margin_right", 12)
+	payoff_margin.add_theme_constant_override(&"margin_top", 8)
+	payoff_margin.add_theme_constant_override(&"margin_bottom", 8)
+	_results_payoff_panel.add_child(payoff_margin)
+	_results_payoff_flow = HFlowContainer.new()
+	_results_payoff_flow.name = "PayoffFlow"
+	_results_payoff_flow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_results_payoff_flow.add_theme_constant_override(&"h_separation", 12)
+	_results_payoff_flow.add_theme_constant_override(&"v_separation", 8)
+	payoff_margin.add_child(_results_payoff_flow)
+	_results_payout_label = _make_results_payoff_block(_results_payoff_flow, "PAYOUT", CYAN)
+	_results_unlock_label = _make_results_payoff_block(_results_payoff_flow, "CAREER", AMBER)
+	_results_goal_label = _make_results_payoff_block(_results_payoff_flow, "NEXT GOAL", CREAM)
+
+	_results_competition = _make_label(_results_stack, "", 13, CYAN)
 	_results_competition.name = "CompetitionSummary"
 	_results_competition.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_results_competition.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_results_competition.custom_minimum_size = Vector2(0.0, 56.0)
-	_results_heading_label = _make_label(stack, "POS     RIDER                         STATUS             TIME / GAP", 14, MUTED)
+	_results_heading_label = _make_label(_results_stack, "POS  //  RIDER  //  STATUS  //  TIME / GAP", 14, MUTED)
 	_results_heading_label.add_theme_constant_override(&"outline_size", 1)
+	_results_heading_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_results_heading_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	_results_scroll = ScrollContainer.new()
 	_results_scroll.name = "ClassificationScroll"
-	_results_scroll.custom_minimum_size = Vector2(0.0, 288.0)
+	_results_scroll.custom_minimum_size = Vector2(0.0, 210.0)
 	_results_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_results_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_results_scroll.mouse_filter = Control.MOUSE_FILTER_STOP
 	_results_scroll.gui_input.connect(_on_results_scroll_gui_input)
-	stack.add_child(_results_scroll)
+	_results_stack.add_child(_results_scroll)
 	_results_rows = VBoxContainer.new()
 	_results_rows.name = "ClassificationRows"
 	_results_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1178,15 +1561,16 @@ func _build_results_panel(root: Control) -> void:
 	_results_rows.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_results_scroll.add_child(_results_rows)
 
-	_results_stats = _make_label(stack, "", 14, Color("b8c4ca"))
+	_results_stats = _make_label(_results_stack, "", 14, Color("b8c4ca"))
 	_results_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_results_stats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_results_stats.custom_minimum_size = Vector2(0.0, 40.0)
-	_results_footer = _make_label(stack, "ENTER / X  RUN AGAIN     G / B  GARAGE", 15, CYAN)
+	_results_footer = _make_label(_results_stack, "", 15, CYAN)
 	_results_footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_results_footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_results_footer.custom_minimum_size = Vector2(0.0, 38.0)
+	_results_footer.custom_minimum_size = Vector2(0.0, 56.0)
 	_results_panel.visible = false
+	_queue_results_layout_refresh()
 
 
 func _make_panel_style(background: Color, border: Color, border_width: int) -> StyleBoxFlat:
@@ -1215,6 +1599,24 @@ func _make_label(parent: Control, text: String, font_size: int, color: Color) ->
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(label)
 	return label
+
+
+func _make_results_payoff_block(parent: HFlowContainer, heading: String, accent: Color) -> Label:
+	var block := VBoxContainer.new()
+	block.name = "%sBlock" % heading.capitalize().replace(" ", "")
+	block.custom_minimum_size = Vector2(270.0, 0.0)
+	block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	block.add_theme_constant_override(&"separation", 2)
+	parent.add_child(block)
+	var heading_label := _make_label(block, heading, 11, accent)
+	heading_label.add_theme_constant_override(&"outline_size", 1)
+	var body := _make_label(block, "", 13, accent.lightened(0.12))
+	body.name = "%sText" % heading.capitalize().replace(" ", "")
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.clip_text = false
+	body.custom_minimum_size = Vector2(0.0, 42.0)
+	return body
 
 
 func _anchor_rect(control: Control, anchor: Vector2, rect: Rect2) -> void:
@@ -1262,12 +1664,19 @@ func _refresh_academy_panel() -> void:
 		return
 	var active := _activity == &"ACADEMY" and not _academy_lesson.is_empty() and not is_results_visible()
 	_academy_panel.visible = active
+	if _academy_coach_label != null:
+		_academy_coach_label.visible = active
 	if not active:
 		return
 	var lesson_name := str(_academy_lesson.get(&"display_name", "RIDE LESSON")).to_upper()
 	var category := String(_academy_lesson.get(&"category", &"FOUNDATIONS")).replace("_", " ")
 	_academy_title_label.text = "ACADEMY  //  %s  //  %s" % [category, lesson_name]
 	_academy_description_label.text = str(_academy_lesson.get(&"description", "Complete the marked objectives."))
+	var coach_template := str(_academy_lesson.get(&"coach_template", "FOLLOW THE LIT GATES AND COMPLETE BOTH OBJECTIVES."))
+	_academy_coach_label.text = "COACH  //  %s" % _resolve_academy_coach_template(
+		coach_template, InputRouter.input_mode
+	)
+	_academy_coach_label.visible = true
 	var objectives := _academy_lesson.get(&"objectives", []) as Array
 	for index: int in _academy_objective_labels.size():
 		var label := _academy_objective_labels[index]
@@ -1277,6 +1686,192 @@ func _refresh_academy_panel() -> void:
 			continue
 		label.text = _academy_live_objective_text(objectives[index] as Dictionary, index)
 		label.visible = true
+	_queue_academy_layout_refresh()
+
+
+func _resolve_academy_coach_template(template: String, mode: StringName) -> String:
+	var output := template
+	output = output.replace("{THROTTLE}", _academy_action_label(InputRouter.THROTTLE, mode))
+	output = output.replace("{BRAKE}", _academy_action_label(InputRouter.BRAKE, mode))
+	output = output.replace("{PRELOAD}", _academy_action_label(InputRouter.PRELOAD, mode))
+	output = output.replace("{FLOW}", _academy_action_label(InputRouter.FLOW_BOOST, mode))
+	output = output.replace("{TECHNIQUE}", _academy_action_label(InputRouter.RACECRAFT, mode))
+	output = output.replace("{RESET}", _academy_action_label(InputRouter.RESET_BIKE, mode))
+	output = output.replace("{LEAN_FORWARD}", _academy_action_label(InputRouter.LEAN_FORWARD, mode))
+	output = output.replace("{LEAN_STEER}", _academy_lean_steer_label(mode))
+	output = output.replace("{STEER}", _academy_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode))
+	output = output.replace("{LEAN}", _academy_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode))
+	return output
+
+
+func _academy_action_label(action: StringName, mode: StringName) -> String:
+	if mode != InputRouter.INPUT_MODE_TOUCH:
+		return InputRouter.get_action_label(action, mode, 2)
+	match action:
+		InputRouter.THROTTLE: return "THROTTLE"
+		InputRouter.BRAKE: return "BRAKE"
+		InputRouter.PRELOAD: return "PRELOAD"
+		InputRouter.FLOW_BOOST: return "FLOW"
+		InputRouter.RACECRAFT: return "TECHNIQUE"
+		InputRouter.RESET_BIKE: return "RESET"
+		InputRouter.LEAN_FORWARD: return "STEER / LEAN UP"
+	return "CONTROL"
+
+
+func _academy_pair_label(
+	negative_action: StringName,
+	positive_action: StringName,
+	mode: StringName
+) -> String:
+	if mode == InputRouter.INPUT_MODE_TOUCH:
+		return "STEER / LEAN"
+	return InputRouter.get_action_pair_label(negative_action, positive_action, mode, 2)
+
+
+func _academy_lean_steer_label(mode: StringName) -> String:
+	if mode == InputRouter.INPUT_MODE_TOUCH:
+		return "STEER / LEAN"
+	return "%s + %s" % [
+		_academy_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode),
+		_academy_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode),
+	]
+
+
+func _queue_academy_layout_refresh() -> void:
+	if _academy_layout_refresh_queued or not is_inside_tree():
+		return
+	_academy_layout_refresh_queued = true
+	_refresh_academy_layout.call_deferred()
+
+
+func _refresh_academy_layout() -> void:
+	_academy_layout_refresh_queued = false
+	if _academy_panel == null or _academy_stack == null or _hud_root == null:
+		return
+	# The container's assigned size reflects the previous panel height. Feeding it
+	# back here prevents the panel from shrinking after accessibility text is reduced.
+	var content_height := _academy_stack.get_combined_minimum_size().y
+	var maximum_height := maxf(_hud_root.size.y - 190.0 - 126.0, 180.0)
+	var panel_height := clampf(content_height + 20.0, 180.0, maximum_height)
+	_anchor_rect(_academy_panel, Vector2.ZERO, Rect2(28.0, 190.0, 390.0, panel_height))
+
+
+func _academy_content_fits() -> bool:
+	if _academy_panel == null or _academy_stack == null:
+		return false
+	var panel_rect := _academy_panel.get_global_rect().grow(1.0)
+	if not panel_rect.encloses(_academy_stack.get_global_rect()):
+		return false
+	for entry: Dictionary in _academy_line_fit_snapshot():
+		if bool(entry.get(&"visible", false)) and (
+			bool(entry.get(&"clip_text", true))
+			or int(entry.get(&"visible_line_count", 0)) < int(entry.get(&"line_count", 0))
+		):
+			return false
+	return true
+
+
+func _academy_line_fit_snapshot() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var labels: Array[Label] = []
+	for label: Label in [_academy_title_label, _academy_description_label, _academy_coach_label]:
+		if label != null:
+			labels.append(label)
+	for label: Label in _academy_objective_labels:
+		labels.append(label)
+	for label: Label in labels:
+		entries.append({
+			&"name": label.name,
+			&"visible": label.visible,
+			&"rect": label.get_global_rect(),
+			&"line_count": label.get_line_count(),
+			&"visible_line_count": label.get_visible_line_count(),
+			&"clip_text": label.clip_text,
+		})
+	return entries
+
+
+func _queue_results_layout_refresh() -> void:
+	if _results_layout_refresh_queued or not is_inside_tree():
+		return
+	_results_layout_refresh_queued = true
+	_refresh_results_layout.call_deferred()
+
+
+func _refresh_results_layout() -> void:
+	_results_layout_refresh_queued = false
+	if _results_panel == null or _results_stack == null or _results_scroll == null or _hud_root == null:
+		return
+	var touch_mode := InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+	if not _last_result.is_empty() and _last_academy_evaluation.is_empty():
+		_results_competition.visible = not touch_mode
+	var root_size := _hud_root.size
+	var panel_width := minf(1040.0, maxf(root_size.x - 32.0, 1.0))
+	var top_margin := 16.0 if touch_mode else 24.0
+	var bottom_clearance := minf(220.0, root_size.y * 0.25) if touch_mode else 24.0
+	var maximum_height := maxf(root_size.y - top_margin - bottom_clearance, 1.0)
+	var base_scroll_height := 150.0 if touch_mode else 210.0
+	_results_scroll.custom_minimum_size.y = base_scroll_height
+	var available_content_height := maxf(maximum_height - 38.0, 1.0)
+	var content_height := _results_stack.get_combined_minimum_size().y
+	if content_height > available_content_height:
+		_results_scroll.custom_minimum_size.y = maxf(
+			72.0, base_scroll_height - (content_height - available_content_height)
+		)
+		content_height = _results_stack.get_combined_minimum_size().y
+	var minimum_panel_height := minf(620.0 if touch_mode else 680.0, maximum_height)
+	var panel_height := clampf(content_height + 38.0, minimum_panel_height, maximum_height)
+	if touch_mode:
+		_anchor_rect(
+			_results_panel, Vector2(0.5, 0.0),
+			Rect2(-panel_width * 0.5, top_margin, panel_width, panel_height)
+		)
+	else:
+		_anchor_rect(
+			_results_panel, Vector2(0.5, 0.5),
+			Rect2(-panel_width * 0.5, -panel_height * 0.5, panel_width, panel_height)
+		)
+
+
+func _results_content_fits() -> bool:
+	if _results_panel == null or _results_stack == null or _results_scroll == null:
+		return false
+	var panel_rect := _results_panel.get_global_rect().grow(1.0)
+	for control: Control in [
+		_results_title, _results_summary, _results_payoff_panel, _results_competition,
+		_results_heading_label, _results_scroll, _results_stats, _results_footer,
+	]:
+		if control != null and control.visible and not panel_rect.encloses(control.get_global_rect()):
+			return false
+	if not _results_scroll.get_global_rect().has_area():
+		return false
+	for entry: Dictionary in _results_line_fit_snapshot():
+		if bool(entry.get(&"visible", false)) and (
+			bool(entry.get(&"clip_text", true))
+			or int(entry.get(&"visible_line_count", 0)) < int(entry.get(&"line_count", 0))
+		):
+			return false
+	return true
+
+
+func _results_line_fit_snapshot() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for label: Label in [
+		_results_title, _results_summary, _results_payout_label, _results_unlock_label,
+		_results_goal_label, _results_competition, _results_heading_label,
+		_results_stats, _results_footer,
+	]:
+		if label == null:
+			continue
+		entries.append({
+			&"name": label.name,
+			&"visible": label.visible and label.is_visible_in_tree(),
+			&"rect": label.get_global_rect(),
+			&"line_count": label.get_line_count(),
+			&"visible_line_count": label.get_visible_line_count(),
+			&"clip_text": label.clip_text,
+		})
+	return entries
 
 
 func _academy_live_objective_text(objective: Dictionary, index: int) -> String:
@@ -1574,6 +2169,8 @@ func _results_heading(result: Dictionary) -> String:
 		var evaluation := academy_value as Dictionary
 		var stars := clampi(int(evaluation.get(&"stars", 0)), 0, 3)
 		return "ACADEMY COMPLETE  //  %s" % _academy_grade_text(stars)
+	if _player_result_status(result) == &"ELIMINATED":
+		return "LAST RIDER OUT  //  ELIMINATED"
 	var medal := StringName(result.get(&"medal", &"FINISHER"))
 	var valid := bool(result.get(&"valid", true))
 	return "RACE COMPLETE  //  %s" % (String(medal) if valid else "UNCLASSIFIED")
@@ -1592,6 +2189,14 @@ func _results_summary_text(result: Dictionary) -> String:
 	var player_time_usec := int(result.get(&"player_time_usec", -1))
 	var penalty_usec := int(result.get(&"player_penalty_usec", 0))
 	var summary := "P%d / %d" % [maxi(player_position, 1), field_size]
+	if _player_result_status(result) == &"ELIMINATED":
+		var elimination_lap := int(result.get(&"player_elimination_lap", -1))
+		if elimination_lap < 0:
+			for racer: Dictionary in _classification:
+				if bool(racer.get(&"is_player", false)):
+					elimination_lap = int(racer.get(&"elimination_lap", -1))
+					break
+		summary += "  //  ELIMINATED%s" % (" ON LAP %d" % elimination_lap if elimination_lap > 0 else "")
 	if player_time_usec >= 0:
 		summary += "  //  %s" % _format_usec(player_time_usec + penalty_usec)
 	if penalty_usec > 0:
@@ -1602,6 +2207,17 @@ func _results_summary_text(result: Dictionary) -> String:
 	if not bool(result.get(&"valid", true)):
 		summary += "  //  %s" % str(result.get(&"validity_reason", "RUN INVALID")).to_upper()
 	return summary
+
+
+func _player_result_status(result: Dictionary) -> StringName:
+	var classification_value: Variant = result.get(&"classification", [])
+	if classification_value is Array:
+		for racer_value: Variant in classification_value:
+			if racer_value is Dictionary:
+				var racer := racer_value as Dictionary
+				if bool(racer.get(&"is_player", false)):
+					return StringName(racer.get(&"status", &""))
+	return &""
 
 
 func _results_stats_text(result: Dictionary) -> String:
@@ -1639,6 +2255,137 @@ func _results_stats_text(result: Dictionary) -> String:
 	return stats
 
 
+func _refresh_results_payoff(result: Dictionary) -> void:
+	if _results_payoff_panel == null:
+		return
+	var has_payoff := not _last_career_payoff.is_empty()
+	_results_payoff_panel.visible = has_payoff
+	if not has_payoff:
+		_results_payout_label.text = ""
+		_results_unlock_label.text = ""
+		_results_goal_label.text = ""
+		return
+	var accepted := bool(_last_career_payoff.get(&"accepted", true))
+	var duplicate := bool(_last_career_payoff.get(&"duplicate", false))
+	var run_earnings := bool(_last_career_payoff.get(&"run_earnings", false))
+	var cash_before := int(_last_career_payoff.get(&"cash_before", 0))
+	var cash_after := int(_last_career_payoff.get(&"cash_after", cash_before))
+	var total_rep_before := int(_last_career_payoff.get(&"total_reputation_before", 0))
+	var total_rep_after := int(_last_career_payoff.get(&"total_reputation_after", total_rep_before))
+	if accepted:
+		_results_payout_label.text = "+$%d  //  +%d REP\nBANK $%d  //  REP %d" % [
+			maxi(cash_after - cash_before, 0),
+			maxi(total_rep_after - total_rep_before, 0),
+			cash_after,
+			total_rep_after,
+		]
+	elif run_earnings:
+		_results_payout_label.text = "+$%d  //  +%d REP\nBANK $%d  //  REP %d" % [
+			maxi(cash_after - cash_before, 0),
+			maxi(total_rep_after - total_rep_before, 0),
+			cash_after,
+			total_rep_after,
+		]
+	elif duplicate:
+		_results_payout_label.text = "NO DUPLICATE PAYOUT\nBANK $%d  //  REP %d" % [cash_after, total_rep_after]
+	else:
+		_results_payout_label.text = "NO SETTLEMENT\nCLASSIFIED FINISH REQUIRED"
+	_results_unlock_label.text = _career_payoff_summary(_last_career_payoff, accepted, duplicate, run_earnings)
+	_results_goal_label.text = _results_next_goal_text(result, accepted)
+	_queue_results_layout_refresh()
+
+
+func _career_payoff_summary(
+	payoff: Dictionary,
+	accepted: bool = true,
+	duplicate: bool = false,
+	run_earnings: bool = false
+) -> String:
+	var names := PackedStringArray()
+	for item: Dictionary in _payoff_dictionary_array(payoff.get(&"unlocks", [])):
+		names.append(str(item.get(&"display_name", item.get(&"id", "UNLOCK"))).to_upper())
+	for milestone: Dictionary in _payoff_dictionary_array(payoff.get(&"milestones", [])):
+		names.append("MILESTONE: %s" % str(milestone.get(&"display_name", milestone.get(&"id", "ACHIEVEMENT"))).to_upper())
+	if not names.is_empty():
+		var visible_names := PackedStringArray()
+		for index: int in mini(names.size(), 3):
+			visible_names.append(names[index])
+		var more_text := "  //  +%d MORE IN GARAGE" % (names.size() - visible_names.size()) if names.size() > visible_names.size() else ""
+		return "NEWLY AVAILABLE\n%s%s" % ["  //  ".join(visible_names), more_text]
+	if duplicate:
+		return "PROGRESS HELD\nRESULT ALREADY SETTLED"
+	if not accepted:
+		if run_earnings:
+			return "RUN PROGRESS SAVED\nRACE RESULT NOT SETTLED"
+		return "NO NEW ACCESS\nFINISH CLEAN TO ADVANCE"
+	var next_goal := payoff.get(&"next_goal", {}) as Dictionary
+	match StringName(next_goal.get(&"goal_type", &"")):
+		&"UNLOCK":
+			return "NEXT UNLOCK\n%d %s REP TO %s" % [
+				int(next_goal.get(&"remaining", 0)),
+				str(next_goal.get(&"reputation_scope", &"RACER")),
+				str(next_goal.get(&"display_name", "NEW GEAR")),
+			]
+		&"MILESTONE":
+			return "NEXT MILESTONE\n%s  %d/%d" % [
+				str(next_goal.get(&"display_name", "RIDER MILESTONE")),
+				int(next_goal.get(&"current", 0)), int(next_goal.get(&"target", 1)),
+			]
+		&"COMPLETE":
+			return "CAREER COMPLETE\nALL MILESTONES CLEARED"
+	return "PROGRESS SAVED\nNO NEW ACCESS THIS RUN"
+
+
+func _results_next_goal_text(result: Dictionary, accepted: bool) -> String:
+	var academy_value: Variant = result.get(&"academy_evaluation", {})
+	if academy_value is Dictionary and not (academy_value as Dictionary).is_empty():
+		var evaluation := academy_value as Dictionary
+		var next_lesson := str(result.get(&"academy_next_lesson_name", evaluation.get(&"display_name", "ACADEMY LESSON"))).to_upper()
+		return "%s\n%s" % [
+			"NEXT LESSON  //  %s" % next_lesson if bool(evaluation.get(&"passed", false)) else "RETRY  //  %s" % next_lesson,
+			"RAISE THE LOWEST OBJECTIVE GRADE",
+		]
+	var next_event := str(result.get(&"next_event_name", "CHASE A CLEANER RESULT")).to_upper()
+	if _player_result_status(result) == &"ELIMINATED":
+		return "REMATCH  //  %s\nSURVIVE THE NEXT LAP" % next_event
+	if not accepted:
+		return "RETRY  //  %s\nCLASSIFY A CLEAN FINISH" % next_event
+	var player_time_usec := int(result.get(&"player_time_usec", -1))
+	var target := _recommended_race_goal(result, player_time_usec)
+	return "NEXT  //  %s\n%s" % [next_event, target]
+
+
+func _activity_progression_line(payoff: Dictionary) -> String:
+	var unlock_names := PackedStringArray()
+	for item: Dictionary in _payoff_dictionary_array(payoff.get(&"unlocks", [])):
+		unlock_names.append(str(item.get(&"display_name", item.get(&"id", "UNLOCK"))).to_upper())
+	for milestone: Dictionary in _payoff_dictionary_array(payoff.get(&"milestones", [])):
+		unlock_names.append("MILESTONE %s" % str(milestone.get(&"display_name", milestone.get(&"id", "ACHIEVEMENT"))).to_upper())
+	if not unlock_names.is_empty():
+		var visible := PackedStringArray()
+		for index: int in mini(unlock_names.size(), 2):
+			visible.append(unlock_names[index])
+		var remainder := " +%d MORE" % (unlock_names.size() - visible.size()) if unlock_names.size() > visible.size() else ""
+		return "CAREER  //  NEW  %s%s" % ["  //  ".join(visible), remainder]
+	var next_goal := payoff.get(&"next_goal", {}) as Dictionary
+	if StringName(next_goal.get(&"goal_type", &"")) == &"UNLOCK":
+		return "CAREER  //  %d %s REP TO %s" % [
+			int(next_goal.get(&"remaining", 0)),
+			str(next_goal.get(&"reputation_scope", &"RACER")),
+			str(next_goal.get(&"display_name", "NEXT UNLOCK")),
+		]
+	return ""
+
+
+func _payoff_dictionary_array(raw: Variant) -> Array[Dictionary]:
+	var output: Array[Dictionary] = []
+	if raw is Array:
+		for value: Variant in raw:
+			if value is Dictionary:
+				output.append(value as Dictionary)
+	return output
+
+
 func _refresh_results_competition() -> void:
 	if _results_competition == null or _last_result.is_empty():
 		return
@@ -1646,13 +2393,14 @@ func _refresh_results_competition() -> void:
 		_results_competition.text = ""
 		_results_competition.visible = false
 		return
-	_results_competition.visible = true
+	_results_competition.visible = InputRouter.input_mode != InputRouter.INPUT_MODE_TOUCH
 	var event_id := StringName(_last_result.get(&"event_id", _activity))
-	var valid := bool(_last_result.get(&"valid", true))
-	var event_record: Dictionary = Profile.get_event_record(event_id) if Profile.has_method(&"get_event_record") else {}
-	var event_best_usec := int(event_record.get(&"best_time_usec", -1))
-	var board_text := "LOCAL BOARD  //  NOT ELIGIBLE" if not valid else "LOCAL BOARD  //  RESULT PENDING"
-	if not _last_leaderboard_result.is_empty():
+	var challenge_id := StringName(_last_result.get(&"challenge_id", &""))
+	var board_eligible := RaceServices.is_leaderboard_result_eligible(_last_result)
+	var event_record: Dictionary = Profile.get_event_record(event_id, challenge_id) if Profile.has_method(&"get_event_record") else {}
+	var event_best_usec := -1 if not challenge_id.is_empty() else int(event_record.get(&"best_time_usec", -1))
+	var board_text := "LOCAL BOARD  //  RESULT PENDING" if board_eligible else "LOCAL BOARD  //  NOT ELIGIBLE"
+	if board_eligible and not _last_leaderboard_result.is_empty():
 		var entry_value: Variant = _last_leaderboard_result.get("entry", {})
 		var entry: Dictionary = (entry_value as Dictionary).duplicate(true) if entry_value is Dictionary else {}
 		var rank := int(_last_leaderboard_result.get("rank", entry.get("rank", 0)))
@@ -1662,20 +2410,71 @@ func _refresh_results_competition() -> void:
 		var rank_text := "P%d" % rank if rank > 0 else "LOCAL PB"
 		var pb_status := "NEW PERSONAL BEST" if bool(_last_leaderboard_result.get("personal_best", false)) else "PERSONAL BEST HELD"
 		board_text = "LOCAL BOARD  //  %s  //  %s  %s" % [rank_text, pb_status, _format_usec(event_best_usec)]
-	elif event_best_usec >= 0 and valid:
+	elif board_eligible and event_best_usec >= 0:
 		board_text += "  //  EVENT PB %s" % _format_usec(event_best_usec)
 	var tour_text := _championship_results_text(_last_result)
 	var rival_text := _result_rival_text(_last_result)
-	var replay_text := "REPLAY READY  //  V WATCH" if _replay_available else "REPLAY UNAVAILABLE"
+	var replay_text := "REPLAY READY  //  %s WATCH" % _active_action_label(InputRouter.TOGGLE_REPLAY) if _replay_available else "REPLAY UNAVAILABLE"
 	_results_competition.text = "%s\n%s\n%s  //  %s" % [board_text, tour_text, rival_text, replay_text]
+	_queue_results_layout_refresh()
 
 
 func _refresh_results_footer(next_event_name: String) -> void:
 	if _results_footer == null or not _last_academy_evaluation.is_empty():
 		return
 	var next_text := "NEXT  %s" % next_event_name.to_upper() if not next_event_name.is_empty() else "NEXT  CHASE A CLEANER RESULT"
-	var replay_action := "     V  WATCH REPLAY" if _replay_available else ""
-	_results_footer.text = "%s\nENTER / X  REMATCH%s     G / B  GARAGE" % [next_text, replay_action]
+	if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH:
+		_results_footer.text = "%s\n%s\nUSE THE RESULTS BUTTONS BELOW" % [
+			next_text,
+			_results_navigation_prompt(),
+		]
+		_queue_results_layout_refresh()
+		return
+	var replay_action := "     %s  WATCH REPLAY" % _active_action_label(InputRouter.TOGGLE_REPLAY) if _replay_available else ""
+	_results_footer.text = "%s\n%s\n%s  REMATCH%s     %s  GARAGE" % [
+		next_text,
+		_results_navigation_prompt(),
+		_active_action_label(InputRouter.RESTART_RUN),
+		replay_action,
+		_active_action_label(InputRouter.OPEN_GARAGE),
+	]
+	_queue_results_layout_refresh()
+
+
+func _academy_results_footer_text(
+	lesson_id: StringName,
+	next_lesson_id: StringName,
+	next_lesson_name: String,
+	passed: bool
+) -> String:
+	if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH:
+		return "ACADEMY NEXT  %s\nUSE THE RESULTS BUTTONS BELOW" % next_lesson_name
+	var action_text := "RETRY LESSON"
+	if passed and next_lesson_id != lesson_id:
+		action_text = "NEXT LESSON"
+	elif passed:
+		action_text = "REPLAY LESSON"
+	return "ACADEMY NEXT  %s     //     %s  %s     %s  GARAGE" % [
+		next_lesson_name,
+		_active_action_label(InputRouter.RESTART_RUN),
+		action_text,
+		_active_action_label(InputRouter.OPEN_GARAGE),
+	]
+
+
+func _results_navigation_prompt() -> String:
+	var mode := InputRouter.input_mode
+	if mode == InputRouter.INPUT_MODE_TOUCH:
+		return "SWIPE CLASSIFICATION TO BROWSE"
+	var prompt := "%s ROWS     %s PAGE" % [
+		InputRouter.get_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT, mode),
+		InputRouter.get_action_pair_label(InputRouter.PAGE_PREVIOUS, InputRouter.PAGE_NEXT, mode),
+	]
+	var first_label := InputRouter.get_action_label(InputRouter.RESULTS_FIRST, mode, 1)
+	var last_label := InputRouter.get_action_label(InputRouter.RESULTS_LAST, mode, 1)
+	if first_label != "UNBOUND" or last_label != "UNBOUND":
+		prompt += "     %s / %s FIRST / LAST" % [first_label, last_label]
+	return prompt
 
 
 func _championship_results_text(result: Dictionary) -> String:
@@ -1863,7 +2662,9 @@ func _on_countdown_changed(value: int) -> void:
 
 
 func _on_race_started() -> void:
+	_completion_message_prefix = ""
 	_last_result.clear()
+	_last_career_payoff.clear()
 	_last_leaderboard_result.clear()
 	_replay_summary.clear()
 	_replay_available = false
@@ -1925,12 +2726,28 @@ func _on_race_finished(time_usec: int, medal: StringName, is_new_best: bool) -> 
 		rival_text = "  •  ROOK BEATEN" if rival_delta <= 0 else "  •  %.2fs BEHIND ROOK" % (float(rival_delta) / 1_000_000.0)
 	var rook_callout := "ROOK: CLEAN. DO IT AGAIN." if _rival_target_usec > 0 and time_usec <= _rival_target_usec else "ROOK: YOU LEFT TIME IN THE CORNERS."
 	var next_goal := _race_next_goal(time_usec)
-	_message_label.text = "%s%s%s\n%s\n%s\nENTER / X RUN AGAIN   //   G / B GARAGE" % [_format_usec(time_usec), record_text, rival_text, rook_callout, next_goal]
+	_set_completion_message("%s%s%s\n%s\n%s" % [
+		_format_usec(time_usec),
+		record_text,
+		rival_text,
+		rook_callout,
+		next_goal,
+	])
 	_message_label.modulate = CYAN if _rival_target_usec > 0 and time_usec <= _rival_target_usec else CREAM
 	_message_time = 9999.0
 
 
 func _on_race_reset() -> void:
+	# RaceController emits race_reset before RaceServices announces replay
+	# teardown. Clear restoration ownership and result identity first so the later
+	# `replay_state_changed(false)` cannot resurrect the old classification card.
+	_replay_hid_results = false
+	_completion_message_prefix = ""
+	_last_result.clear()
+	_last_leaderboard_result.clear()
+	_replay_summary.clear()
+	_replay_available = false
+	_clear_flow_denied_feedback()
 	show_control_hints(CONTROL_HINT_STAGE_SECONDS)
 	hide_results()
 	_gate_launch_feedback_time = 0.0
@@ -1974,8 +2791,30 @@ func _on_game_paused(paused: bool) -> void:
 
 
 func _on_input_mode_changed(mode: StringName) -> void:
+	_refresh_binding_prompts(mode)
+	_queue_results_layout_refresh()
+	if _results_panel != null and _results_panel.visible:
+		_queue_results_selection_visibility()
+	show_control_hints(CONTROL_HINT_CONTEXT_SECONDS)
+
+
+func _on_bindings_changed(_actions: Array[StringName]) -> void:
+	_refresh_binding_prompts(InputRouter.input_mode)
+
+
+func _refresh_binding_prompts(mode: StringName) -> void:
 	if mode == InputRouter.INPUT_MODE_GAMEPAD:
-		_controls_label.text = "RT THROTTLE   LT BRAKE   LS STEER   RS LEAN\nA PRELOAD   LB CONTEXT FLOW   RB CLUTCH / DAB / PUMP   Y RESET   B GARAGE"
+		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s PRELOAD   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
+			InputRouter.get_action_label(InputRouter.THROTTLE, mode, 2),
+			InputRouter.get_action_label(InputRouter.BRAKE, mode, 2),
+			InputRouter.get_action_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode, 2),
+			InputRouter.get_action_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode, 2),
+			InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2),
+			InputRouter.get_action_label(InputRouter.FLOW_BOOST, mode, 2),
+			InputRouter.get_action_label(InputRouter.RACECRAFT, mode, 2),
+			InputRouter.get_action_label(InputRouter.RESET_BIKE, mode, 2),
+			InputRouter.get_action_label(InputRouter.OPEN_GARAGE, mode, 2),
+		]
 		_controls_label.add_theme_font_size_override(&"font_size", 14)
 		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
 		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
@@ -1987,18 +2826,79 @@ func _on_input_mode_changed(mode: StringName) -> void:
 		_anchor_rect(_controls_panel, Vector2(0.5, 0.0), Rect2(-390.0, 196.0, 780.0, 78.0))
 		_anchor_rect(_controls_label, Vector2(0.5, 0.0), Rect2(-372.0, 202.0, 744.0, 66.0))
 	else:
-		_controls_label.text = "W THROTTLE   S BRAKE   A / D STEER   UP / DOWN LEAN\nSPACE PRELOAD   SHIFT CONTEXT FLOW   C CLUTCH / DAB / PUMP   R RESET   G GARAGE"
+		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s PRELOAD   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
+			InputRouter.get_action_label(InputRouter.THROTTLE, mode, 2),
+			InputRouter.get_action_label(InputRouter.BRAKE, mode, 2),
+			InputRouter.get_action_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode, 2),
+			InputRouter.get_action_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode, 2),
+			InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2),
+			InputRouter.get_action_label(InputRouter.FLOW_BOOST, mode, 2),
+			InputRouter.get_action_label(InputRouter.RACECRAFT, mode, 2),
+			InputRouter.get_action_label(InputRouter.RESET_BIKE, mode, 2),
+			InputRouter.get_action_label(InputRouter.OPEN_GARAGE, mode, 2),
+		]
 		_controls_label.add_theme_font_size_override(&"font_size", 14)
 		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
 		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
-	show_control_hints(CONTROL_HINT_CONTEXT_SECONDS)
+	_paused_label.text = "PAUSED\n%s  RESUME\n%s  SETTINGS" % [
+		_active_action_label(InputRouter.PAUSE),
+		_active_action_label(InputRouter.OPEN_SETTINGS),
+	]
+	if _racecraft_snapshot.is_empty():
+		if _activity == &"ACADEMY":
+			_racecraft_label.text = ""
+		else:
+			var flow_binding := "FLOW" if mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.FLOW_BOOST, mode, 2)
+			_racecraft_label.text = "RACECRAFT  //  %s: SURGE  35 FLOW" % flow_binding
+	else:
+		update_racecraft_state(_racecraft_snapshot)
+	_refresh_visible_result_prompts()
+	_refresh_completion_message()
+	_refresh_academy_panel()
+
+
+func _refresh_visible_result_prompts() -> void:
+	if _last_result.is_empty():
+		return
+	_refresh_results_competition()
+	if _last_academy_evaluation.is_empty():
+		_refresh_results_footer(str(_last_result.get(&"next_event_name", "")).strip_edges())
+		return
+	var lesson_id := StringName(_last_academy_evaluation.get(&"lesson_id", &""))
+	var next_lesson_id := StringName(_last_result.get(&"academy_next_lesson_id", lesson_id))
+	var next_lesson_name := str(_last_result.get(&"academy_next_lesson_name", "ACADEMY LESSON")).to_upper()
+	var passed := bool(_last_academy_evaluation.get(&"passed", false))
+	_results_footer.text = _academy_results_footer_text(
+		lesson_id, next_lesson_id, next_lesson_name, passed
+	)
+	_queue_results_layout_refresh()
+
+
+func _active_action_label(action: StringName) -> String:
+	return InputRouter.get_action_label(action, InputRouter.input_mode, 2)
+
+
+func _set_completion_message(prefix: String) -> void:
+	_completion_message_prefix = prefix
+	_refresh_completion_message()
+
+
+func _refresh_completion_message() -> void:
+	if _completion_message_prefix.is_empty():
+		return
+	_message_label.text = "%s\n%s RUN AGAIN   //   %s GARAGE" % [
+		_completion_message_prefix,
+		_active_action_label(InputRouter.RESTART_RUN),
+		_active_action_label(InputRouter.OPEN_GARAGE),
+	]
 
 
 func _on_activity_started(activity: StringName) -> void:
+	_completion_message_prefix = ""
 	_activity = activity
 	match activity:
 		&"ACADEMY":
-			show_control_hints(CONTROL_HINT_RACE_SECONDS)
+			dismiss_control_hints(true)
 			_message_label.text = "ACADEMY OBJECTIVES ARE LIVE  //  PASS BOTH TO ADVANCE"
 			_message_time = 2.8
 			_message_label.modulate = Color("7bd66f")
@@ -2016,13 +2916,19 @@ func _on_activity_started(activity: StringName) -> void:
 
 func _on_activity_prepared(activity: StringName) -> void:
 	_activity = activity
+	_clear_flow_denied_feedback()
 	if activity == &"ACADEMY":
 		configure_academy_lesson(RaceEventCatalog.get_active_academy_lesson())
 	else:
 		_academy_lesson.clear()
+		_academy_presentation.clear()
 		_academy_live_metrics.clear()
+		_apply_activity_presentation_scope()
 		_refresh_academy_panel()
-	show_control_hints(CONTROL_HINT_STAGE_SECONDS)
+	if activity == &"ACADEMY":
+		dismiss_control_hints(true)
+	else:
+		show_control_hints(CONTROL_HINT_STAGE_SECONDS)
 	_rival_target_usec = 285_000_000 if activity == &"PINE_ENDURO" else 190_000_000 if activity == &"CIRCUIT" else -1
 	_countdown_label.text = ""
 	_countdown_label.add_theme_color_override(&"font_color", AMBER)
@@ -2074,19 +2980,59 @@ func _on_discovery_progress_changed(current: int, total: int) -> void:
 	_message_time = 1.4
 
 
-func _on_activity_completed(activity: StringName, result_value: int, medal: StringName, is_new_best: bool) -> void:
-	if activity == &"CIRCUIT":
+func _on_activity_completed(summary: Dictionary) -> void:
+	var activity := StringName(summary.get(&"activity_id", &""))
+	if activity not in [&"FREESTYLE", &"DISCOVERY"]:
 		return
 	dismiss_control_hints()
 	_line_label.text = ""
 	_line_score_label.text = ""
+	_compass_label.visible = false
+	var accepted := bool(summary.get(&"accepted", false)) and bool(summary.get(&"durable", false))
+	var duplicate := bool(summary.get(&"duplicate", false))
+	if not accepted:
+		_present_activity_settlement_rejection(summary, duplicate)
+		return
+	var result_value := int(summary.get(&"result_value", 0))
+	var medal := StringName(summary.get(&"medal", &"FINISHER"))
+	var is_new_best := bool(summary.get(&"is_new_best", false))
 	_countdown_label.text = str(medal)
 	_countdown_label.add_theme_color_override(&"font_color", AMBER if medal == &"GOLD" else CREAM)
-	_compass_label.visible = false
 	var result_text := "%06d POINTS" % result_value if activity == &"FREESTYLE" else _format_usec(result_value)
 	var record_text := "  •  NEW PERSONAL BEST" if is_new_best else ""
 	var next_goal := _freestyle_next_goal(result_value) if activity == &"FREESTYLE" else _discovery_next_goal(result_value)
-	_message_label.text = "%s%s\n%s\nENTER / X RUN AGAIN   //   G / B GARAGE" % [result_text, record_text, next_goal]
+	_set_completion_message("%s%s\n%s" % [
+		result_text,
+		record_text,
+		next_goal,
+	])
+	_message_time = 9999.0
+
+
+func _present_activity_settlement_rejection(summary: Dictionary, duplicate: bool) -> void:
+	var activity := StringName(summary.get(&"activity_id", &""))
+	var result_value := int(summary.get(&"result_value", 0))
+	var result_text := "RUN COMPLETE"
+	if activity == &"FREESTYLE":
+		result_text = "%06d POINTS" % result_value
+	elif result_value > 0:
+		result_text = _format_usec(result_value)
+	if duplicate:
+		_countdown_label.text = "SETTLED"
+		_countdown_label.add_theme_color_override(&"font_color", CYAN)
+		_set_completion_message("%s\nRESULT ALREADY SETTLED  //  NO DUPLICATE PAYOUT" % result_text)
+		_message_time = 9999.0
+		return
+	var reason := StringName(summary.get(&"reason", &"SETTLEMENT_REJECTED"))
+	_countdown_label.text = "SAVE FAILED" if reason == &"SAVE_FAILED" else "NOT SETTLED"
+	_countdown_label.add_theme_color_override(&"font_color", AMBER)
+	var guidance := "START A FRESH ATTEMPT"
+	if bool(summary.get(&"retryable", false)):
+		guidance = "RUN AGAIN TO RETRY THE SAME SETTLEMENT"
+	elif reason == &"STALE_OR_ABANDONED_RUN":
+		guidance = "RUN EXPIRED  //  START A FRESH ATTEMPT"
+	var reason_text := String(reason).replace("_", " ")
+	_set_completion_message("%s\nPROGRESS NOT SAVED  //  %s\n%s" % [result_text, reason_text, guidance])
 	_message_time = 9999.0
 
 
@@ -2143,7 +3089,39 @@ func _pulse_warning() -> void:
 
 
 func _race_next_goal(time_usec: int) -> String:
-	var targets := CourseCatalog.get_medal_times_usec(_track_id)
+	var session_targets: Variant = _session_snapshot.get(&"medal_times_usec", {})
+	var targets := (
+		(session_targets as Dictionary)
+		if session_targets is Dictionary and not (session_targets as Dictionary).is_empty()
+		else CourseCatalog.get_medal_times_usec(_track_id)
+	)
+	return _race_goal_from_targets(time_usec, targets)
+
+
+func _recommended_race_goal(result: Dictionary, time_usec: int) -> String:
+	var next_event_id := StringName(result.get(&"next_event_id", result.get(&"event_id", &"")))
+	var current_event_id := StringName(result.get(&"event_id", &""))
+	var next_format := StringName(result.get(&"next_event_format", &""))
+	var next_laps := maxi(int(result.get(&"next_event_laps", 1)), 1)
+	if next_format == &"ELIMINATION":
+		return "SURVIVE ALL %d ELIMINATION LAPS" % next_laps
+	if next_format == &"ACADEMY":
+		return "COMPLETE THE ACTIVE LESSON"
+	var target_value: Variant = result.get(&"next_event_medal_times_usec", {})
+	var targets := (target_value as Dictionary) if target_value is Dictionary else {}
+	if not next_event_id.is_empty() and next_event_id != current_event_id:
+		var bronze := int(targets.get(&"bronze", 0))
+		return (
+			"BRONZE TARGET  //  %s" % _format_usec(bronze)
+			if bronze > 0
+			else "SET A CLASSIFIED BASELINE"
+		)
+	if time_usec < 0:
+		return "SET A CLASSIFIED BASELINE"
+	return _race_goal_from_targets(time_usec, targets) if not targets.is_empty() else _race_next_goal(time_usec)
+
+
+func _race_goal_from_targets(time_usec: int, targets: Dictionary) -> String:
 	var bronze := int(targets.get(&"bronze", 0))
 	var silver := int(targets.get(&"silver", 0))
 	var gold := int(targets.get(&"gold", 0))

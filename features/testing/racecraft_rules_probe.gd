@@ -12,9 +12,12 @@ func _ready() -> void:
 	var surfaces := _verify_surface_ordering()
 	var energy := _verify_energy_caps()
 	var priority := _verify_flow_priority()
-	_passed = bounds and deterministic and surfaces and energy and priority
-	print("RACECRAFT RULES PROBE: bounds=%s deterministic=%s surfaces=%s energy=%s priority=%s passed=%s" % [
-		str(bounds), str(deterministic), str(surfaces), str(energy), str(priority), str(_passed),
+	var line_choices := _verify_skill_line_choices()
+	var line_guidance := _verify_skill_line_guidance()
+	_passed = bounds and deterministic and surfaces and energy and priority and line_choices and line_guidance
+	print("RACECRAFT RULES PROBE: bounds=%s deterministic=%s surfaces=%s energy=%s priority=%s line_choices=%s line_guidance=%s passed=%s" % [
+		str(bounds), str(deterministic), str(surfaces), str(energy), str(priority),
+		str(line_choices), str(line_guidance), str(_passed),
 	])
 	if not _passed:
 		push_error("RACECRAFT RULES PROBE: deterministic racecraft contract failed.")
@@ -139,6 +142,87 @@ func _verify_flow_priority() -> bool:
 		and bool(affordable[&"affordable"])
 		and not bool(denied[&"affordable"])
 		and is_equal_approx(float(denied[&"flow_remaining"]), 17.99)
+	)
+
+
+func _verify_skill_line_choices() -> bool:
+	var bypassed: Dictionary = RULES.evaluate_skill_line_choice(
+		false, 0.0, 0.0, 0.0, 0.0, 1.0
+	)
+	var mastered: Dictionary = RULES.evaluate_skill_line_choice(
+		true, 1.0, 1.0, 1.0, 1.0, 0.0
+	)
+	var missed: Dictionary = RULES.evaluate_skill_line_choice(
+		true, 0.0, 0.0, 0.0, 0.0, 1.0
+	)
+	var rut_correction := RULES.skill_line_commit_intent(&"RUT", 1.0, 0.8, &"NONE")
+	var rut_wrong_way := RULES.skill_line_commit_intent(&"RUT", 1.0, -0.8, &"NONE")
+	var berm_overshoot_correction := RULES.skill_line_commit_intent(&"BERM", -0.7, -0.5, &"NONE")
+	var pump_steering_only := RULES.skill_line_commit_intent(&"PUMP", -1.0, -1.0, &"NONE")
+	var pump_technique := RULES.skill_line_commit_intent(&"PUMP", -1.0, -1.0, &"PUMP")
+	return (
+		StringName(bypassed.get(&"outcome", &"")) == &"BYPASSED"
+		and not bool(bypassed.get(&"committed", true))
+		and is_equal_approx(float(bypassed.get(&"momentum_multiplier", 0.0)), 1.0)
+		and is_equal_approx(float(bypassed.get(&"stability_factor", 0.0)), 1.0)
+		and is_zero_approx(float(bypassed.get(&"flow_reward", -1.0)))
+		and bool(mastered.get(&"committed", false))
+		and StringName(mastered.get(&"outcome", &"")) == &"MASTERED"
+		and float(mastered.get(&"momentum_multiplier", 1.0)) > 1.0
+		and float(mastered.get(&"flow_reward", 0.0)) > 0.0
+		and StringName(missed.get(&"outcome", &"")) == &"MISSED"
+		and _in_range(
+			float(missed.get(&"momentum_multiplier", 0.0)),
+			RULES.SKILL_LINE_MOMENTUM_MIN,
+			1.0
+		)
+		and rut_correction
+		and not rut_wrong_way
+		and berm_overshoot_correction
+		and not pump_steering_only
+		and pump_technique
+	)
+
+
+func _verify_skill_line_guidance() -> bool:
+	var opening: Dictionary = RULES.skill_line_guidance(0.0, 650.0, 32.0, 10)
+	var active: Dictionary = RULES.skill_line_guidance(0.06, 650.0, 32.0, 10)
+	var cleared: Dictionary = RULES.skill_line_guidance(0.095, 650.0, 5.0, 10)
+	var next_preview: Dictionary = RULES.skill_line_guidance(0.098, 650.0, 32.0, 10)
+	var seam_preview: Dictionary = RULES.skill_line_guidance(0.999, 650.0, 40.0, 10)
+	var opening_repeat: Dictionary = RULES.skill_line_guidance(0.0, 650.0, 32.0, 10)
+	var left: Dictionary = RULES.skill_line_definition(0, 4.5, 1.25)
+	var right: Dictionary = RULES.skill_line_definition(1, 4.5, 1.25)
+	var center: Dictionary = RULES.skill_line_definition(2, 4.5, 1.25)
+	var seam_before_key := RULES.skill_line_zone_key(&"MESA", &"MAIN", int(seam_preview.get(&"zone_index", -1)), &"RUT")
+	var seam_after_guidance: Dictionary = RULES.skill_line_guidance(0.001, 650.0, 40.0, 10)
+	var seam_after_key := RULES.skill_line_zone_key(&"MESA", &"MAIN", int(seam_after_guidance.get(&"zone_index", -1)), &"RUT")
+	return (
+		opening == opening_repeat
+		and StringName(opening.get(&"phase", &"")) == &"PREVIEW"
+		and int(opening.get(&"zone_index", -1)) == 0
+		and float(opening.get(&"preview_seconds", 0.0)) >= 1.0
+		and StringName(active.get(&"phase", &"")) == &"ACTIVE"
+		and bool(active.get(&"active", false))
+		and StringName(cleared.get(&"phase", &"INVALID")) == &"NONE"
+		and int(cleared.get(&"zone_index", 0)) == -1
+		and StringName(next_preview.get(&"phase", &"")) == &"PREVIEW"
+		and int(next_preview.get(&"zone_index", -1)) == 1
+		and float(next_preview.get(&"preview_seconds", 0.0)) >= 1.0
+		and int(seam_preview.get(&"zone_index", -1)) == 0
+		and int(seam_preview.get(&"lap_offset", 0)) == 1
+		and StringName(left.get(&"direction", &"")) == &"LEFT"
+		and StringName(right.get(&"direction", &"")) == &"RIGHT"
+		and StringName(center.get(&"direction", &"")) == &"CENTER"
+		and left == RULES.skill_line_definition(0, 4.5, 1.25)
+		and not seam_before_key.is_empty()
+		and seam_before_key == seam_after_key
+		and not RULES.suppress_wrapped_preview(1, 0, 1, 1, 0, 6)
+		and not RULES.suppress_wrapped_preview(0, 0, 2, 2, 1, 6)
+		and not RULES.suppress_wrapped_preview(1, 0, 1, 2, 5, 6)
+		and RULES.suppress_wrapped_preview(1, 0, 2, 2, 5, 6)
+		and RULES.suppress_wrapped_preview(0, 0, 2, 2, 5, 6)
+		and not RULES.suppress_wrapped_preview(0, 1, 2, 2, 5, 6)
 	)
 
 

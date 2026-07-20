@@ -6,9 +6,7 @@ signal hud_updated(time_left_usec: int, score: int, combo: int, last_airtime: fl
 
 const SPAWN_TRANSFORM := Transform3D(Basis.IDENTITY, Vector3(0.0, 1.4, 31.0))
 const SESSION_USEC: int = 60_000_000
-const GOLD_SCORE: int = 12_000
-const SILVER_SCORE: int = 7_000
-const BRONZE_SCORE: int = 3_500
+const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 
 var bike: DirtBikeController
 var ghost: GhostController
@@ -16,14 +14,16 @@ var active: bool = false
 var score: int = 0
 var combo: int = 1
 
-var _start_usec: int = 0
+var _run_clock: SimulationClock = SIMULATION_CLOCK_SCRIPT.new()
 var _last_airtime: float = 0.0
+var _attempt_context: Dictionary = {}
+var _pending_submission: Dictionary = {}
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if not active:
 		return
-	var elapsed_usec := Time.get_ticks_usec() - _start_usec
+	var elapsed_usec := _run_clock.advance(delta)
 	var time_left_usec := maxi(SESSION_USEC - elapsed_usec, 0)
 	hud_updated.emit(time_left_usec, score, combo, _last_airtime)
 	if time_left_usec <= 0:
@@ -41,26 +41,60 @@ func initialize(player_bike: DirtBikeController, ghost_controller: GhostControll
 func start_session() -> void:
 	if bike == null or ghost == null:
 		return
+	# A failed durable write keeps the exact authoritative submission alive. The
+	# first retry action replays that receipt instead of silently abandoning it by
+	# issuing a different run ID; a second action can then begin a fresh attempt.
+	if not _pending_submission.is_empty():
+		# Main consumes attempt-keyed progression baselines. Reannounce only the
+		# settlement context (not the physical activity start) before each retry.
+		EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
+		_settle_pending_submission()
+		return
+	var attempt: Dictionary = Profile.begin_activity_run(&"FREESTYLE")
+	_attempt_context = attempt.duplicate(true)
+	if not bool(attempt.get(&"accepted", false)):
+		active = false
+		bike.set_controls_enabled(false)
+		EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
+		EventBus.activity_completed.emit(_begin_failure_receipt(attempt))
+		return
 	active = true
 	score = 0
 	combo = 1
 	_last_airtime = 0.0
-	_start_usec = Time.get_ticks_usec()
+	_run_clock.reset()
 	bike.respawn_at(SPAWN_TRANSFORM)
 	bike.set_motion_locked(false)
 	bike.set_controls_enabled(true)
 	ghost.cancel_run()
 	EventBus.activity_started.emit(&"FREESTYLE")
+	EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
 	EventBus.freestyle_score_changed.emit(0, 1, 0)
 	hud_updated.emit(SESSION_USEC, 0, 1, 0.0)
 
 
 func enter_waiting() -> void:
 	active = false
+	if _pending_submission.is_empty() and Profile.has_method(&"abandon_activity_run"):
+		Profile.call(
+			&"abandon_activity_run", &"FREESTYLE", str(_attempt_context.get(&"run_id", ""))
+		)
 	if bike != null:
 		bike.set_controls_enabled(false)
 	if ghost != null:
 		ghost.cancel_run()
+
+
+func get_activity_attempt_context() -> Dictionary:
+	return _attempt_context.duplicate(true)
+
+
+func has_pending_settlement() -> bool:
+	return not _pending_submission.is_empty()
+
+
+func get_elapsed_usec() -> int:
+	return _run_clock.elapsed_usec
 
 
 func _on_trick_landed(airtime: float, rotation_amount: float, landing_intensity: float, clean: bool) -> void:
@@ -86,17 +120,65 @@ func _finish_session() -> void:
 		return
 	active = false
 	bike.set_controls_enabled(false)
-	var medal := _medal_for_score(score)
-	var is_new_best := score > Profile.best_freestyle_score
-	EventBus.activity_completed.emit(&"FREESTYLE", score, medal, is_new_best)
+	_pending_submission = {
+		&"schema_version": 1,
+		&"activity_id": &"FREESTYLE",
+		&"run_id": str(_attempt_context.get(&"run_id", "")),
+		&"result_value": score,
+	}
+	_settle_pending_submission()
 	hud_updated.emit(0, score, combo, _last_airtime)
 
 
-func _medal_for_score(final_score: int) -> StringName:
-	if final_score >= GOLD_SCORE:
-		return &"GOLD"
-	if final_score >= SILVER_SCORE:
-		return &"SILVER"
-	if final_score >= BRONZE_SCORE:
-		return &"BRONZE"
-	return &"FINISHER"
+func _settle_pending_submission() -> Dictionary:
+	if _pending_submission.is_empty():
+		return {}
+	var submission := _pending_submission.duplicate(true)
+	var receipt: Dictionary = Profile.record_activity_result(submission)
+	receipt = _normalize_receipt(receipt, submission)
+	var terminal := (
+		bool(receipt.get(&"accepted", false))
+		or bool(receipt.get(&"duplicate", false))
+		or not bool(receipt.get(&"retryable", false))
+	)
+	if terminal:
+		_pending_submission.clear()
+	EventBus.activity_completed.emit(receipt.duplicate(true))
+	return receipt
+
+
+func _normalize_receipt(receipt: Dictionary, submission: Dictionary) -> Dictionary:
+	var normalized := receipt.duplicate(true)
+	normalized[&"schema_version"] = int(normalized.get(&"schema_version", submission.get(&"schema_version", 1)))
+	normalized[&"activity_id"] = StringName(normalized.get(
+		&"activity_id", submission.get(&"activity_id", &"FREESTYLE")
+	))
+	normalized[&"run_id"] = str(normalized.get(&"run_id", submission.get(&"run_id", "")))
+	normalized[&"result_value"] = int(normalized.get(&"result_value", submission.get(&"result_value", 0)))
+	normalized[&"accepted"] = bool(normalized.get(&"accepted", false))
+	normalized[&"duplicate"] = bool(normalized.get(&"duplicate", false))
+	normalized[&"durable"] = bool(normalized.get(&"durable", false))
+	normalized[&"retryable"] = bool(normalized.get(&"retryable", false))
+	normalized[&"reason"] = StringName(normalized.get(&"reason", &"UNKNOWN"))
+	var rewards_value: Variant = normalized.get(&"rewards_granted", {})
+	normalized[&"rewards_granted"] = (
+		(rewards_value as Dictionary).duplicate(true)
+		if rewards_value is Dictionary
+		else {&"cash": 0, &"reputation": 0}
+	)
+	return normalized
+
+
+func _begin_failure_receipt(attempt: Dictionary) -> Dictionary:
+	return {
+		&"accepted": false,
+		&"duplicate": false,
+		&"durable": false,
+		&"retryable": bool(attempt.get(&"retryable", false)),
+		&"reason": StringName(attempt.get(&"reason", &"RUN_START_FAILED")),
+		&"schema_version": int(attempt.get(&"schema_version", 1)),
+		&"activity_id": &"FREESTYLE",
+		&"run_id": str(attempt.get(&"run_id", "")),
+		&"result_value": 0,
+		&"rewards_granted": {&"cash": 0, &"reputation": 0},
+	}

@@ -5,7 +5,7 @@ class_name CompetitiveRunSignature
 const SCHEMA_VERSION: int = 1
 ## Bumps whenever deterministic bike/racecraft rules change lap potential. It is
 ## part of the normalized payload while the rs1 envelope remains importable.
-const RACECRAFT_VERSION: int = 1
+const RACECRAFT_VERSION: int = 3
 const REQUIRED_CONTEXT_KEYS: Array[String] = [
 	"event_id",
 	"track_id",

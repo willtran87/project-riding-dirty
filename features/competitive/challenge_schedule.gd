@@ -40,7 +40,8 @@ func weekly(unix_time: int = -1, player_tier: int = 0) -> Dictionary:
 
 
 func challenge_for_id(challenge_id: String, player_tier: int = 0) -> Dictionary:
-	var parts := challenge_id.split("_")
+	var normalized_id := challenge_id.strip_edges().to_upper()
+	var parts := normalized_id.split("_")
 	if parts.size() != 3 or not str(parts[1]).is_valid_int():
 		return {}
 	var kind := str(parts[0]).to_upper()
@@ -50,7 +51,7 @@ func challenge_for_id(challenge_id: String, player_tier: int = 0) -> Dictionary:
 		generated = _generate(kind, start_unix, DAY_SECONDS, player_tier)
 	elif kind == "WEEKLY":
 		generated = _generate(kind, start_unix, WEEK_SECONDS, player_tier)
-	if str(generated.get("challenge_id", "")) != challenge_id:
+	if str(generated.get("challenge_id", "")) != normalized_id:
 		return {}
 	return generated
 
@@ -125,10 +126,10 @@ func _generate(kind: String, start_unix: int, duration_seconds: int, player_tier
 		modifier_pool[swap_index] = held
 	for index in mini(modifier_count, modifier_pool.size()):
 		selected_modifiers.append(modifier_pool[index])
-	var challenge_id := "%s_%d_%08x" % [kind, start_unix, seed_value]
+	var challenge_id := ("%s_%d_%08x" % [kind, start_unix, seed_value]).to_upper()
 	var route_version := 19 if track_id == "QUARRY" else (4 if track_id == "PINE" else CourseCatalog.MESA_MX_ROUTE_VERSION)
 	var challenge := {
-		"version": 2,
+		"version": 3,
 		"challenge_id": challenge_id,
 		"kind": kind,
 		"starts_unix": start_unix,
@@ -148,7 +149,24 @@ func _generate(kind: String, start_unix: int, duration_seconds: int, player_tier
 		"reward_multiplier": 1.0 + 0.12 * float(modifier_count) + 0.05 * float(clampi(player_tier, 0, 5)),
 	}
 	challenge["run_signature"] = CompetitiveRunSignature.build(run_context(challenge))
+	challenge["competition_id"] = competition_id(challenge)
 	return challenge
+
+
+static func competition_id(challenge: Dictionary) -> StringName:
+	## The public challenge ID identifies the UTC bucket, while the signature also
+	## captures the tier-adjusted difficulty and every comparable rule. Combining
+	## them prevents a rider who changes tier inside one bucket from inheriting an
+	## exact PB, replay, leaderboard, or ghost from a different ruleset. Rotation
+	## completion and first-clear progression intentionally remain bucket-scoped.
+	var challenge_id := str(challenge.get("challenge_id", "")).strip_edges().to_upper()
+	var signature := str(challenge.get("run_signature", "")).strip_edges()
+	if challenge_id.is_empty() or not CompetitiveRunSignature.validate(signature):
+		return &""
+	for character: String in challenge_id:
+		if character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_":
+			return &""
+	return StringName(("%s_%s" % [challenge_id, signature.right(32).to_upper()]).substr(0, 64))
 
 
 func _stable_seed(value: String) -> int:

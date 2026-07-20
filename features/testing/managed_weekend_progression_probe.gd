@@ -12,6 +12,7 @@ extends Node
 
 const MAIN_SCRIPT := preload("res://scenes/main.gd")
 const BIKE_CONTROLLER_SCRIPT := preload("res://entities/bike/bike_controller.gd")
+const PROFILE_RESULT_SIGNATURE := "MESA_MX|MESA_MX|r1|MAIN|WEEKEND_PROBE"
 
 var _passed := true
 var _garage_launch_activity: StringName = &""
@@ -204,11 +205,46 @@ func _validate_profile_championship_boundary(qualified: RaceWeekendDirector) -> 
 	Profile.reset_profile_for_testing()
 	Profile.persistence_enabled = false
 	var standalone_classification := _classification(qualified.get_main_grid())
-	var standalone := _profile_result("standalone-mesa-main", standalone_classification, false)
+	var standalone := _profile_result(standalone_classification, false)
+	var standalone_identity := Profile.begin_race_run(
+		&"MESA_MX",
+		str(standalone.get(&"signature", "")),
+		_weekend_settlement_context(standalone)
+	)
+	standalone[&"run_id"] = str(standalone_identity.get(&"run_id", ""))
+	standalone[&"signature"] = str(standalone_identity.get(&"signature", ""))
+	var standalone_statistics_before := CompetitiveRunSignature.canonical_string(
+		Profile.get_race_statistics()
+	)
+	var standalone_event_before := CompetitiveRunSignature.canonical_string(
+		Profile.get_event_record(&"MESA_MX")
+	)
+	var managed_token_spoof := standalone.duplicate(true)
+	managed_token_spoof[&"weekend_id"] = &"RED_MESA_OPEN"
+	managed_token_spoof[&"weekend_phase"] = &"MAIN"
+	managed_token_spoof[&"weekend_managed"] = true
+	var managed_token_rejection: Dictionary = Profile.record_race_result(managed_token_spoof, false)
+	_check(
+		StringName(managed_token_rejection.get(&"reason", &"")) == &"STALE_OR_ABANDONED_RUN"
+		and bool(managed_token_rejection.get(&"invalid_identity", false))
+		and CompetitiveRunSignature.canonical_string(Profile.get_race_statistics())
+			== standalone_statistics_before
+		and CompetitiveRunSignature.canonical_string(Profile.get_event_record(&"MESA_MX"))
+			== standalone_event_before
+		and Profile.get_championship_service().completed_round_count() == 0,
+		"standalone MESA token cannot be promoted into managed Main authority"
+	)
 	var standalone_summary: Dictionary = Profile.record_race_result(standalone, false)
 	_check(bool(standalone_summary.get(&"accepted", false)), "standalone MESA_MX still records normal event result")
 	_check(Profile.get_championship_service().completed_round_count() == 0, "standalone MESA_MX cannot record MESA_OPENER")
-	var spoofed_managed := _profile_result("spoofed-managed-mesa-main", standalone_classification, true)
+	var spoofed_managed := _profile_result(standalone_classification, true)
+	var spoofed_identity := Profile.begin_race_run(
+		&"MESA_MX",
+		str(spoofed_managed.get(&"signature", "")),
+		_weekend_settlement_context(spoofed_managed)
+	)
+	spoofed_managed[&"run_id"] = str(spoofed_identity.get(&"run_id", ""))
+	spoofed_managed[&"signature"] = str(spoofed_identity.get(&"signature", ""))
 	Profile.record_race_result(spoofed_managed, false)
 	_check(
 		Profile.get_championship_service().completed_round_count() == 0,
@@ -219,7 +255,14 @@ func _validate_profile_championship_boundary(qualified: RaceWeekendDirector) -> 
 	Profile.persistence_enabled = false
 	Profile.set_race_weekend_snapshot(qualified.to_dictionary())
 	var managed_classification := _classification(qualified.get_main_grid(), true)
-	var managed := _profile_result("managed-mesa-main", managed_classification, true)
+	var managed := _profile_result(managed_classification, true)
+	var managed_identity := Profile.begin_race_run(
+		&"MESA_MX",
+		str(managed.get(&"signature", "")),
+		_weekend_settlement_context(managed)
+	)
+	managed[&"run_id"] = str(managed_identity.get(&"run_id", ""))
+	managed[&"signature"] = str(managed_identity.get(&"signature", ""))
 	var accepted: Dictionary = Profile.record_race_result(managed, false)
 	var duplicate: Dictionary = Profile.record_race_result(managed, false)
 	var restored: Variant = Profile.get_race_weekend_director()
@@ -277,11 +320,11 @@ func _validate_garage_runtime_projection() -> void:
 	garage.free()
 
 
-func _profile_result(run_id: String, classification: Array[Dictionary], managed: bool) -> Dictionary:
+func _profile_result(classification: Array[Dictionary], managed: bool) -> Dictionary:
 	var player := _entry_for(classification, &"PLAYER")
 	return {
-		&"run_id": run_id,
-		&"signature": "MESA_MX|MESA_MX|r1|MAIN|WEEKEND_PROBE",
+		&"run_id": "",
+		&"signature": PROFILE_RESULT_SIGNATURE,
 		&"event_id": &"MESA_MX",
 		&"round_id": &"MESA_OPENER",
 		&"valid": true,
@@ -293,6 +336,14 @@ func _profile_result(run_id: String, classification: Array[Dictionary], managed:
 		&"weekend_id": &"RED_MESA_OPEN" if managed else &"",
 		&"weekend_phase": &"MAIN" if managed else &"",
 		&"weekend_managed": managed,
+	}
+
+
+func _weekend_settlement_context(result: Dictionary) -> Dictionary:
+	return {
+		&"weekend_id": StringName(result.get(&"weekend_id", &"")),
+		&"weekend_phase": StringName(result.get(&"weekend_phase", &"")),
+		&"weekend_managed": bool(result.get(&"weekend_managed", false)),
 	}
 
 

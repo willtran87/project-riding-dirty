@@ -194,6 +194,7 @@ func _cross_intermediate_finish(final_gate: Area3D, gate_index: int) -> void:
 	var before_transform := _bike.global_transform
 	var before_linear_velocity := _bike.linear_velocity
 	var before_angular_velocity := _bike.angular_velocity
+	var pre_player_total_progress := float(_player_classification().get(&"total_progress", -1.0))
 	var respawns_before := _respawn_count
 	var recoveries_before := _automatic_recovery_count
 	var laps_before := _lap_events.size()
@@ -201,6 +202,8 @@ func _cross_intermediate_finish(final_gate: Area3D, gate_index: int) -> void:
 	final_gate.emit_signal(&"body_entered", _bike)
 
 	var immediate_snapshot := _race.get_session_snapshot()
+	var immediate_player := _player_classification()
+	var immediate_total_progress := float(immediate_player.get(&"total_progress", -1.0))
 	var immediate_motion_preserved := (
 		_bike.global_transform.is_equal_approx(before_transform)
 		and _bike.linear_velocity.distance_to(before_linear_velocity) <= MOTION_TOLERANCE
@@ -228,6 +231,12 @@ func _cross_intermediate_finish(final_gate: Area3D, gate_index: int) -> void:
 		_respawn_count == respawns_before and _automatic_recovery_count == recoveries_before,
 		"intermediate gate emits no synchronous recovery",
 		"respawns=%d recoveries=%d" % [_respawn_count - respawns_before, _automatic_recovery_count - recoveries_before]
+	)
+	_check(
+		absf(immediate_total_progress - pre_player_total_progress) <= 0.05
+		and immediate_total_progress <= _route_length + 0.05,
+		"intermediate classification stays continuous at one lap",
+		"before=%.3f after=%.3f lap=%.3f" % [pre_player_total_progress, immediate_total_progress, _route_length]
 	)
 
 	# Hold the bike on the final-segment alias for one real integrity update. This
@@ -387,6 +396,7 @@ func _validate_final_result() -> void:
 		and int(result.get(&"reset_count", -1)) == 0
 		and int(result.get(&"recoveries", -1)) == 0
 		and int(result.get(&"crashes", -1)) == 0
+		and absf(float(player.get(&"total_progress", -1.0)) - _route_length * 2.0) <= 0.05
 		and bool(result.get(&"valid", false))
 		and (result.get(&"lap_times_usec", []) as Array).size() == 2
 		and _respawn_count == _run_respawn_baseline
@@ -397,6 +407,18 @@ func _validate_final_result() -> void:
 		int(result.get(&"player_penalty_usec", -1)), int(result.get(&"reset_count", -1)),
 		int(result.get(&"recoveries", -1)), int(result.get(&"crashes", -1)),
 	])
+	_check(
+		float(player.get(&"total_progress", -1.0)) <= _route_length * 2.0 + 0.05,
+		"final classification progress is bounded to the race distance",
+		"total=%.3f maximum=%.3f" % [float(player.get(&"total_progress", -1.0)), _route_length * 2.0]
+	)
+
+
+func _player_classification() -> Dictionary:
+	for racer: Dictionary in _race.get_classification_snapshot():
+		if bool(racer.get(&"is_player", false)):
+			return racer
+	return {}
 
 
 func _connect_monitors() -> void:

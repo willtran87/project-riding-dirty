@@ -23,7 +23,7 @@ const AMBER := Color("ffb52d")
 const CYAN := Color("56d6ff")
 const MUTED := Color("8b989f")
 const DARK := Color(0.025, 0.03, 0.036, 0.92)
-const WORKSHOP_CATEGORIES: Array[StringName] = [&"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE"]
+const WORKSHOP_CATEGORIES: Array[StringName] = [&"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE", &"BUILD"]
 const PART_SLOTS: Array[StringName] = [&"ENGINE", &"TIRES", &"SUSPENSION", &"BRAKES", &"CHASSIS"]
 const TUNE_PRESETS: Array[Dictionary] = [
 	{&"preset_id": &"BALANCED", &"display_name": "Balanced Baseline", &"description": "Neutral geometry and delivery. The clean comparison setup.", &"tune": {&"gearing": 0.0, &"tire_grip": 0.0, &"suspension_stiffness": 0.0, &"suspension_damping": 0.0, &"preload": 0.0, &"brake_bias": 0.0}},
@@ -54,6 +54,8 @@ var _tour_label: Label
 var _weekend_action_label: Label
 var _event_accent: ColorRect
 var _repair_label: Label
+var _setup_left_hint: Label
+var _setup_right_hint: Label
 var _bars: Dictionary[StringName, ProgressBar] = {}
 var _event_markers: Array[Label] = []
 var _workshop_summary_panel: PanelContainer
@@ -67,6 +69,8 @@ var _workshop_detail_label: Label
 var _workshop_build_label: Label
 var _workshop_action_label: Label
 var _workshop_status_label: Label
+var _workshop_hint_label: Label
+var _workshop_controls_label: Label
 var _bike_catalog: Variant
 var _selected_index: int = 1
 var _event_index: int = 0
@@ -74,10 +78,11 @@ var _open: bool = false
 var _workshop_open: bool = false
 var _workshop_category_index: int = 0
 var _workshop_item_indices: Dictionary[StringName, int] = {
-	&"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0,
+	&"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0, &"BUILD": 1,
 }
 var _competition_source: Object
 var _active_competition_event: StringName = &"CIRCUIT"
+var _active_competition_id: StringName = &""
 var _active_ghost_best_usec: int = -1
 
 
@@ -88,6 +93,9 @@ func _ready() -> void:
 	visible = false
 	Profile.profile_changed.connect(_on_profile_changed)
 	Profile.meta_progress_changed.connect(_on_meta_progress_changed)
+	InputRouter.input_mode_changed.connect(_on_input_mode_changed)
+	InputRouter.bindings_changed.connect(_on_bindings_changed)
+	_refresh_static_input_prompts()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -124,14 +132,17 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed(InputRouter.GARAGE_LEFT):
 		_selected_index = wrapi(_selected_index - 1, 0, SETUPS.size())
 		_refresh()
+		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_SETUP")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.EVENT_PREVIOUS):
 		_event_index = wrapi(_event_index - 1, 0, EVENTS.size())
 		_refresh()
+		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_EVENT")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.EVENT_NEXT):
 		_event_index = wrapi(_event_index + 1, 0, EVENTS.size())
 		_refresh()
+		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_EVENT")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.REPAIR_BIKE):
 		_attempt_repair()
@@ -141,10 +152,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		_refresh()
 		_status_label.text = "HANDLING ASSIST  //  %s" % String(Profile.assist_mode)
 		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"CONFIRM", &"GARAGE_ASSIST")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.GARAGE_RIGHT):
 		_selected_index = wrapi(_selected_index + 1, 0, SETUPS.size())
 		_refresh()
+		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_SETUP")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.CONFIRM):
 		_confirm_selection()
@@ -182,6 +195,7 @@ func show_workshop() -> void:
 	_workshop_status_label.text = ""
 	_refresh_workshop()
 	workshop_visibility_changed.emit(true)
+	_emit_interface_feedback(&"CONFIRM", &"WORKSHOP_OPEN")
 
 
 func hide_workshop() -> void:
@@ -190,6 +204,7 @@ func hide_workshop() -> void:
 	_workshop_open = false
 	_workshop_overlay.visible = false
 	workshop_visibility_changed.emit(false)
+	_emit_interface_feedback(&"CANCEL", &"WORKSHOP_CLOSE")
 
 
 func toggle_workshop() -> void:
@@ -209,6 +224,7 @@ func cycle_workshop_category(direction: int) -> void:
 	_workshop_category_index = wrapi(_workshop_category_index + signi(direction), 0, WORKSHOP_CATEGORIES.size())
 	_workshop_status_label.text = ""
 	_refresh_workshop()
+	_emit_interface_feedback(&"NAVIGATE", &"WORKSHOP_CATEGORY")
 
 
 func cycle_workshop_item(direction: int) -> void:
@@ -217,10 +233,12 @@ func cycle_workshop_item(direction: int) -> void:
 	var category := WORKSHOP_CATEGORIES[_workshop_category_index]
 	var items := _get_workshop_items(category)
 	if items.is_empty():
+		_emit_interface_feedback(&"DENIED", &"WORKSHOP_ITEM")
 		return
 	_workshop_item_indices[category] = wrapi(int(_workshop_item_indices.get(category, 0)) + signi(direction), 0, items.size())
 	_workshop_status_label.text = ""
 	_refresh_workshop()
+	_emit_interface_feedback(&"NAVIGATE", &"WORKSHOP_ITEM")
 
 
 func confirm_workshop_item() -> bool:
@@ -238,10 +256,12 @@ func confirm_workshop_item() -> bool:
 		&"TUNE": success = _apply_tune_preset(item)
 		&"PART": success = _purchase_or_install_part(item)
 		&"STYLE": success = _apply_style_preset(item)
+		&"BUILD": success = _apply_saved_build_action(item)
 	var item_id := _workshop_item_id(category, item)
 	_refresh()
 	_refresh_workshop()
 	workshop_action_completed.emit(category, item_id, success)
+	_emit_interface_feedback(&"CONFIRM" if success else &"DENIED", &"WORKSHOP_ACTION")
 	return success
 
 
@@ -262,6 +282,28 @@ func get_workshop_snapshot() -> Dictionary:
 		&"academy_progression": get_academy_progression_snapshot(),
 		&"achievements": Profile.get_achievement_progress_snapshot(),
 		&"cosmetics": Profile.get_rider_cosmetics(),
+		&"saved_builds": Profile.get_saved_bike_build_slots(),
+		&"workshop_title": _workshop_title_label.text if _workshop_title_label != null else "",
+		&"workshop_item": _workshop_item_label.text if _workshop_item_label != null else "",
+		&"workshop_detail": _workshop_detail_label.text if _workshop_detail_label != null else "",
+		&"workshop_build": _workshop_build_label.text if _workshop_build_label != null else "",
+		&"workshop_action": _workshop_action_label.text if _workshop_action_label != null else "",
+		&"workshop_status": _workshop_status_label.text if _workshop_status_label != null else "",
+	}
+
+
+func get_input_prompt_snapshot() -> Dictionary:
+	return {
+		&"input_mode": InputRouter.input_mode,
+		&"binding_revision": InputRouter.binding_revision,
+		&"setup_left": _setup_left_hint.text if _setup_left_hint != null else "",
+		&"setup_right": _setup_right_hint.text if _setup_right_hint != null else "",
+		&"status": _status_label.text if _status_label != null else "",
+		&"repair": _repair_label.text if _repair_label != null else "",
+		&"weekend_action": _weekend_action_label.text if _weekend_action_label != null else "",
+		&"workshop_hint": _workshop_hint_label.text if _workshop_hint_label != null else "",
+		&"workshop_controls": _workshop_controls_label.text if _workshop_controls_label != null else "",
+		&"workshop_action": _workshop_action_label.text if _workshop_action_label != null else "",
 	}
 
 
@@ -273,11 +315,16 @@ func bind_competition_source(source: Object) -> void:
 		_refresh_event()
 
 
-func update_competition_context(activity: StringName, ghost_best_usec: int = -1) -> void:
+func update_competition_context(
+	activity: StringName,
+	ghost_best_usec: int = -1,
+	competition_id: StringName = &""
+) -> void:
 	## GhostController exposes the record currently loaded by RaceController. Bind
 	## it to its event so browsing another card never claims a ghost that may not
 	## exist for that selected ruleset.
 	_active_competition_event = activity
+	_active_competition_id = competition_id
 	_active_ghost_best_usec = ghost_best_usec
 	if _open:
 		_refresh_event()
@@ -299,6 +346,7 @@ func get_event_briefing_presentation_snapshot() -> Dictionary:
 		&"event_id": selected_event,
 		&"visible": _event_competition_label != null and _event_competition_label.visible,
 		&"text": _event_competition_label.text if _event_competition_label != null else "",
+		&"event_meta": _event_meta_label.text if _event_meta_label != null else "",
 		&"competition": get_event_competition_snapshot(selected_event) if not selected_event.is_empty() else {},
 	}
 
@@ -307,6 +355,9 @@ func get_event_competition_snapshot(activity: StringName) -> Dictionary:
 	## Data-only production briefing composed from existing local authorities.
 	var session := _competition_session(activity)
 	var signature := _competition_signature(session)
+	var challenge_id := _session_challenge_id(session)
+	var competition_id := _session_competition_id(session)
+	var is_challenge := not challenge_id.is_empty()
 	var board: Dictionary = {}
 	if _competition_source != null and not signature.is_empty() and _competition_source.has_method(&"get_local_board"):
 		var board_value: Variant = _competition_source.call(&"get_local_board", signature, 8)
@@ -325,11 +376,11 @@ func get_event_competition_snapshot(activity: StringName) -> Dictionary:
 	var summary: Dictionary = {}
 	if Profile.has_method(&"get_leaderboard_summary") and not signature.is_empty():
 		summary = Profile.call(&"get_leaderboard_summary", signature) as Dictionary
-	var event_record: Dictionary = Profile.get_event_record(activity) if Profile.has_method(&"get_event_record") else {}
+	var event_record: Dictionary = Profile.get_event_record(activity, challenge_id) if Profile.has_method(&"get_event_record") else {}
 	var exact_best_usec := _entry_effective_time_usec(personal_entry)
 	if exact_best_usec < 0:
 		exact_best_usec = int(summary.get(&"time_usec", -1))
-	var event_best_usec := int(event_record.get(&"best_time_usec", -1))
+	var event_best_usec := -1 if is_challenge else int(event_record.get(&"best_time_usec", -1))
 	var personal_best_usec := exact_best_usec if exact_best_usec >= 0 else event_best_usec
 	var local_rank := int(personal_entry.get("rank", summary.get(&"rank", 0)))
 	var competition_snapshot: Dictionary = {}
@@ -339,22 +390,39 @@ func get_event_competition_snapshot(activity: StringName) -> Dictionary:
 			competition_snapshot = (source_snapshot as Dictionary).duplicate(true)
 	var last_result_value: Variant = competition_snapshot.get(&"last_result", {})
 	var last_result: Dictionary = (last_result_value as Dictionary).duplicate(true) if last_result_value is Dictionary else {}
+	var replay_identity_matches := (
+		StringName(last_result.get(&"event_id", &"")) == activity
+		and (
+			not is_challenge
+			or StringName(last_result.get(&"competition_id", &"")) == competition_id
+		)
+	)
 	var replay_available := (
 		bool(competition_snapshot.get(&"replay_available", false))
-		and StringName(last_result.get(&"event_id", &"")) == activity
+		and replay_identity_matches
+	)
+	var ghost_identity_matches := (
+		activity == _active_competition_event
+		and (
+			not is_challenge
+			or (not competition_id.is_empty() and competition_id == _active_competition_id)
+		)
 	)
 	var championship := _championship_briefing(activity)
 	var rival := _rival_briefing(activity, session, championship.get(&"standings", []) as Array)
 	return {
 		&"event_id": activity,
+		&"challenge_id": challenge_id,
+		&"competition_id": competition_id,
 		&"run_signature": signature,
+		&"medal_times_usec": session.medal_times_usec.duplicate(true) if session != null else {},
 		&"local_board_total": maxi(int(board.get("total", 0)), 0),
 		&"local_rank": maxi(local_rank, 0),
 		&"personal_best_usec": personal_best_usec,
 		&"exact_rules_best": exact_best_usec >= 0,
 		&"personal_best": bool(summary.get(&"personal_best", false)),
-		&"ghost_available": activity == _active_competition_event and _active_ghost_best_usec >= 0,
-		&"ghost_best_usec": _active_ghost_best_usec if activity == _active_competition_event else -1,
+		&"ghost_available": ghost_identity_matches and _active_ghost_best_usec >= 0,
+		&"ghost_best_usec": _active_ghost_best_usec if ghost_identity_matches else -1,
 		&"replay_available": replay_available,
 		&"championship": championship,
 		&"rival": rival,
@@ -403,7 +471,7 @@ func get_continue_weekend_snapshot() -> Dictionary:
 			&"available": true,
 			&"complete": true,
 			&"start_next_season": true,
-			&"action_text": "C / Y  START SEASON %d" % (championship.season_number + 1),
+			&"action_text": "%s  START SEASON %d" % [_any_action_label(InputRouter.CONTINUE_WEEKEND), championship.season_number + 1],
 		}
 	var weekend: Variant = Profile.get_race_weekend_director()
 	if weekend == null:
@@ -425,7 +493,7 @@ func get_continue_weekend_snapshot() -> Dictionary:
 		&"activity": activity,
 		&"available": _is_event_unlocked(activity),
 		&"complete": false,
-		&"action_text": "C / Y  CONTINUE %s  //  %s" % [str(weekend.display_name).to_upper(), String(phase)],
+		&"action_text": "%s  CONTINUE %s  //  %s" % [_any_action_label(InputRouter.CONTINUE_WEEKEND), str(weekend.display_name).to_upper(), String(phase)],
 	}
 
 
@@ -448,30 +516,36 @@ func continue_weekend() -> bool:
 		if not Profile.start_next_championship_season():
 			_status_label.text = "SEASON COULD NOT BE STARTED"
 			_status_label.modulate = Color("ff6f5e")
+			_emit_interface_feedback(&"DENIED", &"WEEKEND_CONTINUE")
 			return false
 		_focus_continue_weekend_event()
 		_refresh()
 		var championship: Variant = Profile.get_championship_service()
 		_status_label.text = "DIRT TOUR SEASON %d READY" % int(championship.season_number)
 		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"CONFIRM", &"WEEKEND_CONTINUE")
 		return true
 	var activity := StringName(action.get(&"activity", &""))
 	if activity.is_empty():
 		_status_label.text = "RED MESA WEEKEND COMPLETE" if bool(action.get(&"complete", false)) else "NO ACTIVE WEEKEND SESSION"
 		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"DENIED", &"WEEKEND_CONTINUE")
 		return false
 	if not bool(action.get(&"available", false)):
 		_status_label.text = "WEEKEND LOCKED  //  %s" % _event_unlock_hint(activity)
 		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"WEEKEND_CONTINUE")
 		return false
 	var setup := SETUPS[_selected_index]
 	if not Profile.is_setup_unlocked(setup):
 		_status_label.text = "INSTALL THIS KIT BEFORE CONTINUING THE WEEKEND"
 		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"WEEKEND_CONTINUE")
 		return false
 	Profile.set_current_setup(setup)
 	_event_index = maxi(EVENTS.find(activity), 0)
 	hide_garage()
+	_emit_interface_feedback(&"CONFIRM", &"WEEKEND_CONTINUE")
 	ride_requested.emit(setup, activity)
 	return true
 
@@ -482,18 +556,22 @@ func _confirm_selection() -> void:
 		if not Profile.purchase_setup(setup):
 			_status_label.text = "NOT ENOUGH CASH — WIN MEDALS TO FUND THE BUILD"
 			_status_label.modulate = Color("ff6f5e")
+			_emit_interface_feedback(&"DENIED", &"GARAGE_CONFIRM")
 			return
 		_status_label.text = "KIT INSTALLED — PRESS CONFIRM TO RIDE"
 		_status_label.modulate = CYAN
 		_refresh()
+		_emit_interface_feedback(&"CONFIRM", &"GARAGE_PURCHASE")
 		return
 	var activity := EVENTS[_event_index]
 	if not _is_event_unlocked(activity):
 		_status_label.text = _event_unlock_hint(activity)
 		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_CONFIRM")
 		return
 	Profile.set_current_setup(setup)
 	hide_garage()
+	_emit_interface_feedback(&"CONFIRM", &"GARAGE_RIDE")
 	ride_requested.emit(setup, activity)
 
 
@@ -591,13 +669,13 @@ func _build_ui() -> void:
 	_anchor_rect(card, Vector2(0.5, 0.5), Rect2(-260.0, -235.0, 820.0, 470.0))
 	_root.add_child(card)
 
-	var left_hint := _label("‹  Q / LEFT", 18, Color("7e919d"))
-	_anchor_rect(left_hint, Vector2(0.5, 0.5), Rect2(-220.0, -195.0, 160.0, 40.0))
-	_root.add_child(left_hint)
-	var right_hint := _label("E / RIGHT  ›", 18, Color("7e919d"))
-	right_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(right_hint, Vector2(0.5, 0.5), Rect2(360.0, -195.0, 160.0, 40.0))
-	_root.add_child(right_hint)
+	_setup_left_hint = _label("", 18, Color("7e919d"))
+	_anchor_rect(_setup_left_hint, Vector2(0.5, 0.5), Rect2(-220.0, -195.0, 160.0, 40.0))
+	_root.add_child(_setup_left_hint)
+	_setup_right_hint = _label("", 18, Color("7e919d"))
+	_setup_right_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_anchor_rect(_setup_right_hint, Vector2(0.5, 0.5), Rect2(360.0, -195.0, 160.0, 40.0))
+	_root.add_child(_setup_right_hint)
 
 	_setup_name = _label("BALANCED", 52, AMBER)
 	_setup_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -662,8 +740,12 @@ func _build_ui() -> void:
 func _build_workshop_summary() -> void:
 	_workshop_summary_panel = PanelContainer.new()
 	_workshop_summary_panel.name = "WorkshopSummary"
-	_workshop_summary_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_workshop_summary_panel.add_theme_stylebox_override(&"panel", _panel_style(Color(0.018, 0.026, 0.032, 0.93), Color("6d7d85"), 1))
+	_workshop_summary_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_workshop_summary_panel.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_workshop_summary_panel.gui_input.connect(_on_workshop_summary_gui_input)
+	_workshop_summary_panel.mouse_entered.connect(_set_workshop_summary_hovered.bind(true))
+	_workshop_summary_panel.mouse_exited.connect(_set_workshop_summary_hovered.bind(false))
+	_set_workshop_summary_hovered(false)
 	_anchor_rect(_workshop_summary_panel, Vector2(1.0, 0.0), Rect2(-228.0, 252.0, 200.0, 420.0))
 	_root.add_child(_workshop_summary_panel)
 	var margin := MarginContainer.new()
@@ -679,8 +761,8 @@ func _build_workshop_summary() -> void:
 	margin.add_child(stack)
 	var title := _label("WORKSHOP", 20, AMBER)
 	stack.add_child(title)
-	var hint := _label("TAB / X  OPEN", 13, CYAN)
-	stack.add_child(hint)
+	_workshop_hint_label = _label("", 13, CYAN)
+	stack.add_child(_workshop_hint_label)
 	_workshop_summary_label = _label("", 13, CREAM)
 	_workshop_summary_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_workshop_summary_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -736,9 +818,9 @@ func _build_workshop_overlay() -> void:
 	_workshop_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_workshop_status_label.custom_minimum_size.y = 25.0
 	stack.add_child(_workshop_status_label)
-	var controls := _label("Q / E  CATEGORY     W / S  ITEM     ENTER / A  APPLY     F / RB  REPAIR     TAB / X / B  CLOSE", 13, Color("8fa0aa"))
-	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	stack.add_child(controls)
+	_workshop_controls_label = _label("", 13, Color("8fa0aa"))
+	_workshop_controls_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stack.add_child(_workshop_controls_label)
 	_workshop_overlay.visible = false
 
 
@@ -777,17 +859,27 @@ func _refresh() -> void:
 	if Profile.is_setup_unlocked(setup):
 		_price_label.text = "INSTALLED" if setup == Profile.current_setup else "OWNED"
 		_price_label.modulate = CYAN
-		_status_label.text = "W / S EVENT   •   Q / E SETUP   •   TAB / X WORKSHOP   •   H / LS ASSIST   •   ENTER / A RIDE"
+		_status_label.text = "%s EVENT   •   %s SETUP   •   %s WORKSHOP   •   %s ASSIST   •   %s RIDE" % [
+			_any_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT),
+			_any_action_pair_label(InputRouter.GARAGE_LEFT, InputRouter.GARAGE_RIGHT),
+			_any_action_label(InputRouter.OPEN_WORKSHOP),
+			_any_action_label(InputRouter.TOGGLE_ASSIST),
+			_any_action_label(InputRouter.CONFIRM),
+		]
 		_status_label.modulate = Color("9dadb6")
 	else:
 		_price_label.text = "$%d TO INSTALL" % Profile.get_setup_price(setup)
 		_price_label.modulate = AMBER
-		_status_label.text = "W / S EVENT   •   TAB / X WORKSHOP   •   ENTER / A PURCHASE KIT"
+		_status_label.text = "%s EVENT   •   %s WORKSHOP   •   %s PURCHASE KIT" % [
+			_any_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT),
+			_any_action_label(InputRouter.OPEN_WORKSHOP),
+			_any_action_label(InputRouter.CONFIRM),
+		]
 		_status_label.modulate = Color("9dadb6")
 	_refresh_event()
 	_refresh_weekend_action()
 	var repair_price := Profile.get_repair_price()
-	var condition_text := "READY" if repair_price <= 0 else "F / RB REPAIR $%d" % repair_price
+	var condition_text := "READY" if repair_price <= 0 else "%s REPAIR $%d" % [_any_action_label(InputRouter.REPAIR_BIKE), repair_price]
 	_repair_label.text = "BIKE %03d%%  •  %s  •  ASSIST %s  •  STYLE TOKENS %02d" % [Profile.bike_condition, condition_text, String(Profile.assist_mode), Profile.style_tokens]
 	_refresh_workshop_summary()
 	if _workshop_open:
@@ -871,6 +963,27 @@ func _refresh_workshop_summary() -> void:
 	]
 
 
+func _on_workshop_summary_gui_input(event: InputEvent) -> void:
+	var mouse_event := event as InputEventMouseButton
+	if mouse_event == null or mouse_event.button_index != MOUSE_BUTTON_LEFT or not mouse_event.pressed:
+		return
+	show_workshop()
+	_workshop_summary_panel.accept_event()
+
+
+func _set_workshop_summary_hovered(hovered: bool) -> void:
+	if _workshop_summary_panel == null:
+		return
+	_workshop_summary_panel.add_theme_stylebox_override(
+		&"panel",
+		_panel_style(
+			Color(0.022, 0.035, 0.042, 0.97) if hovered else Color(0.018, 0.026, 0.032, 0.93),
+			CYAN if hovered else Color("6d7d85"),
+			2 if hovered else 1
+		)
+	)
+
+
 func _refresh_workshop() -> void:
 	if not _workshop_open:
 		return
@@ -886,7 +999,7 @@ func _refresh_workshop() -> void:
 		_workshop_item_label.text = "NO ITEMS"
 		_workshop_detail_label.text = "Nothing is available for the active bike and profile."
 		_workshop_build_label.text = ""
-		_workshop_action_label.text = "Q / E  CHANGE CATEGORY"
+		_workshop_action_label.text = "%s  CHANGE CATEGORY" % _any_action_pair_label(InputRouter.GARAGE_LEFT, InputRouter.GARAGE_RIGHT)
 		return
 	var item := items[selected_index]
 	var projection := _workshop_item_projection(category, item)
@@ -894,7 +1007,7 @@ func _refresh_workshop() -> void:
 	_workshop_item_label.text = str(projection.get(&"title", "ITEM"))
 	_workshop_detail_label.text = str(projection.get(&"detail", ""))
 	_workshop_build_label.text = str(projection.get(&"build", ""))
-	_workshop_action_label.text = str(projection.get(&"action", "ENTER / A  APPLY"))
+	_workshop_action_label.text = str(projection.get(&"action", "%s  APPLY" % _any_action_label(InputRouter.CONFIRM)))
 	_workshop_action_label.modulate = CYAN if bool(projection.get(&"available", true)) else Color("ff806b")
 	workshop_selection_changed.emit(get_workshop_snapshot())
 
@@ -923,6 +1036,24 @@ func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 			return part_items
 		&"STYLE":
 			return STYLE_PRESETS.duplicate(true)
+		&"BUILD":
+			var build_items: Array[Dictionary] = []
+			for slot: Dictionary in Profile.get_saved_bike_build_slots():
+				var slot_id := StringName(slot.get(&"slot_id", &""))
+				var slot_label := str(slot.get(&"slot_label", "?"))
+				var occupied := bool(slot.get(&"occupied", false))
+				var saved: Dictionary = slot.get(&"build", {}) as Dictionary
+				build_items.append({
+					&"slot_id": slot_id, &"slot_label": slot_label,
+					&"action_id": &"LOAD", &"occupied": occupied,
+					&"saved_build": saved.duplicate(true),
+				})
+				build_items.append({
+					&"slot_id": slot_id, &"slot_label": slot_label,
+					&"action_id": &"SAVE", &"occupied": occupied,
+					&"saved_build": saved.duplicate(true),
+				})
+			return build_items
 	return []
 
 
@@ -941,6 +1072,7 @@ func _workshop_item_projection(category: StringName, item: Dictionary) -> Dictio
 		&"TUNE": return _tune_projection(item)
 		&"PART": return _part_projection(item)
 		&"STYLE": return _style_projection(item)
+		&"BUILD": return _saved_build_projection(item)
 	return {}
 
 
@@ -952,7 +1084,8 @@ func _bike_projection(item: Dictionary) -> Dictionary:
 	var price := int(item.get(&"price", 0))
 	var base_stats: Dictionary = item.get(&"base_stats", {}) as Dictionary
 	var available := Profile.racer_reputation >= required_rep and (owned or Profile.cash >= price)
-	var action := "ACTIVE BIKE" if active else "ENTER / A  SELECT OWNED BIKE" if owned else "ENTER / A  BUY  $%d" % price
+	var confirm_label := _any_action_label(InputRouter.CONFIRM)
+	var action := "ACTIVE BIKE" if active else "%s  SELECT OWNED BIKE" % confirm_label if owned else "%s  BUY  $%d" % [confirm_label, price]
 	if Profile.racer_reputation < required_rep:
 		action = "LOCKED  //  REQUIRES %d RACER REP" % required_rep
 	elif not owned and Profile.cash < price:
@@ -971,7 +1104,7 @@ func _class_projection(item: Dictionary) -> Dictionary:
 	var eligible: Array[StringName] = setup.get(&"eligible_classes", []) as Array[StringName]
 	var available := class_id in eligible
 	var selected := class_id == Profile.selected_bike_class
-	var action := "SELECTED CLASS" if selected else "ENTER / A  ENTER CLASS" if available else "INELIGIBLE  //  CHECK BIKE, RATING, AND REP"
+	var action := "SELECTED CLASS" if selected else "%s  ENTER CLASS" % _any_action_label(InputRouter.CONFIRM) if available else "INELIGIBLE  //  CHECK BIKE, RATING, AND REP"
 	return {
 		&"title": str(item.get(&"display_name", class_id)).to_upper(),
 		&"detail": str(item.get(&"description", "Race class.")).to_upper(),
@@ -987,7 +1120,7 @@ func _tune_projection(item: Dictionary) -> Dictionary:
 		&"title": str(item.get(&"display_name", "TUNE")).to_upper(),
 		&"detail": str(item.get(&"description", "")).to_upper(),
 		&"build": _format_tune(tune),
-		&"action": "ACTIVE TUNE" if active else "ENTER / A  APPLY PRESET  //  NO COST",
+		&"action": "ACTIVE TUNE" if active else "%s  APPLY PRESET  //  NO COST" % _any_action_label(InputRouter.CONFIRM),
 		&"available": true,
 	}
 
@@ -1002,7 +1135,8 @@ func _part_projection(item: Dictionary) -> Dictionary:
 	var required_rep := int(item.get(&"required_reputation", 0))
 	var price := int(item.get(&"price", 0))
 	var available := Profile.racer_reputation >= required_rep and (owned or Profile.cash >= price)
-	var action := "INSTALLED  //  %s" % String(slot) if installed else "ENTER / A  INSTALL OWNED PART" if owned else "ENTER / A  BUY + INSTALL  $%d" % price
+	var confirm_label := _any_action_label(InputRouter.CONFIRM)
+	var action := "INSTALLED  //  %s" % String(slot) if installed else "%s  INSTALL OWNED PART" % confirm_label if owned else "%s  BUY + INSTALL  $%d" % [confirm_label, price]
 	if Profile.racer_reputation < required_rep:
 		action = "LOCKED  //  REQUIRES %d RACER REP" % required_rep
 	elif not owned and Profile.cash < price:
@@ -1026,8 +1160,44 @@ func _style_projection(item: Dictionary) -> Dictionary:
 		&"title": str(item.get(&"display_name", style_id)).to_upper(),
 		&"detail": str(item.get(&"description", "")).to_upper(),
 		&"build": "HELMET %s   //   JERSEY %s   //   LIVERY %s   //   STYLE TIER %d / %d" % [str(changes.get(&"helmet", "")).replace("_", " "), str(changes.get(&"jersey", "")).replace("_", " "), str(changes.get(&"bike_livery", "")).replace("_", " "), Profile.get_cosmetic_tier(), required_tier],
-		&"action": "ACTIVE STYLE" if active else "ENTER / A  EQUIP STYLE" if available else "LOCKED  //  EARN RIDING FEATS FOR STYLE TIER %d" % required_tier,
+		&"action": "ACTIVE STYLE" if active else "%s  EQUIP STYLE" % _any_action_label(InputRouter.CONFIRM) if available else "LOCKED  //  EARN RIDING FEATS FOR STYLE TIER %d" % required_tier,
 		&"available": available,
+	}
+
+
+func _saved_build_projection(item: Dictionary) -> Dictionary:
+	var action_id := StringName(item.get(&"action_id", &""))
+	var slot_label := str(item.get(&"slot_label", "?"))
+	var occupied := bool(item.get(&"occupied", false))
+	var saved: Dictionary = item.get(&"saved_build", {}) as Dictionary
+	var confirm_label := _any_action_label(InputRouter.CONFIRM)
+	if action_id == &"LOAD":
+		if not occupied or saved.is_empty():
+			return {
+				&"title": "LOAD BUILD %s" % slot_label,
+				&"detail": "EMPTY SLOT  //  SAVE A CURRENT CONFIGURATION HERE FIRST.",
+				&"build": "Saved builds restore bike, kit, class, parts, tune, and livery without restoring condition or odometer.",
+				&"action": "EMPTY  //  SELECT SAVE BUILD %s" % slot_label,
+				&"available": false,
+			}
+		return {
+			&"title": "LOAD BUILD %s" % slot_label,
+			&"detail": "%s  //  READY TO APPLY" % str(saved.get(&"display_name", "SAVED BUILD")),
+			&"build": _saved_build_summary(saved),
+			&"action": "%s  LOAD BUILD  //  CURRENT CONDITION IS PRESERVED" % confirm_label,
+			&"available": true,
+		}
+	var active_name := _current_saved_build_name()
+	return {
+		&"title": "SAVE CURRENT  //  BUILD %s" % slot_label,
+		&"detail": "%s\n%s" % [
+			active_name,
+			"Replace this slot's configuration. Condition and odometer are never copied."
+			if occupied else "Store this configuration for one-step reuse across events.",
+		],
+		&"build": _current_saved_build_summary(),
+		&"action": "%s  %s BUILD %s" % [confirm_label, "OVERWRITE" if occupied else "SAVE", slot_label],
+		&"available": true,
 	}
 
 
@@ -1105,6 +1275,36 @@ func _apply_style_preset(item: Dictionary) -> bool:
 	return true
 
 
+func _apply_saved_build_action(item: Dictionary) -> bool:
+	var action_id := StringName(item.get(&"action_id", &""))
+	var slot_id := StringName(item.get(&"slot_id", &""))
+	var slot_label := str(item.get(&"slot_label", "?"))
+	var result: Dictionary
+	if action_id == &"SAVE":
+		result = Profile.save_current_bike_build(slot_id, _current_saved_build_name())
+		if bool(result.get(&"accepted", false)):
+			_set_workshop_status("BUILD %s SAVED  //  %s" % [
+				slot_label, str((result.get(&"build", {}) as Dictionary).get(&"display_name", "READY")),
+			], true)
+			return true
+	else:
+		result = Profile.load_saved_bike_build(slot_id)
+		if bool(result.get(&"accepted", false)):
+			var current_index := SETUPS.find(Profile.current_setup)
+			_selected_index = current_index if current_index >= 0 else 1
+			_sync_workshop_selection()
+			_set_workshop_status("BUILD %s LOADED  //  %s" % [
+				slot_label, str((result.get(&"build", {}) as Dictionary).get(&"display_name", "READY")),
+			], true)
+			return true
+	var reason := StringName(result.get(&"reason", &"BUILD_UNAVAILABLE"))
+	var failure_text := "EMPTY BUILD SLOT" if reason == &"EMPTY_SLOT" else (
+		"BUILD SAVE FAILED" if reason == &"SAVE_FAILED" else "BUILD IS NO LONGER AVAILABLE"
+	)
+	_set_workshop_status("%s  //  NO CHANGES APPLIED" % failure_text, false)
+	return false
+
+
 func _set_workshop_status(message: String, success: bool) -> void:
 	_workshop_status_label.text = message
 	_workshop_status_label.modulate = CYAN if success else Color("ff806b")
@@ -1142,12 +1342,61 @@ func _workshop_item_id(category: StringName, item: Dictionary) -> StringName:
 		&"TUNE": return StringName(item.get(&"preset_id", &""))
 		&"PART": return StringName(item.get(&"part_id", &""))
 		&"STYLE": return StringName(item.get(&"style_id", &""))
+		&"BUILD": return StringName("%s_%s" % [
+			String(item.get(&"slot_id", &"")), String(item.get(&"action_id", &"")),
+		])
 	return &""
 
 
 func _active_tune_name() -> String:
 	var build: Dictionary = Profile.get_bike_build_snapshot(Profile.active_bike_id)
 	var tune: Dictionary = build.get(&"tune", {}) as Dictionary
+	for preset: Dictionary in TUNE_PRESETS:
+		if _tune_dictionaries_equal(preset.get(&"tune", {}) as Dictionary, tune):
+			return str(preset.get(&"display_name", "BALANCED"))
+	return "CUSTOM"
+
+
+func _current_saved_build_name() -> String:
+	var definition: Dictionary = _bike_catalog.get_bike(Profile.active_bike_id)
+	var bike_name := str(definition.get(&"display_name", String(Profile.active_bike_id))).replace("_", " ")
+	return "%s  //  %s" % [bike_name.to_upper(), _active_tune_name().to_upper()]
+
+
+func _current_saved_build_summary() -> String:
+	var setup: Dictionary = Profile.get_active_bike_setup_snapshot()
+	var build: Dictionary = setup.get(&"build", {}) as Dictionary
+	return _saved_build_summary({
+		&"bike_id": Profile.active_bike_id,
+		&"setup_id": Profile.current_setup,
+		&"selected_class": Profile.selected_bike_class,
+		&"installed_parts": (build.get(&"installed_parts", {}) as Dictionary).duplicate(true),
+		&"tune": (build.get(&"tune", {}) as Dictionary).duplicate(true),
+		&"livery_id": StringName(Profile.get_rider_cosmetics().get(&"bike_livery", &"FACTORY")),
+	})
+
+
+func _saved_build_summary(saved: Dictionary) -> String:
+	var installed_parts: Dictionary = saved.get(&"installed_parts", {}) as Dictionary
+	var part_names := PackedStringArray()
+	for slot: StringName in PART_SLOTS:
+		var part_id := StringName(installed_parts.get(slot, &""))
+		if part_id.is_empty():
+			continue
+		var definition: Dictionary = _bike_catalog.get_part(part_id)
+		part_names.append(str(definition.get(&"display_name", part_id)).to_upper())
+	var parts_text := "STOCK" if part_names.is_empty() else " / ".join(part_names)
+	return "BIKE %s   //   KIT %s   //   CLASS %s\nPARTS %s\nTUNE %s   //   LIVERY %s" % [
+		String(saved.get(&"bike_id", &"")).replace("_", " "),
+		String(saved.get(&"setup_id", &"BALANCED")).replace("_", " "),
+		String(saved.get(&"selected_class", &"")).replace("_", " "),
+		parts_text,
+		_tune_name_for_dictionary(saved.get(&"tune", {}) as Dictionary).to_upper(),
+		String(saved.get(&"livery_id", &"FACTORY")).replace("_", " "),
+	]
+
+
+func _tune_name_for_dictionary(tune: Dictionary) -> String:
 	for preset: Dictionary in TUNE_PRESETS:
 		if _tune_dictionaries_equal(preset.get(&"tune", {}) as Dictionary, tune):
 			return str(preset.get(&"display_name", "BALANCED"))
@@ -1181,28 +1430,64 @@ func _format_modifiers(modifiers: Dictionary) -> String:
 	return "   ".join(tokens)
 
 
+func _on_input_mode_changed(_mode: StringName) -> void:
+	_refresh_static_input_prompts()
+	if _open:
+		_refresh()
+
+
+func _on_bindings_changed(_actions: Array[StringName]) -> void:
+	_refresh_static_input_prompts()
+	if _open:
+		_refresh()
+
+
+func _refresh_static_input_prompts() -> void:
+	var mode := InputRouter.input_mode
+	if _setup_left_hint != null:
+		_setup_left_hint.text = "‹  %s" % InputRouter.get_action_label(InputRouter.GARAGE_LEFT, mode, 2)
+	if _setup_right_hint != null:
+		_setup_right_hint.text = "%s  ›" % InputRouter.get_action_label(InputRouter.GARAGE_RIGHT, mode, 2)
+	if _workshop_hint_label != null:
+		_workshop_hint_label.text = "%s  OPEN" % _any_action_label(InputRouter.OPEN_WORKSHOP)
+	if _workshop_controls_label != null:
+		_workshop_controls_label.text = "%s  CATEGORY     %s  ITEM     %s  APPLY     %s  REPAIR     %s  CLOSE" % [
+			_any_action_pair_label(InputRouter.GARAGE_LEFT, InputRouter.GARAGE_RIGHT),
+			_any_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT),
+			_any_action_label(InputRouter.CONFIRM),
+			_any_action_label(InputRouter.REPAIR_BIKE),
+			_workshop_close_label(),
+		]
+
+
+func _any_action_label(action: StringName) -> String:
+	# Garage copy follows the active device; INPUT_MODE_ANY is reserved for the
+	# Settings binding summary where showing every configured family is useful.
+	return InputRouter.get_action_label(action, InputRouter.input_mode, 2)
+
+
+func _any_action_pair_label(negative_action: StringName, positive_action: StringName) -> String:
+	return InputRouter.get_action_pair_label(
+		negative_action, positive_action, InputRouter.input_mode, 2
+	)
+
+
+func _workshop_close_label() -> String:
+	var workshop_label := InputRouter.get_action_label(
+		InputRouter.OPEN_WORKSHOP, InputRouter.input_mode, 2
+	)
+	var garage_label := InputRouter.get_action_label(
+		InputRouter.OPEN_GARAGE, InputRouter.input_mode, 2
+	)
+	return workshop_label if workshop_label == garage_label else "%s / %s" % [workshop_label, garage_label]
+
+
 func _is_workshop_toggle(event: InputEvent) -> bool:
-	if event.is_action_pressed(InputRouter.OPEN_WORKSHOP):
-		return true
-	if event is InputEventKey:
-		var key_event := event as InputEventKey
-		return key_event.pressed and (key_event.physical_keycode == KEY_TAB or key_event.keycode == KEY_TAB)
-	if event is InputEventJoypadButton:
-		var button_event := event as InputEventJoypadButton
-		return button_event.pressed and button_event.button_index == JOY_BUTTON_X
-	return false
+	return event.is_action_pressed(InputRouter.OPEN_WORKSHOP)
 
 
 func _is_continue_weekend_input(event: InputEvent) -> bool:
-	if event.is_action_pressed(InputRouter.CONTINUE_WEEKEND):
-		return true
-	if event is InputEventKey:
-		var key_event := event as InputEventKey
-		return key_event.pressed and (key_event.physical_keycode == KEY_C or key_event.keycode == KEY_C)
-	if event is InputEventJoypadButton:
-		var button_event := event as InputEventJoypadButton
-		return button_event.pressed and button_event.button_index == JOY_BUTTON_Y
-	return false
+	return event.is_action_pressed(InputRouter.CONTINUE_WEEKEND)
 
 
 func _focus_continue_weekend_event() -> void:
@@ -1233,21 +1518,36 @@ func _attempt_repair() -> void:
 	if repair_price <= 0:
 		_status_label.text = "THE BIKE IS ALREADY READY TO RIDE"
 		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"DENIED", &"GARAGE_REPAIR")
 		return
 	if Profile.repair_bike():
 		_refresh()
 		_status_label.text = "BIKE RESTORED — POWER, GRIP, AND TOP SPEED RECOVERED"
 		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"CONFIRM", &"GARAGE_REPAIR")
 	else:
 		_status_label.text = "NOT ENOUGH CASH FOR REPAIRS"
 		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_REPAIR")
+
+
+func _emit_interface_feedback(kind: StringName, context: StringName) -> void:
+	EventBus.interface_feedback_requested.emit(kind, context)
 
 
 func _refresh_event() -> void:
 	var activity := EVENTS[_event_index]
 	var event_color := _event_color(activity)
-	var medal := Profile.get_event_medal(activity)
+	var challenge_id := _challenge_id_for_activity(activity)
+	var medal := Profile.get_event_medal(activity, challenge_id)
 	var is_unlocked := _is_event_unlocked(activity)
+	var competition_briefing := (
+		get_event_competition_snapshot(activity)
+		if RaceEventCatalog.is_race_event(activity) and activity != &"ACADEMY"
+		else {}
+	)
+	var exact_best_available := bool(competition_briefing.get(&"exact_rules_best", false))
+	var medal_times := competition_briefing.get(&"medal_times_usec", {}) as Dictionary
 	_event_accent.color = event_color if is_unlocked else Color("74413d")
 	var recommended := RaceEventCatalog.get_recommended_event()
 	var recommended_name := str(RaceEventCatalog.get_event(recommended).get(&"display_name", recommended)).to_upper()
@@ -1261,7 +1561,7 @@ func _refresh_event() -> void:
 		if index == _event_index:
 			marker.text = ">%d" % (index + 1)
 			_set_label_color(marker, event_color if is_unlocked else Color("ff6f5e"))
-		elif Profile.has_completed_event(marker_activity):
+		elif Profile.has_completed_event(marker_activity, _challenge_id_for_activity(marker_activity)):
 			marker.text = "%02d" % (index + 1)
 			_set_label_color(marker, AMBER)
 		elif _is_event_unlocked(marker_activity):
@@ -1286,14 +1586,14 @@ func _refresh_event() -> void:
 	if not is_unlocked:
 		_event_meta_label.text = "LOCKED   //   %s" % _event_unlock_hint(activity)
 	elif activity == &"FREESTYLE":
-		_event_meta_label.text = "MEDAL  %s   //   BEST  %06d   //   %s" % [String(medal), Profile.best_freestyle_score, _next_event_target(activity)]
+		_event_meta_label.text = "MEDAL  %s   //   BEST  %06d   //   %s" % [String(medal), Profile.best_freestyle_score, _next_event_target(activity, challenge_id, exact_best_available, medal_times)]
 	elif activity == &"DISCOVERY":
 		var best_text := "--:--.---" if Profile.best_discovery_usec < 0 else _format_usec(Profile.best_discovery_usec)
-		_event_meta_label.text = "MEDAL  %s   //   BEST  %s   //   %s" % [String(medal), best_text, _next_event_target(activity)]
+		_event_meta_label.text = "MEDAL  %s   //   BEST  %s   //   %s" % [String(medal), best_text, _next_event_target(activity, challenge_id, exact_best_available, medal_times)]
 	else:
-		_event_meta_label.text = "MEDAL  %s   //   %s   //   %s" % [String(medal), _next_event_target(activity), str(data.get(&"meta", "RACE SESSION"))]
+		_event_meta_label.text = "MEDAL  %s   //   %s   //   %s" % [String(medal), _next_event_target(activity, challenge_id, exact_best_available, medal_times), str(data.get(&"meta", "RACE SESSION"))]
 	_set_label_color(_event_meta_label, event_color if is_unlocked else Color("ff6f5e"))
-	_refresh_event_competition(activity, is_unlocked)
+	_refresh_event_competition(activity, is_unlocked, competition_briefing)
 	if not is_unlocked and Profile.is_setup_unlocked(SETUPS[_selected_index]):
 		_status_label.text = "LOCKED   //   %s" % _event_unlock_hint(activity)
 		_status_label.modulate = Color("ff6f5e")
@@ -1337,6 +1637,18 @@ func _competition_signature(session: RaceSessionConfig) -> String:
 		"challenge_id": rules.get(&"challenge_id", ""),
 		"modifiers": rules.get(&"modifiers", []),
 	})
+
+
+func _session_challenge_id(session: RaceSessionConfig) -> StringName:
+	return StringName(session.rules.get(&"challenge_id", &"")) if session != null else &""
+
+
+func _session_competition_id(session: RaceSessionConfig) -> StringName:
+	return StringName(session.rules.get(&"competition_id", &"")) if session != null else &""
+
+
+func _challenge_id_for_activity(activity: StringName) -> StringName:
+	return _session_challenge_id(_competition_session(activity)) if RaceEventCatalog.is_challenge_event(activity) else &""
 
 
 func _championship_briefing(activity: StringName) -> Dictionary:
@@ -1437,7 +1749,11 @@ func _rival_briefing(activity: StringName, session: RaceSessionConfig, standings
 	}
 
 
-func _refresh_event_competition(activity: StringName, is_unlocked: bool) -> void:
+func _refresh_event_competition(
+	activity: StringName,
+	is_unlocked: bool,
+	briefing: Dictionary = {}
+) -> void:
 	if _event_competition_label == null:
 		return
 	var should_show := RaceEventCatalog.is_race_event(activity) and activity != &"ACADEMY"
@@ -1445,7 +1761,8 @@ func _refresh_event_competition(activity: StringName, is_unlocked: bool) -> void
 	if not should_show:
 		_event_competition_label.text = ""
 		return
-	var briefing := get_event_competition_snapshot(activity)
+	if briefing.is_empty():
+		briefing = get_event_competition_snapshot(activity)
 	var best_usec := int(briefing.get(&"personal_best_usec", -1))
 	var board_total := int(briefing.get(&"local_board_total", 0))
 	var local_rank := int(briefing.get(&"local_rank", 0))
@@ -1460,7 +1777,7 @@ func _refresh_event_competition(activity: StringName, is_unlocked: bool) -> void
 	if bool(briefing.get(&"ghost_available", false)):
 		availability.append("PB GHOST")
 	if bool(briefing.get(&"replay_available", false)):
-		availability.append("REPLAY [V]")
+		availability.append("REPLAY READY")
 	var first_line := "%s  //  %s" % [board_text, best_text]
 	if not availability.is_empty():
 		first_line += "  //  %s" % " + ".join(availability)
@@ -1531,8 +1848,13 @@ func _event_color(activity: StringName) -> Color:
 			return AMBER
 
 
-func _next_event_target(activity: StringName) -> String:
-	var medal := Profile.get_event_medal(activity)
+func _next_event_target(
+	activity: StringName,
+	challenge_id: StringName = &"",
+	exact_best_available: bool = false,
+	session_medal_times: Dictionary = {}
+) -> String:
+	var medal := Profile.get_event_medal(activity, challenge_id)
 	match activity:
 		&"FREESTYLE":
 			if medal in [&"UNRIDDEN", &"FINISHER"]:
@@ -1560,18 +1882,20 @@ func _next_event_target(activity: StringName) -> String:
 			return "NEXT BEAT PB"
 		_:
 			var event := RaceEventCatalog.get_event(activity)
-			var times := event.get(&"medal_times_usec", {}) as Dictionary
+			var times := session_medal_times if not session_medal_times.is_empty() else event.get(&"medal_times_usec", {}) as Dictionary
 			if medal in [&"UNRIDDEN", &"FINISHER"]:
 				return "NEXT BRONZE %s" % _format_usec(int(times.get(&"bronze", 300_000_000)))
 			if medal == &"BRONZE":
 				return "NEXT SILVER %s" % _format_usec(int(times.get(&"silver", 220_000_000)))
 			if medal == &"SILVER":
 				return "NEXT GOLD %s" % _format_usec(int(times.get(&"gold", 165_000_000)))
+			if not challenge_id.is_empty() and not exact_best_available:
+				return "NEXT POST PB"
 			return "NEXT BEAT PB"
 
 
 func _is_event_unlocked(activity: StringName) -> bool:
-	return Profile.is_activity_unlocked(activity) and RaceEventCatalog.is_unlocked(activity, Profile.get_total_reputation())
+	return RaceEventCatalog.is_available_to_profile(activity, Profile)
 
 
 func _event_unlock_hint(activity: StringName) -> String:
@@ -1583,7 +1907,7 @@ func _event_unlock_hint(activity: StringName) -> String:
 func _completed_event_count() -> int:
 	var completed := 0
 	for event_id: StringName in EVENTS:
-		if Profile.has_completed_event(event_id):
+		if Profile.has_completed_event(event_id, _challenge_id_for_activity(event_id)):
 			completed += 1
 	return completed
 

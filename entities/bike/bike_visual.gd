@@ -1,6 +1,9 @@
 extends Node3D
 ## Builds and animates a detailed, Web-friendly stylized dirt bike and rider.
 
+const RIDER_TORSO_RESPONSE_HZ: float = 10.5
+const RIDER_WOBBLE_ANGULAR_SPEED: float = 25.0
+
 @export var pack_variant: bool = false
 @export var pack_bike_color: Color = Color("d93a2f")
 @export var pack_helmet_color: Color = Color("f2b632")
@@ -34,6 +37,7 @@ var _skid_index: int = 0
 var _skid_time: float = 0.0
 var _was_boosting: bool = false
 var _ride_phase: float = 0.0
+var _wobble_phase: float = 0.0
 var _current_surface: StringName = &"PACKED"
 var _surface_tint: Color = Color(0.44, 0.27, 0.14, 1.0)
 var _soft_particle_texture: Texture2D
@@ -103,9 +107,18 @@ func update_pose(
 		1.0 - exp(-11.0 * delta)
 	)
 	var counter_lean := -steer * clampf(speed_mps / 18.0, 0.0, 1.0) * 0.11
-	var wobble_roll := sin(Time.get_ticks_msec() * 0.025) * wobble * 0.09
-	_rider_root.rotation.z = lerpf(_rider_root.rotation.z, counter_lean + wobble_roll, 1.0 - exp(-9.0 * delta))
-	_rider_torso_root.rotation.x = lerpf(_rider_torso_root.rotation.x, -0.12 - lean * 0.12 - (0.12 if boosting else 0.0), 0.16)
+	_wobble_phase = advance_animation_phase(_wobble_phase, RIDER_WOBBLE_ANGULAR_SPEED, delta)
+	var wobble_roll := sin(_wobble_phase) * wobble * 0.09
+	_rider_root.rotation.z = lerpf(
+		_rider_root.rotation.z,
+		counter_lean + wobble_roll,
+		animation_response_weight(9.0, delta)
+	)
+	_rider_torso_root.rotation.x = lerpf(
+		_rider_torso_root.rotation.x,
+		-0.12 - lean * 0.12 - (0.12 if boosting else 0.0),
+		animation_response_weight(RIDER_TORSO_RESPONSE_HZ, delta)
+	)
 	_update_suspension_geometry(front_wheel_y, rear_wheel_y)
 	_update_rider_limbs(steer, lean, boosting)
 	if surface != _current_surface:
@@ -130,6 +143,14 @@ func update_pose(
 	if rear_contact_valid and dust_amount > 0.18 and (lateral_slip > 2.4 or rear_slip > 0.58) and _skid_time >= 0.11:
 		_drop_skid_mark(rear_contact_point, rear_contact_normal, rear_contact_forward)
 		_skid_time = 0.0
+
+
+static func animation_response_weight(response_hz: float, delta: float) -> float:
+	return 1.0 - exp(-maxf(response_hz, 0.0) * maxf(delta, 0.0))
+
+
+static func advance_animation_phase(phase: float, angular_speed: float, delta: float) -> float:
+	return fposmod(phase + angular_speed * maxf(delta, 0.0), TAU)
 
 
 func burst_landing_dust(

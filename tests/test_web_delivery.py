@@ -14,11 +14,13 @@ import unittest
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from serve_web import BUILD_ID, NoCacheRequestHandler  # noqa: E402
+from tools import build_web_release  # noqa: E402
 
 
 class _QuietHandler(NoCacheRequestHandler):
@@ -186,6 +188,40 @@ class WebDeliveryTests(unittest.TestCase):
         self.assertEqual(headers.get("clear-site-data"), '"cache"')
         self.assertIn("no-store", headers.get("cache-control", ""))
         self.assertEqual(body, b"")
+
+
+class WebReleaseBuilderTests(unittest.TestCase):
+    def test_interrupted_stamp_recovers_one_complete_hashed_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            game_root = Path(temporary_directory)
+            runtime = "index.0123456789ab"
+            pack = "index.abcdef123456.pck"
+            expected_paths = (
+                game_root / f"{runtime}.wasm",
+                game_root / pack,
+                {
+                    "audio_worklet": game_root / f"{runtime}.audio.worklet.js",
+                    "audio_position_worklet": (
+                        game_root / f"{runtime}.audio.position.worklet.js"
+                    ),
+                },
+            )
+            for path in [expected_paths[0], expected_paths[1], *expected_paths[2].values()]:
+                path.write_bytes(path.name.encode("ascii"))
+            raw_shell = (
+                'const GODOT_CONFIG = {"executable":"index",'
+                '"mainPack":"index.pck"};'
+            )
+
+            with mock.patch.object(build_web_release, "GAME_ROOT", game_root):
+                wasm, pck, worklets, fresh_export = build_web_release._runtime_sources(
+                    raw_shell
+                )
+
+            self.assertFalse(fresh_export)
+            self.assertEqual(wasm, expected_paths[0])
+            self.assertEqual(pck, expected_paths[1])
+            self.assertEqual(worklets, expected_paths[2])
 
 
 class WebReadinessContractTests(unittest.TestCase):

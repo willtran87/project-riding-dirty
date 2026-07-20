@@ -13,6 +13,7 @@ func _ready() -> void:
 	passed = _test_wrong_way(route, spawn) and passed
 	passed = _test_cut(route, spawn) and passed
 	passed = _test_closed_seam_shortcut(route, spawn) and passed
+	passed = _test_grid_idle_is_not_stuck(route, spawn) and passed
 	passed = _test_stuck(route, spawn) and passed
 	passed = _test_lap_gate_projection_lag(route, spawn) and passed
 	passed = _test_projection_wrap_before_lap_gate(route, spawn) and passed
@@ -123,6 +124,31 @@ func _test_stuck(route: PackedVector3Array, spawn: Transform3D) -> bool:
 		and int(snapshot[&"penalty_usec"]) == 750_000
 	)
 	print("INTEGRITY STUCK: time=%.2f penalty=%d passed=%s" % [float(snapshot[&"stuck_time"]), int(snapshot[&"penalty_usec"]), str(passed)])
+	return passed
+
+
+func _test_grid_idle_is_not_stuck(route: PackedVector3Array, spawn: Transform3D) -> bool:
+	var tracker := TRACKER_SCRIPT.new()
+	tracker.configure(route, 16.0, spawn, 1, {
+		&"closed": false,
+		&"stuck_grace_seconds": 0.8,
+		&"stuck_penalty_usec": 750_000,
+	})
+	for _step: int in 8:
+		tracker.update(0.2, spawn, Vector3.ZERO, 1)
+	var snapshot: Dictionary = tracker.get_snapshot()
+	var passed := (
+		not bool(snapshot.get(&"stuck_detection_armed", true))
+		and not bool(snapshot.get(&"stuck", true))
+		and not bool(snapshot.get(&"reset_requested", true))
+		and is_zero_approx(float(snapshot.get(&"stuck_time", -1.0)))
+	)
+	print("INTEGRITY GRID IDLE: armed=%s time=%.2f reset=%s passed=%s" % [
+		str(snapshot.get(&"stuck_detection_armed", true)),
+		float(snapshot.get(&"stuck_time", -1.0)),
+		str(snapshot.get(&"reset_requested", true)),
+		str(passed),
+	])
 	return passed
 
 

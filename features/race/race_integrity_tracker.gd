@@ -47,6 +47,7 @@ var _wrong_way_penalty_usec := 2_000_000
 var _stuck_penalty_usec := 2_000_000
 var _minimum_wrong_way_speed := 4.0
 var _minimum_stuck_speed := 0.8
+var _stuck_arm_distance := 2.5
 var _minimum_cut_jump := 28.0
 var _rejoin_capture_interval := 0.3
 
@@ -70,6 +71,7 @@ var _rejoin_capture_time := 0.0
 var _is_off_course := false
 var _is_wrong_way := false
 var _is_stuck := false
+var _stuck_detection_armed := false
 var _cut_detected := false
 
 var _warning_code: StringName = WARNING_NONE
@@ -121,6 +123,7 @@ func configure(
 	_stuck_penalty_usec = maxi(int(options.get(&"stuck_penalty_usec", _reset_penalty_usec)), 0)
 	_minimum_wrong_way_speed = maxf(float(options.get(&"minimum_wrong_way_speed", 4.0)), 1.0)
 	_minimum_stuck_speed = maxf(float(options.get(&"minimum_stuck_speed", 0.8)), 0.1)
+	_stuck_arm_distance = maxf(float(options.get(&"stuck_arm_distance", 2.5)), 0.5)
 	_minimum_cut_jump = maxf(float(options.get(&"minimum_cut_jump", maxf(28.0, _track_width * 1.35))), 12.0)
 	_rejoin_capture_interval = maxf(float(options.get(&"rejoin_capture_interval", 0.3)), 0.05)
 	_closed = bool(options.get(&"closed", _detect_closed_route()))
@@ -160,6 +163,7 @@ func reset(keep_penalties: bool = false) -> void:
 	_is_off_course = false
 	_is_wrong_way = false
 	_is_stuck = false
+	_stuck_detection_armed = false
 	_cut_detected = false
 	_warning_code = WARNING_NONE
 	_flag = FLAG_CLEAR
@@ -239,6 +243,14 @@ func update(
 	var flat_velocity := Vector3(linear_velocity.x, 0.0, linear_velocity.z)
 	var horizontal_speed := flat_velocity.length()
 	var forward_speed := flat_velocity.dot(tangent)
+	if not _stuck_detection_armed:
+		var displacement_from_spawn := Vector2(position.x, position.z).distance_to(
+			Vector2(_spawn_transform.origin.x, _spawn_transform.origin.z)
+		)
+		_stuck_detection_armed = (
+			displacement_from_spawn >= _stuck_arm_distance
+			or horizontal_speed >= _minimum_stuck_speed
+		)
 
 	var previous_lap := _current_lap
 	_current_lap = _resolve_lap_number(lap_number, chainage, forward_speed)
@@ -285,7 +297,12 @@ func update(
 		_off_course_time = _off_course_time + safe_delta if _is_off_course else 0.0
 		_wrong_way_time = _wrong_way_time + safe_delta if _is_wrong_way else 0.0
 		var barely_moved := not _has_previous_position or movement_distance <= maxf(0.12, safe_delta * 0.75)
-		var stuck_candidate := not _is_off_course and horizontal_speed < _minimum_stuck_speed and barely_moved
+		var stuck_candidate := (
+			_stuck_detection_armed
+			and not _is_off_course
+			and horizontal_speed < _minimum_stuck_speed
+			and barely_moved
+		)
 		_stuck_time = _stuck_time + safe_delta if stuck_candidate else 0.0
 		_is_stuck = _stuck_time >= _stuck_grace_seconds
 
@@ -400,6 +417,7 @@ func get_snapshot() -> Dictionary:
 		&"cut": _cut_detected,
 		&"cut_detected": _cut_detected,
 		&"stuck": _is_stuck,
+		&"stuck_detection_armed": _stuck_detection_armed,
 		&"off_course_time": _off_course_time,
 		&"wrong_way_time": _wrong_way_time,
 		&"stuck_time": _stuck_time,

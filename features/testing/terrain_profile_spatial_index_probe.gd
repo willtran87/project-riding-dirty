@@ -4,7 +4,10 @@ extends Node
 
 const PineBuilder = preload("res://levels/pine_ridge/pine_ridge_builder.gd")
 const QUERY_COUNT := 2400
-const REPEAT_COUNT := 3
+const SEGMENT_TRIAL_COUNT := 3
+const CONTEXT_TRIAL_COUNT := 3
+const MINIMUM_SEGMENT_SPEEDUP := 3.0
+const MINIMUM_CONTEXT_SPEEDUP := 1.08
 
 
 func _ready() -> void:
@@ -38,45 +41,41 @@ func _run() -> void:
 	var main_profile: Dictionary = profiles[0]
 	var main_frames: Array[Dictionary] = main_profile[&"frames"]
 	var main_indices: PackedInt32Array = main_profile[&"query_indices"]
-	var accumulator := 0
-	var linear_begin := Time.get_ticks_usec()
-	for _repeat: int in REPEAT_COUNT:
-		for point: Vector2 in queries:
-			accumulator += builder._nearest_terrain_query_segment_linear(
-				main_frames, main_indices, point
-			)
-	var linear_usec := Time.get_ticks_usec() - linear_begin
-	var indexed_begin := Time.get_ticks_usec()
-	for _repeat: int in REPEAT_COUNT:
-		for point: Vector2 in queries:
-			accumulator += builder._nearest_terrain_query_segment(main_profile, point)
-	var indexed_usec := Time.get_ticks_usec() - indexed_begin
+	var segment_timings := _benchmark_segment_queries(
+		builder, main_profile, main_frames, main_indices, queries
+	)
+	var linear_usec := int(segment_timings[&"linear_usec"])
+	var indexed_usec := int(segment_timings[&"indexed_usec"])
+
+	# Validate the full returned context independently of the performance timing.
+	# Mixing comparisons and Array growth into opposite sides of a microbenchmark
+	# made the old result sensitive to unrelated scheduler stalls.
 	var optimized_contexts: Array[Dictionary] = []
-	var optimized_context_begin := Time.get_ticks_usec()
 	for point: Vector2 in queries:
 		optimized_contexts.append(builder._terrain_surface_context(point.x, point.y))
-	var optimized_context_usec := Time.get_ticks_usec() - optimized_context_begin
 	var context_mismatches := 0
-	var exhaustive_context_begin := Time.get_ticks_usec()
 	for query_index: int in queries.size():
 		var exhaustive := _exhaustive_context(builder, profiles, queries[query_index])
 		if not _contexts_match(optimized_contexts[query_index], exhaustive):
 			context_mismatches += 1
-	var exhaustive_context_usec := Time.get_ticks_usec() - exhaustive_context_begin
-	var speedup := float(linear_usec) / maxf(float(indexed_usec), 1.0)
-	var context_speedup := (
-		float(exhaustive_context_usec) / maxf(float(optimized_context_usec), 1.0)
-	)
+
+	var context_timings := _benchmark_context_queries(builder, profiles, queries)
+	var optimized_context_usec := int(context_timings[&"optimized_usec"])
+	var exhaustive_context_usec := int(context_timings[&"exhaustive_usec"])
+	var speedup := float(segment_timings[&"speedup"])
+	var context_speedup := float(context_timings[&"speedup"])
 	var passed := (
 		mismatches == 0
 		and context_mismatches == 0
-		and indexed_usec < linear_usec
-		and optimized_context_usec < exhaustive_context_usec
+		and speedup >= MINIMUM_SEGMENT_SPEEDUP
+		and context_speedup >= MINIMUM_CONTEXT_SPEEDUP
 	)
 	print((
 		"TERRAIN PROFILE INDEX: profiles=%d queries=%d segment_mismatches=%d "
 		+ "context_mismatches=%d linear_usec=%d indexed_usec=%d speedup=%.2fx "
-		+ "exhaustive_context_usec=%d optimized_context_usec=%d context_speedup=%.2fx passed=%s"
+		+ "exhaustive_context_usec=%d optimized_context_usec=%d context_speedup=%.2fx "
+		+ "segment_trials=%s/%s segment_paired_speedups=%s "
+		+ "context_trials=%s/%s context_paired_speedups=%s passed=%s"
 		) % [
 			profiles.size(),
 			queries.size(),
@@ -88,15 +87,165 @@ func _run() -> void:
 			exhaustive_context_usec,
 			optimized_context_usec,
 			context_speedup,
+			str(segment_timings[&"linear_trials"]),
+			str(segment_timings[&"indexed_trials"]),
+			str(segment_timings[&"speedup_trials"]),
+			str(context_timings[&"exhaustive_trials"]),
+			str(context_timings[&"optimized_trials"]),
+			str(context_timings[&"speedup_trials"]),
 			str(passed),
 		]
 	)
-	if accumulator < 0:
-		push_error("TERRAIN PROFILE INDEX: impossible accumulator")
 	if not passed:
 		push_error("TERRAIN PROFILE INDEX: exactness or acceleration regression")
 	builder.free()
 	get_tree().quit(0 if passed else 1)
+
+
+func _benchmark_segment_queries(
+	builder: Node,
+	profile: Dictionary,
+	frames: Array[Dictionary],
+	query_indices: PackedInt32Array,
+	queries: Array[Vector2]
+) -> Dictionary:
+	var linear_trials: Array[int] = []
+	var indexed_trials: Array[int] = []
+	var speedup_trials: Array[float] = []
+	var observable := 0
+	for trial_index: int in SEGMENT_TRIAL_COUNT:
+		var linear: Dictionary
+		var indexed: Dictionary
+		if trial_index % 2 == 0:
+			linear = _time_linear_segments(builder, frames, query_indices, queries)
+			indexed = _time_indexed_segments(builder, profile, queries)
+		else:
+			indexed = _time_indexed_segments(builder, profile, queries)
+			linear = _time_linear_segments(builder, frames, query_indices, queries)
+		var linear_usec := int(linear[&"usec"])
+		var indexed_usec := int(indexed[&"usec"])
+		observable += int(linear[&"observable"])
+		observable += int(indexed[&"observable"])
+		linear_trials.append(linear_usec)
+		indexed_trials.append(indexed_usec)
+		speedup_trials.append(float(linear_usec) / maxf(float(indexed_usec), 1.0))
+	if observable < 0:
+		push_error("TERRAIN PROFILE INDEX: impossible segment benchmark accumulator")
+	return {
+		&"linear_usec": _median_usec(linear_trials),
+		&"indexed_usec": _median_usec(indexed_trials),
+		&"speedup": _median_float(speedup_trials),
+		&"linear_trials": linear_trials,
+		&"indexed_trials": indexed_trials,
+		&"speedup_trials": speedup_trials,
+	}
+
+
+func _time_linear_segments(
+	builder: Node,
+	frames: Array[Dictionary],
+	query_indices: PackedInt32Array,
+	queries: Array[Vector2]
+) -> Dictionary:
+	var accumulator := 0
+	var begin := Time.get_ticks_usec()
+	for point: Vector2 in queries:
+		accumulator += builder._nearest_terrain_query_segment_linear(
+			frames, query_indices, point
+		)
+	return {&"usec": Time.get_ticks_usec() - begin, &"observable": accumulator}
+
+
+func _time_indexed_segments(
+	builder: Node,
+	profile: Dictionary,
+	queries: Array[Vector2]
+) -> Dictionary:
+	var accumulator := 0
+	var begin := Time.get_ticks_usec()
+	for point: Vector2 in queries:
+		accumulator += builder._nearest_terrain_query_segment(profile, point)
+	return {&"usec": Time.get_ticks_usec() - begin, &"observable": accumulator}
+
+
+func _benchmark_context_queries(
+	builder: Node,
+	profiles: Array[Dictionary],
+	queries: Array[Vector2]
+) -> Dictionary:
+	var optimized_trials: Array[int] = []
+	var exhaustive_trials: Array[int] = []
+	var speedup_trials: Array[float] = []
+	var observable := 0
+	# Alternate order to cancel gradual CPU-frequency or thermal drift. Medians
+	# reject one-off process scheduling stalls without weakening the requirement
+	# that the production query actually beat the exhaustive reference.
+	for trial_index: int in CONTEXT_TRIAL_COUNT:
+		var optimized: Dictionary
+		var exhaustive: Dictionary
+		if trial_index % 2 == 0:
+			optimized = _time_optimized_contexts(builder, queries)
+			exhaustive = _time_exhaustive_contexts(builder, profiles, queries)
+		else:
+			exhaustive = _time_exhaustive_contexts(builder, profiles, queries)
+			optimized = _time_optimized_contexts(builder, queries)
+		var optimized_usec := int(optimized[&"usec"])
+		var exhaustive_usec := int(exhaustive[&"usec"])
+		observable += int(optimized[&"observable"])
+		observable += int(exhaustive[&"observable"])
+		optimized_trials.append(optimized_usec)
+		exhaustive_trials.append(exhaustive_usec)
+		speedup_trials.append(
+			float(exhaustive_usec) / maxf(float(optimized_usec), 1.0)
+		)
+	if observable < 0:
+		push_error("TERRAIN PROFILE INDEX: impossible context benchmark accumulator")
+	return {
+		&"optimized_usec": _median_usec(optimized_trials),
+		&"exhaustive_usec": _median_usec(exhaustive_trials),
+		&"speedup": _median_float(speedup_trials),
+		&"optimized_trials": optimized_trials,
+		&"exhaustive_trials": exhaustive_trials,
+		&"speedup_trials": speedup_trials,
+	}
+
+
+func _time_optimized_contexts(builder: Node, queries: Array[Vector2]) -> Dictionary:
+	var last_context: Dictionary = {}
+	var begin := Time.get_ticks_usec()
+	for point: Vector2 in queries:
+		last_context = builder._terrain_surface_context(point.x, point.y)
+	return {
+		&"usec": Time.get_ticks_usec() - begin,
+		&"observable": last_context.size(),
+	}
+
+
+func _time_exhaustive_contexts(
+	builder: Node,
+	profiles: Array[Dictionary],
+	queries: Array[Vector2]
+) -> Dictionary:
+	var last_context: Dictionary = {}
+	var begin := Time.get_ticks_usec()
+	for point: Vector2 in queries:
+		last_context = _exhaustive_context(builder, profiles, point)
+	return {
+		&"usec": Time.get_ticks_usec() - begin,
+		&"observable": last_context.size(),
+	}
+
+
+func _median_usec(values: Array[int]) -> int:
+	var ordered := values.duplicate()
+	ordered.sort()
+	return ordered[floori(float(ordered.size()) * 0.5)]
+
+
+func _median_float(values: Array[float]) -> float:
+	var ordered := values.duplicate()
+	ordered.sort()
+	return ordered[floori(float(ordered.size()) * 0.5)]
 
 
 func _exhaustive_context(

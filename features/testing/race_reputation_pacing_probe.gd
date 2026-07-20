@@ -71,7 +71,7 @@ func _run() -> void:
 	first_rewards[&"clean_race_bonus"] = 150
 	first_rewards[&"placement_bonus"] = 350
 	first_rewards[&"multiplier"] = 3.0
-	var first_result := _result("rep-first", first_rewards)
+	var first_result := _authorized_result(profile, _result(first_rewards))
 	var first_summary: Dictionary = profile.record_race_result(first_result, true)
 	_assert(bool(first_summary.get(&"accepted", false)), "first structured result was rejected")
 	_assert(profile.cash == 4_950, "first clear changed established cash bonuses or multiplier")
@@ -84,7 +84,7 @@ func _run() -> void:
 	repeat_rewards[&"clean_race_bonus"] = 150
 	repeat_rewards[&"placement_bonus"] = 350
 	repeat_rewards[&"multiplier"] = 3.0
-	var repeat_result := _result("rep-repeat", repeat_rewards)
+	var repeat_result := _authorized_result(profile, _result(repeat_rewards))
 	var repeat_summary: Dictionary = profile.record_race_result(repeat_result, true)
 	_assert(bool(repeat_summary.get(&"accepted", false)), "repeat structured result was rejected")
 	_assert(profile.cash == 9_150, "repeat factor leaked into cash rewards")
@@ -130,7 +130,7 @@ func _run_controller_integration() -> Dictionary:
 	var route := CourseCatalog.get_world_riding_points(CourseCatalog.QUARRY_ID)
 	race.initialize(bike, ghost, CourseCatalog.QUARRY_ID, route, null)
 	var config := RaceSessionConfig.from_dictionary({
-		&"event_id": &"REPUTATION_CONTROLLER_PROBE",
+		&"event_id": &"CIRCUIT",
 		&"track_id": CourseCatalog.QUARRY_ID,
 		&"display_name": "REPUTATION CONTROLLER PROBE",
 		&"countdown_seconds": 0.10,
@@ -145,7 +145,8 @@ func _run_controller_integration() -> Dictionary:
 	var first_rewards := first_result.get(&"rewards", {}) as Dictionary
 	# Seed the next run's first-clear/first-win context without paying this
 	# projected result; duplicate/reward crediting is validated on a local profile.
-	Profile.record_race_result(first_result, false)
+	var first_settlement := _authorized_result(Profile, first_result)
+	Profile.record_race_result(first_settlement, false)
 	ghost.best_time_usec = 1
 	var repeat_result := await _finish_controller_race(race, bike)
 	var repeat_rewards := repeat_result.get(&"rewards", {}) as Dictionary
@@ -211,11 +212,10 @@ func _evaluate(
 	})
 
 
-func _result(run_id: String, rewards: Dictionary) -> Dictionary:
+func _result(rewards: Dictionary) -> Dictionary:
 	return {
-		&"run_id": run_id,
 		&"signature": "REPUTATION_POLICY|PROBE",
-		&"event_id": &"REPUTATION_POLICY_PROBE",
+		&"event_id": &"CIRCUIT",
 		&"valid": true,
 		&"player_position": 1,
 		&"player_time_usec": 90_000_000,
@@ -227,6 +227,17 @@ func _result(run_id: String, rewards: Dictionary) -> Dictionary:
 			{&"rider_id": &"ROOK", &"display_name": "ROOK", &"position": 2, &"status": &"FINISHED", &"finish_usec": 91_000_000},
 		],
 	}
+
+
+func _authorized_result(profile: Variant, source_result: Dictionary) -> Dictionary:
+	var result := source_result.duplicate(true)
+	var event_id := StringName(result.get(&"event_id", &""))
+	var signature := str(result.get(&"signature", ""))
+	var authority: Dictionary = profile.begin_race_run(event_id, signature)
+	_assert(bool(authority.get(&"accepted", false)), "Profile refused race authority for %s" % String(event_id))
+	result[&"run_id"] = str(authority.get(&"run_id", ""))
+	result[&"signature"] = str(authority.get(&"signature", signature))
+	return result
 
 
 func _assert(condition: bool, message: String) -> void:

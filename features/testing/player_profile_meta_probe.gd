@@ -6,6 +6,7 @@ const WEEKEND_DIRECTOR_SCRIPT := preload("res://features/career/race_weekend_dir
 
 
 func _ready() -> void:
+	var championship_authority_passed := _probe_championship_round_authority()
 	var profile: Variant = PLAYER_PROFILE_SCRIPT.new()
 	profile.persistence_enabled = false
 	profile._apply_profile_dictionary({
@@ -44,6 +45,7 @@ func _ready() -> void:
 			{&"rider_id": &"ROOK", &"display_name": "ROOK", &"position": 2, &"status": &"FINISHED"},
 		],
 	}
+	result = _authorize_race_result(profile, result)
 	var accepted: Dictionary = profile.record_race_result(result)
 	var duplicate: Dictionary = profile.record_race_result(result)
 	var academy: Dictionary = profile.record_academy_result(&"CONTROL_BASICS", {&"gates_completed": 10, &"resets": 0})
@@ -67,7 +69,8 @@ func _ready() -> void:
 	var milestone_progress: Dictionary = restored.get_achievement_progress_snapshot()
 	var next_milestone: Dictionary = milestone_progress.get(&"next", {}) as Dictionary
 	var passed: bool = (
-		bool(accepted.get(&"accepted", false))
+		championship_authority_passed
+		and bool(accepted.get(&"accepted", false))
 		and bool(duplicate.get(&"duplicate", false))
 		and int(restored.race_statistics.get(&"wins", 0)) == 1
 		and int(restored.race_statistics.get(&"laps_completed", 0)) == 2
@@ -94,16 +97,124 @@ func _ready() -> void:
 		and bool(serialized.get("first_run_onboarding_complete", false))
 		and not restored.is_first_run_onboarding_active()
 	)
-	print("PLAYER PROFILE META PROBE: schema=%d wins=%d academy=%d championship_rounds=%d passed=%s" % [
+	print("PLAYER PROFILE META PROBE: schema=%d wins=%d academy=%d championship_rounds=%d authority=%s passed=%s" % [
 		restored.PROFILE_SCHEMA_VERSION,
 		int(restored.race_statistics.get(&"wins", 0)),
 		int(restored.academy_progress.get(&"CONTROL_BASICS", 0)),
 		championship.completed_round_count(),
+		championship_authority_passed,
 		passed,
 	])
 	profile.free()
 	restored.free()
 	get_tree().quit(0 if passed else 1)
+
+
+func _probe_championship_round_authority() -> bool:
+	var profile: Variant = PLAYER_PROFILE_SCRIPT.new()
+	profile.persistence_enabled = false
+	profile._ensure_full_race_defaults()
+	var initial_championship := JSON.stringify(profile.championship_snapshot)
+
+	# QUARRY_SPRINT belongs to CIRCUIT, but it is not the current championship
+	# round. Rejecting that claim must leave both the championship and race token
+	# untouched so the exact non-championship result can still settle.
+	var circuit_result := _authority_race_result(&"CIRCUIT", "AUTHORITY|CIRCUIT")
+	var circuit_run: Dictionary = profile.begin_race_run(
+		&"CIRCUIT", str(circuit_result.get(&"signature", ""))
+	)
+	_bind_race_receipt(circuit_result, circuit_run)
+	circuit_result[&"round_id"] = &"QUARRY_SPRINT"
+	var non_next_rejection: Dictionary = profile.record_race_result(circuit_result)
+	var non_next_preserved := JSON.stringify(profile.championship_snapshot) == initial_championship
+	var exact_circuit_result := circuit_result.duplicate(true)
+	exact_circuit_result.erase(&"round_id")
+	var circuit_settlement: Dictionary = profile.record_race_result(exact_circuit_result)
+	var circuit_preserved := JSON.stringify(profile.championship_snapshot) == initial_championship
+
+	# The next round is MESA_OPENER. A MESA token cannot be redirected to the
+	# CIRCUIT-owned QUARRY_SPRINT round; after rejection, the receipt's exact round
+	# remains authoritative and settleable with the same token.
+	_prepare_managed_main(profile)
+	var mesa_result := _authority_race_result(&"MESA_MX", "AUTHORITY|MESA|MAIN")
+	mesa_result[&"weekend_id"] = &"RED_MESA_OPEN"
+	mesa_result[&"weekend_phase"] = &"MAIN"
+	mesa_result[&"weekend_managed"] = true
+	var mesa_run: Dictionary = profile.begin_race_run(
+		&"MESA_MX",
+		str(mesa_result.get(&"signature", "")),
+		{
+			&"weekend_id": &"RED_MESA_OPEN",
+			&"weekend_phase": &"MAIN",
+			&"weekend_managed": true,
+		}
+	)
+	_bind_race_receipt(mesa_result, mesa_run)
+	mesa_result[&"round_id"] = &"QUARRY_SPRINT"
+	var wrong_event_rejection: Dictionary = profile.record_race_result(mesa_result)
+	var wrong_event_preserved := JSON.stringify(profile.championship_snapshot) == initial_championship
+	var exact_mesa_result := mesa_result.duplicate(true)
+	exact_mesa_result[&"round_id"] = StringName(mesa_run.get(&"round_id", &""))
+	var mesa_settlement: Dictionary = profile.record_race_result(exact_mesa_result)
+	var championship: Variant = profile.get_championship_service()
+	var passed: bool = (
+		bool(circuit_run.get(&"accepted", false))
+		and StringName(circuit_run.get(&"round_id", &"")) == &""
+		and not bool(non_next_rejection.get(&"accepted", false))
+		and StringName(non_next_rejection.get(&"reason", &"")) == &"STALE_OR_ABANDONED_RUN"
+		and non_next_preserved
+		and bool(circuit_settlement.get(&"accepted", false))
+		and circuit_preserved
+		and bool(mesa_run.get(&"accepted", false))
+		and StringName(mesa_run.get(&"round_id", &"")) == &"MESA_OPENER"
+		and not bool(wrong_event_rejection.get(&"accepted", false))
+		and StringName(wrong_event_rejection.get(&"reason", &"")) == &"STALE_OR_ABANDONED_RUN"
+		and wrong_event_preserved
+		and bool(mesa_settlement.get(&"accepted", false))
+		and championship.completed_round_count() == 1
+		and not championship.get_round_result(&"MESA_OPENER").is_empty()
+	)
+	profile.free()
+	return passed
+
+
+func _authority_race_result(event_id: StringName, signature: String) -> Dictionary:
+	return {
+		&"run_id": "",
+		&"signature": signature,
+		&"event_id": event_id,
+		&"valid": true,
+		&"player_position": 1,
+		&"player_time_usec": 90_000_000,
+		&"player_penalty_usec": 0,
+		&"lap_times_usec": [45_000_000, 45_000_000],
+		&"medal": &"GOLD",
+		&"classification": [
+			{&"rider_id": &"PLAYER", &"display_name": "YOU", &"is_player": true, &"position": 1, &"status": &"FINISHED"},
+			{&"rider_id": &"ROOK", &"display_name": "ROOK", &"position": 2, &"status": &"FINISHED"},
+		],
+	}
+
+
+func _bind_race_receipt(result: Dictionary, receipt: Dictionary) -> void:
+	result[&"run_id"] = str(receipt.get(&"run_id", ""))
+	result[&"signature"] = str(receipt.get(&"signature", ""))
+
+
+func _authorize_race_result(profile: Variant, result: Dictionary) -> Dictionary:
+	var authorized := result.duplicate(true)
+	var event_id := StringName(authorized.get(&"event_id", &""))
+	var settlement_context := {
+		&"weekend_id": StringName(authorized.get(&"weekend_id", &"")),
+		&"weekend_phase": StringName(authorized.get(&"weekend_phase", &"")),
+		&"weekend_managed": bool(authorized.get(&"weekend_managed", false)),
+	}
+	var run: Dictionary = profile.begin_race_run(
+		event_id, str(authorized.get(&"signature", "")), settlement_context
+	)
+	authorized[&"run_id"] = str(run.get(&"run_id", ""))
+	authorized[&"signature"] = str(run.get(&"signature", ""))
+	return authorized
 
 
 func _prepare_managed_main(profile: Variant) -> void:

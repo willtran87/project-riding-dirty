@@ -20,10 +20,13 @@ var _passed := true
 var _automatic_request_count := 0
 var _respawn_count := 0
 var _automatic_reasons: Array[StringName] = []
+var _race_moments: Array[Dictionary] = []
+var _finished := false
 
 
 func _ready() -> void:
 	Profile.persistence_enabled = false
+	get_tree().create_timer(20.0).timeout.connect(_on_probe_timeout)
 	_run.call_deferred()
 
 
@@ -31,6 +34,7 @@ func _run() -> void:
 	_bike = BIKE_SCENE.instantiate() as DirtBikeController
 	_ghost = GHOST_SCENE.instantiate() as GhostController
 	_race = RACE_SCENE.instantiate() as RaceController
+	_race.race_moment.connect(_on_race_moment)
 	_bike.automatic_recovery_requested.connect(_on_automatic_recovery_requested)
 	_bike.respawned.connect(_on_bike_respawned)
 	add_child(_bike)
@@ -45,6 +49,7 @@ func _run() -> void:
 
 	await _validate_tipped_recovery_and_no_resets()
 	await _validate_world_fall_recovery()
+	await _validate_academy_recovery_coaching()
 	await _validate_inactive_freeride_recovery()
 
 	print("AUTOMATIC RECOVERY INTEGRITY PROBE: requests=%d respawns=%d reasons=%s passed=%s" % [
@@ -69,6 +74,31 @@ func _make_session_config() -> RaceSessionConfig:
 		&"finish_grace_seconds": 0.0,
 		&"reset_penalty_usec": RESET_PENALTY_USEC,
 		&"rules": {&"modifiers": ["NO_RESETS"]},
+	})
+
+
+func _make_academy_session_config() -> RaceSessionConfig:
+	return RaceSessionConfig.from_dictionary({
+		&"event_id": &"ACADEMY",
+		&"track_id": CourseCatalog.QUARRY_ID,
+		&"display_name": "ACADEMY RECOVERY TEST",
+		&"format": &"ACADEMY",
+		&"session_type": &"ACADEMY",
+		&"championship_id": &"",
+		&"laps": 1,
+		&"opponent_count": 0,
+		&"checkpoint_count": 4,
+		&"countdown_seconds": 0.1,
+		&"staging_seconds": 0.0,
+		&"finish_grace_seconds": 0.0,
+		&"reset_penalty_usec": 0,
+		&"rules": {
+			&"academy": true,
+			&"academy_lesson_id": &"CONTROL_BASICS",
+			&"academy_objectives": [
+				{&"metric": &"resets", &"comparison": &"AT_MOST", &"bronze": 2.0},
+			],
+		},
 	})
 
 
@@ -165,6 +195,32 @@ func _validate_inactive_freeride_recovery() -> void:
 	_validate_player_metrics(0, 0, 0, 0, "inactive recovery excluded from race telemetry")
 
 
+func _validate_academy_recovery_coaching() -> void:
+	var route := CourseCatalog.get_world_riding_points(CourseCatalog.QUARRY_ID)
+	_race.configure_session(_make_academy_session_config(), route, null)
+	await _start_race()
+	var moment_count_before := _race_moments.size()
+	_bike.reset_to_safe_position(DirtBikeController.RECOVERY_TIPPED)
+	await _wait_physics_frames(4)
+	var snapshot := _race.get_session_snapshot()
+	var integrity := snapshot.get(&"integrity", {}) as Dictionary
+	var incidents := integrity.get(&"incidents", {}) as Dictionary
+	var latest_moment: Dictionary = _race_moments.back() if not _race_moments.is_empty() else {}
+	var moment_label := str(latest_moment.get(&"label", ""))
+	_check(int(snapshot.get(&"penalty_usec", -1)) == 0, "Academy recovery has no time penalty")
+	_check(int(incidents.get(&"resets_consumed", 0)) == 1, "Academy recovery still counts toward its objective")
+	_check(_race_moments.size() == moment_count_before + 1, "Academy recovery emits one coaching moment")
+	_check(
+		moment_label.contains("COACH")
+		and moment_label.contains("RESET 1 / 2")
+		and moment_label.contains("KEEP GOING")
+		and not moment_label.contains("+0.0"),
+		"Academy recovery uses encouraging objective-aware text",
+		"moment=%s" % moment_label
+	)
+	_check(bool(latest_moment.get(&"positive", false)), "Academy recovery feedback uses positive polarity")
+
+
 func _start_race() -> void:
 	_race.reset_run()
 	var started := await _wait_for_state(RaceController.State.RACING, 30)
@@ -210,6 +266,10 @@ func _on_bike_respawned() -> void:
 	_respawn_count += 1
 
 
+func _on_race_moment(label: String, points: int, positive: bool) -> void:
+	_race_moments.append({&"label": label, &"points": points, &"positive": positive})
+
+
 func _wait_for_state(target: RaceController.State, maximum_frames: int) -> bool:
 	for _frame: int in maximum_frames:
 		if _race.state == target:
@@ -241,6 +301,7 @@ func _check(condition: bool, label: String, details: String = "") -> void:
 
 
 func _finish_probe() -> void:
+	_finished = true
 	if is_instance_valid(_race):
 		_race.set_physics_process(false)
 	if is_instance_valid(_bike):
@@ -257,3 +318,13 @@ func _finish_probe() -> void:
 	for _frame: int in 4:
 		await get_tree().process_frame
 	get_tree().quit(0 if _passed else 1)
+
+
+func _on_probe_timeout() -> void:
+	if _finished:
+		return
+	push_error("AUTOMATIC RECOVERY INTEGRITY PROBE timed out in state=%s moments=%s" % [
+		str(_race.state if is_instance_valid(_race) else -1),
+		str(_race_moments),
+	])
+	get_tree().quit(1)

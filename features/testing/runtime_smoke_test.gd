@@ -2,6 +2,7 @@ extends Node
 ## Optional deterministic runtime validation, enabled only with `-- --smoke-test`.
 
 const PACK_COMPETITIVE_SPEED_DELTA_MPS := 2.0
+const PACK_DIFFICULTY_SPEED_ALLOWANCE_MPS := 0.45
 
 var _bike: DirtBikeController
 var _camera: ChaseCamera
@@ -211,6 +212,25 @@ func _run_circuit() -> void:
 	if idle_upright < 0.9 or not idle_grounded or _bike.get_speed_mps() > 0.15:
 		push_error("START BALANCE SMOKE: bike lost its planted idle after GO (up=%.3f, speed=%.2f m/s, grounded=%s)." % [idle_upright, _bike.get_speed_mps(), str(idle_grounded)])
 		exit_code = 1
+	if _activity == &"ACADEMY":
+		var academy_idle := _race.get_session_snapshot()
+		var academy_integrity := academy_idle.get(&"integrity", {}) as Dictionary
+		var academy_incidents := academy_integrity.get(&"incidents", {}) as Dictionary
+		var academy_idle_clean := (
+			int(academy_idle.get(&"penalty_usec", -1)) == 0
+			and int(academy_incidents.get(&"resets_consumed", -1)) == 0
+			and not bool(academy_integrity.get(&"stuck_detection_armed", true))
+			and not bool(academy_integrity.get(&"reset_requested", true))
+		)
+		print("ACADEMY IDLE COACHING RESULT: penalty=%d resets=%d armed=%s passed=%s" % [
+			int(academy_idle.get(&"penalty_usec", -1)),
+			int(academy_incidents.get(&"resets_consumed", -1)),
+			str(academy_integrity.get(&"stuck_detection_armed", true)),
+			str(academy_idle_clean),
+		])
+		if not academy_idle_clean:
+			push_error("ACADEMY IDLE COACHING SMOKE: reading time triggered recovery or penalty (%s)." % str(academy_idle))
+			exit_code = 1
 	var start_position := _bike.global_position
 	var start_forward := -_bike.global_transform.basis.z.normalized()
 	var trail_dust := _bike.find_child("TrailDust", true, false) as GPUParticles3D
@@ -241,10 +261,34 @@ func _run_circuit() -> void:
 	var pack_maximum := float(pace_snapshot.get(&"maximum", 0.0))
 	var player_speed := _bike.get_speed_mps()
 	var competitive_speed_delta := pack_maximum - player_speed
+	var session := _race.get_session_config()
+	var retention_contract := session.rules.get(&"retention", {}) as Dictionary
+	var nearest_ahead := float(pace_snapshot.get(&"gap_ahead", -1.0))
+	var leader_drag_allowance := 0.0
+	if nearest_ahead > 0.0 and not retention_contract.is_empty():
+		# The preceding idle-balance check deliberately leaves the player on the
+		# gate for six seconds after GO. Once the pack opens a gap, the authored
+		# retention director slows its leaders. Add only that calculable shaping
+		# allowance (including the maximum rider-pressure multiplier) instead of
+		# weakening the underlying unshaped pace contract.
+		var leader_drag := RacePack.calculate_gap_pace_adjustment(
+			session,
+			retention_contract,
+			nearest_ahead
+		)
+		if leader_drag < 0.0:
+			leader_drag_allowance = absf(leader_drag) * 1.08
+	var pack_slower_limit := PACK_COMPETITIVE_SPEED_DELTA_MPS + leader_drag_allowance
+	# A championship-tier field should be able to outrun a neutral, no-Flow
+	# opening stint. Preserve the original starter-event ceiling and add a small,
+	# explicit allowance for each authored tier above the opening race.
+	var pack_faster_limit := (
+		PACK_COMPETITIVE_SPEED_DELTA_MPS
+		+ float(maxi(session.difficulty - 1, 0)) * PACK_DIFFICULTY_SPEED_ALLOWANCE_MPS
+	)
 	var field_position := int(pace_snapshot.get(&"field_position", 0))
 	var field_size := int(pace_snapshot.get(&"field_size", 0))
 	var field_status := get_tree().current_scene.find_child("FieldStatus", true, false) as Label
-	var session := _race.get_session_config()
 	var field_feedback_ready := (
 		field_size == session.field_size
 		and field_position >= 1
@@ -259,10 +303,15 @@ func _run_circuit() -> void:
 	if riding_line_error > CourseCatalog.get_track_width(_requested_track_id()) * 0.55:
 		push_error("RIDE LINE SMOKE: neutral-steer launch left the authored surface (error=%.2f m)." % riding_line_error)
 		exit_code = 1
-	if absf(competitive_speed_delta) > PACK_COMPETITIVE_SPEED_DELTA_MPS:
+	# Solo Academy lessons intentionally have no pack to pace against. They still
+	# retain the field-size/position presentation contract below.
+	if session.field_size > 1 and (
+		competitive_speed_delta < -pack_slower_limit
+		or competitive_speed_delta > pack_faster_limit
+	):
 		push_error(
-			"PACK PACE SMOKE: fastest opponent was not competitive with the player (delta=%+.2f m/s, allowed=+/-%0.2f m/s, %s)."
-			% [competitive_speed_delta, PACK_COMPETITIVE_SPEED_DELTA_MPS, str(pace_snapshot)]
+			"PACK PACE SMOKE: fastest opponent was not competitive with the player (delta=%+.2f m/s, allowed=-%.2f/+%.2f m/s, leader_drag=%.2f m/s, %s)."
+			% [competitive_speed_delta, pack_slower_limit, pack_faster_limit, leader_drag_allowance, str(pace_snapshot)]
 		)
 		exit_code = 1
 	if not field_feedback_ready:
@@ -412,9 +461,10 @@ func _run_circuit() -> void:
 	var hud := get_tree().current_scene.find_child("RaceHud", true, false) as RaceHud
 	var result_presentation := hud.get_competition_presentation_snapshot() if hud != null else {}
 	var result_footer := str(result_presentation.get(&"footer", ""))
+	var restart_binding := InputRouter.get_action_label(InputRouter.RESTART_RUN, InputRouter.input_mode, 2)
 	var results_action_available := (
 		bool(result_presentation.get(&"results_visible", false))
-		and result_footer.contains("ENTER / X")
+		and result_footer.contains(restart_binding)
 		and result_footer.contains("GARAGE")
 	)
 	var replay_prompt_available := center_prompt_available or results_action_available

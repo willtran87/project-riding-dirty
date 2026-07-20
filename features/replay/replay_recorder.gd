@@ -96,6 +96,20 @@ func finish() -> ReplayModel:
 	return model
 
 
+func cancel() -> void:
+	## Abandoned attempts must release their packed frames immediately. Keeping an
+	## unfinished recorder alive would capture Garage/countdown motion into a later
+	## run and retain the maximum replay allocation until another race starts.
+	_recording = false
+	_elapsed_usec = 0
+	_next_sample_usec = 0
+	_metadata.clear()
+	_sample_times_usec.clear()
+	_sample_frames.clear()
+	_events.clear()
+	_previous_state.clear()
+
+
 func is_recording() -> bool:
 	return _recording
 

@@ -4,6 +4,7 @@ extends Node3D
 const WEEKEND_DIRECTOR_SCRIPT := preload("res://features/career/race_weekend_director.gd")
 const CHAMPIONSHIP_SERVICE_SCRIPT := preload("res://features/career/championship_service.gd")
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
+const PROGRESSION_PAYOFF_SCRIPT := preload("res://features/career/progression_payoff.gd")
 const QUARRY_SCENE := preload("res://levels/quarry/quarry.tscn")
 const PINE_RIDGE_SCENE := preload("res://levels/pine_ridge/pine_ridge.tscn")
 const MESA_MX_SCENE := preload("res://levels/mesa_mx/mesa_mx.tscn")
@@ -45,7 +46,16 @@ var _active_level: Node3D
 var _active_track_id: StringName = &""
 var _garage_backdrop: Node3D
 var _touch_modal_open: bool = false
+var _settings_modal_open: bool = false
+var _photo_modal_open: bool = false
+var _replay_modal_open: bool = false
 var _touch_results_visible: bool = false
+var _saved_garage_unhandled_input: bool = true
+var _progression_run_baseline: Dictionary = {}
+var _activity_progression_baselines: Dictionary = {}
+var _pending_garage_event: StringName = &""
+var _pending_academy_settlement: Dictionary = {}
+var _pending_race_settlement: Dictionary = {}
 
 
 func _ready() -> void:
@@ -55,6 +65,10 @@ func _ready() -> void:
 		# Career initialization happens before the requested smoke activity. Disable
 		# writes first so a weekend bootstrap can never touch the rider's real save.
 		Profile.persistence_enabled = false
+		# A release smoke must prove the authored starter experience, not whichever
+		# bike, parts, tune, wear, or saved build happens to exist on this machine.
+		# Reset only the isolated in-memory profile after writes are disabled.
+		Profile.reset_profile_for_testing()
 		# Build the editor-only path at runtime so the release pack contains neither
 		# the excluded test resource nor a misleading embedded resource marker.
 		var test_resource_root := "res://features/" + "test" + "ing/"
@@ -115,11 +129,17 @@ func _ready() -> void:
 	_race_services.leaderboard_updated.connect(_hud.update_leaderboard_result)
 	_race_services.replay_available.connect(_hud.update_replay_available)
 	_race_services.replay_state_changed.connect(_hud.update_replay_state)
+	_race_services.replay_state_changed.connect(_on_replay_visibility_changed)
+	_race_services.photo_mode_changed.connect(_on_photo_mode_changed)
 	_race_services.settings_visibility_changed.connect(_on_settings_visibility_changed)
 	if not EventBus.activity_completed.is_connected(_on_activity_completed_for_touch):
 		EventBus.activity_completed.connect(_on_activity_completed_for_touch)
+	if not EventBus.activity_started.is_connected(_on_activity_started_capture_progression):
+		EventBus.activity_started.connect(_on_activity_started_capture_progression)
+	if not EventBus.activity_attempt_started.is_connected(_on_activity_attempt_started_capture_progression):
+		EventBus.activity_attempt_started.connect(_on_activity_attempt_started_capture_progression)
 	_garage.bind_competition_source(_race_services)
-	_garage.update_competition_context(_current_activity, _ghost.best_time_usec)
+	_garage.update_competition_context(_current_activity, _ghost.best_time_usec, _active_competition_id())
 	_freestyle.initialize(_bike, _ghost)
 	_discovery.initialize(_bike, _ghost)
 	_gameplay_audio.initialize(_bike, _ride_director)
@@ -148,7 +168,7 @@ func _exit_tree() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _transitioning:
+	if _transitioning or _settings_modal_open or _photo_modal_open:
 		return
 	if event.is_action_pressed(InputRouter.PAUSE) and not event.is_echo():
 		_toggle_pause()
@@ -164,19 +184,31 @@ func _unhandled_input(event: InputEvent) -> void:
 		_touch_results_visible = false
 		_camera.set_composition_offset_right(GARAGE_COMPOSITION_OFFSET_METERS)
 		_camera.snap_to_target()
-		_garage.update_competition_context(_current_activity, _ghost.best_time_usec)
+		_garage.update_competition_context(_current_activity, _ghost.best_time_usec, _active_competition_id())
 		_garage.show_garage()
+		if not _pending_garage_event.is_empty():
+			_garage.focus_event_briefing(_pending_garage_event)
 		_refresh_touch_context()
+		EventBus.interface_feedback_requested.emit(&"CANCEL", &"RETURN_GARAGE")
 		get_viewport().set_input_as_handled()
 		return
-	if event.is_action_pressed(InputRouter.RESET_BIKE) and not event.is_echo():
+	if (
+		event.is_action_pressed(InputRouter.RESET_BIKE)
+		and not event.is_echo()
+		and not _replay_modal_open
+	):
+		var reset_accepted := true
 		if RaceEventCatalog.is_race_event(_current_activity):
-			_race.request_player_reset()
+			reset_accepted = _race.request_player_reset()
 		else:
 			_bike.reset_to_safe_position()
+		EventBus.interface_feedback_requested.emit(
+			&"CONFIRM" if reset_accepted else &"DENIED", &"BIKE_RESET"
+		)
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.RESTART_RUN) and not event.is_echo():
 		_restart_current_activity()
+		EventBus.interface_feedback_requested.emit(&"CONFIRM", &"ACTIVITY_RESTART")
 		get_viewport().set_input_as_handled()
 
 
@@ -184,14 +216,34 @@ func _toggle_pause() -> void:
 	_paused = not _paused
 	get_tree().paused = _paused
 	EventBus.game_paused.emit(_paused)
+	EventBus.interface_feedback_requested.emit(
+		&"CONFIRM" if _paused else &"CANCEL", &"PAUSE"
+	)
 
 
 func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	if _transitioning:
 		return
+	if _retry_pending_race_settlement():
+		return
+	if _retry_pending_activity_settlement():
+		return
 	var profile_activity := OS.get_environment("RIDING_DIRTY_PROFILE_ACTIVITY") == "1"
 	var phase_begin_usec := Time.get_ticks_usec()
 	_transitioning = true
+	_pending_garage_event = &""
+	_progression_run_baseline.clear()
+	var retrying_pending_activity := (
+		activity == &"FREESTYLE"
+		and _freestyle.has_method(&"has_pending_settlement")
+		and bool(_freestyle.call(&"has_pending_settlement"))
+	) or (
+		activity == &"DISCOVERY"
+		and _discovery.has_method(&"has_pending_settlement")
+		and bool(_discovery.call(&"has_pending_settlement"))
+	)
+	if not retrying_pending_activity:
+		_activity_progression_baselines.clear()
 	_touch_results_visible = false
 	_refresh_touch_context()
 	_stop_all_activities()
@@ -291,8 +343,14 @@ func _finish_profiled_activity_phase(phase: StringName, begin_usec: int, enabled
 
 
 func _restart_current_activity() -> void:
+	if _retry_pending_race_settlement():
+		return
+	if _retry_pending_activity_settlement():
+		return
 	_touch_results_visible = false
 	_refresh_touch_context()
+	if is_instance_valid(_race_services):
+		_race_services.stop_transient_presentation()
 	match _current_activity:
 		&"ACADEMY":
 			# Recompose from the shared Academy authority. A plain reset would keep
@@ -306,6 +364,64 @@ func _restart_current_activity() -> void:
 		_:
 			_race.reset_run()
 	_camera.snap_to_target()
+
+
+func _retry_pending_race_settlement() -> bool:
+	var pending: Dictionary = {}
+	var settlement_override: Dictionary = {}
+	if not _pending_academy_settlement.is_empty():
+		pending = _pending_academy_settlement.duplicate(true)
+		var retry_lesson_id := StringName(pending.get(&"lesson_id", &""))
+		var retry_metrics_value: Variant = pending.get(&"metrics", {})
+		settlement_override = {
+			&"lesson_id": retry_lesson_id,
+			&"metrics": (
+				(retry_metrics_value as Dictionary).duplicate(true)
+				if retry_metrics_value is Dictionary else {}
+			),
+		}
+	elif not _pending_race_settlement.is_empty():
+		pending = _pending_race_settlement.duplicate(true)
+	else:
+		return false
+	var retry_result_value: Variant = pending.get(&"result", {})
+	if not retry_result_value is Dictionary:
+		push_warning("Pending race settlement has no immutable result payload; retry refused.")
+		return true
+	var retry_result := (retry_result_value as Dictionary).duplicate(true)
+	if not settlement_override.is_empty():
+		var retry_lesson_id := StringName(settlement_override.get(&"lesson_id", &""))
+		var payload_lesson_id := StringName(retry_result.get(&"academy_lesson_id", &""))
+		var retry_metrics_value: Variant = settlement_override.get(&"metrics", {})
+		if (
+			retry_lesson_id.is_empty()
+			or payload_lesson_id != retry_lesson_id
+			or not retry_metrics_value is Dictionary
+		):
+			push_warning("Pending Academy settlement has an invalid immutable identity; retry refused.")
+			return true
+	if is_instance_valid(_race_services):
+		_race_services.stop_transient_presentation()
+	_garage.hide_garage()
+	_hud.visible = true
+	_on_race_results_ready(retry_result, settlement_override)
+	if _hud.has_method(&"show_results"):
+		_hud.show_results(retry_result)
+	return true
+
+
+func _retry_pending_activity_settlement() -> bool:
+	if _freestyle.has_method(&"has_pending_settlement") and bool(_freestyle.call(&"has_pending_settlement")):
+		_garage.hide_garage()
+		_hud.visible = true
+		_freestyle.start_session()
+		return true
+	if _discovery.has_method(&"has_pending_settlement") and bool(_discovery.call(&"has_pending_settlement")):
+		_garage.hide_garage()
+		_hud.visible = true
+		_discovery.start_hunt()
+		return true
+	return false
 
 
 func _restart_academy_progression() -> void:
@@ -655,18 +771,39 @@ func _dictionary_array(value: Variant) -> Array[Dictionary]:
 	return output
 
 
-func _on_race_results_ready(result: Dictionary) -> void:
+func _on_race_results_ready(
+	result: Dictionary,
+	academy_settlement_override: Dictionary = {}
+) -> void:
 	_touch_results_visible = true
 	_refresh_touch_context()
-	if not _active_challenge.is_empty() and RaceEventCatalog.is_challenge_event(_current_activity):
-		result[&"challenge_id"] = str(_active_challenge.get("challenge_id", ""))
+	if RaceEventCatalog.is_challenge_event(_current_activity):
+		if _active_challenge.is_empty():
+			_mark_result_invalid(result, "CHALLENGE_CONTEXT_MISSING")
+		var expected_challenge_id := str(_active_challenge.get("challenge_id", ""))
+		var expected_competition_id := StringName(_active_challenge.get("competition_id", &""))
+		var actual_challenge_id := str(result.get(&"challenge_id", ""))
+		var actual_competition_id := StringName(result.get(&"competition_id", &""))
+		if (
+			expected_challenge_id.is_empty()
+			or expected_competition_id.is_empty()
+			or actual_challenge_id != expected_challenge_id
+			or actual_competition_id != expected_competition_id
+		):
+			_mark_result_invalid(result, "CHALLENGE_IDENTITY_MISMATCH")
+		result[&"challenge_id"] = expected_challenge_id
+		result[&"competition_id"] = expected_competition_id
 		result[&"challenge_kind"] = StringName(str(_active_challenge.get("kind", "DAILY")).to_upper())
 		result[&"modifiers"] = (_active_challenge.get("modifiers", []) as Array).duplicate()
 		result[&"challenge_ends_unix"] = int(_active_challenge.get("ends_unix", 0))
 		var expected_signature := str(_active_challenge.get("run_signature", ""))
-		if not expected_signature.is_empty() and str(result.get(&"signature", "")) != expected_signature:
-			result[&"valid"] = false
-			result[&"validity_reason"] = "CHALLENGE_SIGNATURE_MISMATCH"
+		if expected_signature.is_empty() or str(result.get(&"signature", "")) != expected_signature:
+			_mark_result_invalid(result, "CHALLENGE_SIGNATURE_MISMATCH")
+	var progression_before := (
+		_progression_run_baseline.duplicate(true)
+		if not _progression_run_baseline.is_empty()
+		else PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
+	)
 	var structured_result := result.duplicate(true)
 	if not bool(structured_result.get(&"valid", true)):
 		structured_result[&"medal"] = &"NO_AWARD"
@@ -702,64 +839,273 @@ func _on_race_results_ready(result: Dictionary) -> void:
 		)
 		if weekend_main_authorized and StringName(next_round.get(&"event_id", &"")) == _current_activity:
 			structured_result[&"round_id"] = StringName(next_round.get(&"round_id", &""))
+	# Contracts settle during the ride, before the result authority runs. Keeping
+	# this boundary lets a DNF truthfully retain a sponsor payout without also
+	# exposing any progression mutation caused by an unclassified result.
+	var progression_pre_settlement: Dictionary = PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
 	var profile_summary: Dictionary = {}
-	if Profile.has_method(&"record_race_result"):
-		profile_summary = Profile.call(&"record_race_result", structured_result, true) as Dictionary
-	var granted_rewards := profile_summary.get(&"rewards_granted", {&"cash": 0, &"reputation": 0}) as Dictionary
-	var displayed_rewards := structured_result.get(&"rewards", {}) as Dictionary
-	displayed_rewards[&"cash"] = int(granted_rewards.get(&"cash", 0))
-	displayed_rewards[&"reputation"] = int(granted_rewards.get(&"reputation", 0))
-	displayed_rewards[&"credited_cash"] = int(granted_rewards.get(&"cash", 0))
-	displayed_rewards[&"credited_reputation"] = int(granted_rewards.get(&"reputation", 0))
-	structured_result[&"rewards"] = displayed_rewards
-	if bool(profile_summary.get(&"accepted", false)) and bool(structured_result.get(&"valid", true)):
-		var academy_lesson_id := StringName(session_rules.get(&"academy_lesson_id", &""))
-		if not academy_lesson_id.is_empty() and Profile.has_method(&"record_academy_result"):
-			var academy_evaluation := Profile.call(
-				&"record_academy_result", academy_lesson_id,
-				structured_result.get(&"academy_metrics", {}) as Dictionary
+	var settlement_receipt: Dictionary = {}
+	var academy_evaluation: Dictionary = {}
+	var academy_lesson_id := StringName(session_rules.get(&"academy_lesson_id", &""))
+	var academy_metrics_value: Variant = structured_result.get(&"academy_metrics", {})
+	var academy_metrics: Dictionary = (
+		(academy_metrics_value as Dictionary).duplicate(true)
+		if academy_metrics_value is Dictionary else {}
+	)
+	if not academy_settlement_override.is_empty():
+		academy_lesson_id = StringName(academy_settlement_override.get(&"lesson_id", &""))
+		var override_metrics_value: Variant = academy_settlement_override.get(&"metrics", {})
+		academy_metrics = (
+			(override_metrics_value as Dictionary).duplicate(true)
+			if override_metrics_value is Dictionary else {}
+		)
+	var is_academy_result := StringName(structured_result.get(&"event_id", _current_activity)) == &"ACADEMY"
+	if is_academy_result:
+		structured_result[&"academy_lesson_id"] = academy_lesson_id
+		if academy_lesson_id.is_empty():
+			settlement_receipt = {
+				&"accepted": false, &"duplicate": false, &"durable": false,
+				&"reason": &"MISSING_ACADEMY_LESSON",
+			}
+		elif Profile.has_method(&"settle_academy_race_result"):
+			settlement_receipt = Profile.call(
+				&"settle_academy_race_result",
+				structured_result,
+				academy_lesson_id,
+				academy_metrics
 			) as Dictionary
-			structured_result[&"academy_lesson_id"] = academy_lesson_id
+		else:
+			settlement_receipt = {
+				&"accepted": false, &"duplicate": false, &"durable": false,
+				&"reason": &"SETTLEMENT_UNAVAILABLE",
+			}
+		var race_summary_value: Variant = settlement_receipt.get(&"race_summary", {})
+		if race_summary_value is Dictionary:
+			profile_summary = (race_summary_value as Dictionary).duplicate(true)
+		var academy_evaluation_value: Variant = settlement_receipt.get(&"academy_evaluation", {})
+		if academy_evaluation_value is Dictionary:
+			academy_evaluation = (academy_evaluation_value as Dictionary).duplicate(true)
+		structured_result[&"academy_lesson_id"] = academy_lesson_id
+		if (
+			StringName(settlement_receipt.get(&"reason", &"")) == &"SAVE_FAILED"
+			and bool(settlement_receipt.get(&"retryable", false))
+		):
+			_pending_academy_settlement = {
+				&"result": structured_result.duplicate(true),
+				&"lesson_id": academy_lesson_id,
+				&"metrics": academy_metrics.duplicate(true),
+			}
+		else:
+			_pending_academy_settlement.clear()
+		if not academy_evaluation.is_empty():
 			structured_result[&"academy_evaluation"] = academy_evaluation.duplicate(true)
-			var academy_credited := academy_evaluation.get(
-				&"credited_rewards", {&"cash": 0, &"reputation": 0}
-			) as Dictionary
-			var academy_cash := int(academy_credited.get(&"cash", academy_credited.get(&"credits", 0)))
-			var academy_reputation := int(academy_credited.get(&"reputation", 0))
-			displayed_rewards[&"academy_cash"] = academy_cash
-			displayed_rewards[&"academy_reputation"] = academy_reputation
-			displayed_rewards[&"cash"] = int(granted_rewards.get(&"cash", 0)) + academy_cash
-			displayed_rewards[&"reputation"] = int(granted_rewards.get(&"reputation", 0)) + academy_reputation
-			displayed_rewards[&"credited_cash"] = displayed_rewards[&"cash"]
-			displayed_rewards[&"credited_reputation"] = displayed_rewards[&"reputation"]
-			structured_result[&"rewards"] = displayed_rewards
-			var next_academy_lesson := RaceEventCatalog.get_active_academy_lesson()
-			structured_result[&"academy_next_lesson_id"] = StringName(next_academy_lesson.get(&"lesson_id", &""))
-			structured_result[&"academy_next_lesson_name"] = str(
-				next_academy_lesson.get(&"display_name", "ACADEMY COMPLETE")
-			).to_upper()
+	else:
+		if Profile.has_method(&"record_race_result"):
+			profile_summary = Profile.call(&"record_race_result", structured_result, true) as Dictionary
+			settlement_receipt = profile_summary.duplicate(true)
+		else:
+			settlement_receipt = {
+				&"accepted": false, &"duplicate": false, &"durable": false,
+				&"reason": &"SETTLEMENT_UNAVAILABLE",
+			}
+		if (
+			StringName(settlement_receipt.get(&"reason", &"")) == &"SAVE_FAILED"
+			and bool(settlement_receipt.get(&"retryable", false))
+		):
+			_pending_race_settlement = {
+				&"result": structured_result.duplicate(true),
+				&"event_id": StringName(structured_result.get(&"event_id", _current_activity)),
+			}
+		else:
+			_pending_race_settlement.clear()
+	var granted_rewards := profile_summary.get(&"rewards_granted", {&"cash": 0, &"reputation": 0}) as Dictionary
+	var academy_credited := academy_evaluation.get(
+		&"credited_rewards", {&"cash": 0, &"reputation": 0}
+	) as Dictionary
+	var academy_cash := int(academy_credited.get(&"cash", academy_credited.get(&"credits", 0)))
+	var academy_reputation := int(academy_credited.get(&"reputation", 0))
+	var credited_cash := int(granted_rewards.get(&"cash", 0)) + academy_cash
+	var credited_reputation := int(granted_rewards.get(&"reputation", 0)) + academy_reputation
+	var displayed_rewards := structured_result.get(&"rewards", {}) as Dictionary
+	displayed_rewards[&"cash"] = credited_cash
+	displayed_rewards[&"reputation"] = credited_reputation
+	displayed_rewards[&"credited_cash"] = credited_cash
+	displayed_rewards[&"credited_reputation"] = credited_reputation
+	if is_academy_result:
+		displayed_rewards[&"academy_cash"] = academy_cash
+		displayed_rewards[&"academy_reputation"] = academy_reputation
+	structured_result[&"rewards"] = displayed_rewards
+	if is_academy_result and not academy_evaluation.is_empty():
+		var next_academy_lesson := RaceEventCatalog.get_active_academy_lesson()
+		structured_result[&"academy_next_lesson_id"] = StringName(next_academy_lesson.get(&"lesson_id", &""))
+		structured_result[&"academy_next_lesson_name"] = str(
+			next_academy_lesson.get(&"display_name", "ACADEMY COMPLETE")
+		).to_upper()
 	_refresh_career_services()
+	var progression_after: Dictionary = PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
+	var result_status := StringName(profile_summary.get(&"status", &""))
+	var receipt_accepted := bool(settlement_receipt.get(&"accepted", profile_summary.get(&"accepted", false)))
+	var receipt_duplicate := bool(settlement_receipt.get(&"duplicate", profile_summary.get(&"duplicate", false)))
+	var receipt_durable := bool(settlement_receipt.get(&"durable", receipt_accepted or receipt_duplicate))
+	var receipt_reason := StringName(settlement_receipt.get(
+		&"reason", &"DUPLICATE" if receipt_duplicate else (&"SETTLED" if receipt_accepted else &"REJECTED")
+	))
+	var result_valid := bool(profile_summary.get(&"valid", structured_result.get(&"valid", true)))
+	var classified_eligible := bool(settlement_receipt.get(
+		&"classified_eligible",
+		result_valid and result_status in [&"FINISHED", &"CLASSIFIED"]
+	))
+	var settlement_accepted := (
+		receipt_accepted
+		and receipt_durable
+		and (
+			classified_eligible
+			if is_academy_result
+			else result_valid and result_status in [&"FINISHED", &"CLASSIFIED"]
+		)
+	)
+	var career_payoff: Dictionary = PROGRESSION_PAYOFF_SCRIPT.resolve_run(
+		progression_before,
+		progression_pre_settlement,
+		progression_after,
+		settlement_accepted
+	)
+	career_payoff[&"accepted"] = settlement_accepted
+	career_payoff[&"duplicate"] = receipt_duplicate
+	career_payoff[&"durable"] = receipt_durable
+	career_payoff[&"reason"] = receipt_reason
+	career_payoff[&"valid"] = result_valid
+	career_payoff[&"status"] = result_status
+	career_payoff[&"classified_eligible"] = classified_eligible
+	career_payoff[&"rewards_granted"] = {
+		&"cash": credited_cash,
+		&"reputation": credited_reputation,
+	}
+	structured_result[&"career_payoff"] = career_payoff
 	var next_event := RaceEventCatalog.get_recommended_event()
+	var next_event_data := RaceEventCatalog.get_event(next_event)
 	structured_result[&"next_event_id"] = next_event
 	structured_result[&"next_event_name"] = str(
-		RaceEventCatalog.get_event(next_event).get(&"display_name", String(next_event))
+		next_event_data.get(&"display_name", String(next_event))
 	).to_upper()
+	structured_result[&"next_event_track_id"] = StringName(next_event_data.get(&"track_id", &"QUARRY"))
+	structured_result[&"next_event_format"] = StringName(next_event_data.get(&"format", &"CIRCUIT"))
+	structured_result[&"next_event_laps"] = maxi(int(next_event_data.get(&"laps", 1)), 1)
+	structured_result[&"next_event_medal_times_usec"] = (
+		(next_event_data.get(&"medal_times_usec", {}) as Dictionary).duplicate(true)
+	)
+	_pending_garage_event = next_event
+	if not bool(settlement_receipt.get(&"retryable", false)):
+		_progression_run_baseline.clear()
 	result.clear()
 	result.merge(structured_result, true)
 
 
-func _on_activity_completed_for_touch(
-	_activity: StringName,
-	_result_value: int,
-	_medal: StringName,
-	_is_new_best: bool
-) -> void:
+func _on_activity_completed_for_touch(summary: Dictionary) -> void:
+	var activity := StringName(summary.get(&"activity_id", &""))
+	var run_id := str(summary.get(&"run_id", "")).strip_edges()
+	var receipt_accepted := bool(summary.get(&"accepted", false))
+	var receipt_duplicate := bool(summary.get(&"duplicate", false))
+	var receipt_retryable := bool(summary.get(&"retryable", false))
+	var receipt_reason := StringName(summary.get(&"reason", &"UNKNOWN"))
+	var has_baseline := not run_id.is_empty() and _activity_progression_baselines.has(run_id)
+	var baseline_value: Variant = _activity_progression_baselines.get(run_id, {})
+	if not has_baseline or not baseline_value is Dictionary:
+		# A rejected begin has no progression baseline but still owns the activity's
+		# failure card. A delayed abandoned-run receipt must not disturb a newer ride.
+		if receipt_reason == &"STALE_OR_ABANDONED_RUN":
+			return
+		_touch_results_visible = true
+		_refresh_touch_context()
+		_pending_garage_event = RaceEventCatalog.get_recommended_event()
+		return
+	var baseline_entry := baseline_value as Dictionary
+	if StringName(baseline_entry.get(&"activity_id", &"")) != activity:
+		return
+	if receipt_accepted or receipt_duplicate or not receipt_retryable:
+		_activity_progression_baselines.erase(run_id)
 	_touch_results_visible = true
 	_refresh_touch_context()
+	var progression_before_value: Variant = baseline_entry.get(&"progression", {})
+	if progression_before_value is Dictionary and _hud.has_method(&"show_activity_progression_payoff"):
+		var activity_payoff: Dictionary = PROGRESSION_PAYOFF_SCRIPT.diff(
+			progression_before_value as Dictionary, PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
+		)
+		activity_payoff[&"accepted"] = receipt_accepted
+		activity_payoff[&"duplicate"] = receipt_duplicate
+		activity_payoff[&"durable"] = bool(summary.get(
+			&"durable", receipt_accepted or receipt_duplicate
+		))
+		activity_payoff[&"reason"] = receipt_reason
+		activity_payoff[&"valid"] = bool(summary.get(&"valid", receipt_accepted))
+		activity_payoff[&"activity_id"] = activity
+		activity_payoff[&"run_id"] = run_id
+		var rewards_value: Variant = summary.get(&"rewards_granted", {})
+		activity_payoff[&"rewards_granted"] = (
+			(rewards_value as Dictionary).duplicate(true) if rewards_value is Dictionary else {}
+		)
+		_hud.call(&"show_activity_progression_payoff", activity_payoff)
+	var next_event := RaceEventCatalog.get_recommended_event()
+	_pending_garage_event = next_event
+
+
+func _on_activity_started_capture_progression(activity: StringName) -> void:
+	if activity in [&"FREESTYLE", &"DISCOVERY"]:
+		return
+	_progression_run_baseline = PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
+
+
+func _on_activity_attempt_started_capture_progression(context: Dictionary) -> void:
+	if not bool(context.get(&"accepted", false)):
+		return
+	var activity := StringName(context.get(&"activity_id", &""))
+	var run_id := str(context.get(&"run_id", "")).strip_edges()
+	if activity not in [&"FREESTYLE", &"DISCOVERY"] or run_id.is_empty():
+		return
+	var existing_value: Variant = _activity_progression_baselines.get(run_id, {})
+	if (
+		existing_value is Dictionary
+		and StringName((existing_value as Dictionary).get(&"activity_id", &"")) == activity
+	):
+		# A persistence retry re-announces the exact run authority. Preserve the
+		# original pre-run snapshot so contract and activity deltas stay truthful.
+		return
+	# Only the newest attempt for an activity can settle. Removing an abandoned
+	# attempt here means a delayed completion cannot consume the new run's baseline.
+	for stale_run_id: Variant in _activity_progression_baselines.keys():
+		var stale_value: Variant = _activity_progression_baselines.get(stale_run_id, {})
+		if (
+			stale_value is Dictionary
+			and StringName((stale_value as Dictionary).get(&"activity_id", &"")) == activity
+		):
+			_activity_progression_baselines.erase(stale_run_id)
+	_activity_progression_baselines[run_id] = {
+		&"activity_id": activity,
+		&"progression": PROGRESSION_PAYOFF_SCRIPT.capture(Profile),
+	}
 
 
 func _on_settings_visibility_changed(open: bool) -> void:
-	_touch_modal_open = open
+	_settings_modal_open = open
+	_touch_modal_open = _settings_modal_open or _photo_modal_open
+	if is_instance_valid(_garage):
+		if open:
+			_saved_garage_unhandled_input = _garage.is_processing_unhandled_input()
+			_garage.set_process_unhandled_input(false)
+		else:
+			_garage.set_process_unhandled_input(_saved_garage_unhandled_input)
+	_refresh_touch_context()
+
+
+func _on_photo_mode_changed(active: bool) -> void:
+	_photo_modal_open = active
+	_touch_modal_open = _settings_modal_open or _photo_modal_open
+	_refresh_touch_context()
+
+
+func _on_replay_visibility_changed(active: bool) -> void:
+	_replay_modal_open = active
+	_touch_modal_open = _settings_modal_open or _photo_modal_open
 	_refresh_touch_context()
 
 
@@ -788,6 +1134,19 @@ func _zero_race_rewards(source: Dictionary) -> Dictionary:
 	zeroed[&"credited_cash"] = 0
 	zeroed[&"credited_reputation"] = 0
 	return zeroed
+
+
+func _active_competition_id() -> StringName:
+	return StringName(_active_challenge.get("competition_id", &"")) if not _active_challenge.is_empty() else &""
+
+
+func _mark_result_invalid(result: Dictionary, reason: String) -> void:
+	result[&"valid"] = false
+	var existing_reason := str(result.get(&"validity_reason", "")).strip_edges()
+	if existing_reason.is_empty():
+		result[&"validity_reason"] = reason
+	elif reason not in existing_reason.split(", "):
+		result[&"validity_reason"] = "%s, %s" % [existing_reason, reason]
 
 
 func _on_race_started_apply_session_rules() -> void:

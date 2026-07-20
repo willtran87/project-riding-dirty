@@ -372,6 +372,7 @@ The project now contains a playable Godot vertical slice of the recommended dire
 - Persistent cash, Racer reputation, run rewards, and transaction history
 - A playable garage with three bike setups: Trail, Balanced, and Attack
 - Setup purchases and meaningful tradeoffs across power, grip, suspension, lean, and top speed
+- Three persistent named bike-build slots that restore bike, setup, class, parts, tune, and livery while preserving the live machine's condition and odometer
 - Garage event selection across Circuit, Freestyle, and Discovery activities
 - A 60-second freestyle event scoring physical airtime, bike rotation, landing quality, and clean combo chains
 - A six-cache exploration hunt with animated salvage pickups, completion medals, persistent best time, and a nearest-target compass
@@ -400,7 +401,7 @@ The project now contains a playable Godot vertical slice of the recommended dire
 
 ### Next Expansion Targets
 
-1. Expand garage kits into individual parts and multiple saved builds.
+1. Expand authored sponsor relationships and give saved bike builds event-specific comparison guidance.
 2. Add additional named rivals and district-specific sponsor arcs.
 3. Add authored production music and voice while retaining the synthesized Web fallback.
 4. Add optional online leaderboards and shared daily seeds without making progression network-dependent.

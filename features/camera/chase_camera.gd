@@ -40,6 +40,8 @@ var _contact_kick: float = 0.0
 var _racecraft_kick: float = 0.0
 var _noise_time: float = 0.0
 var _noise := FastNoiseLite.new()
+var _obstruction_query := PhysicsRayQueryParameters3D.create(Vector3.ZERO, Vector3.ZERO)
+var _obstruction_target_rid := RID()
 var _obstruction_position: Vector3 = Vector3.ZERO
 var _has_obstruction: bool = false
 var _tracking_forward: Vector3 = Vector3.FORWARD
@@ -54,6 +56,7 @@ func _ready() -> void:
 	_camera.current = true
 	_noise.seed = 7319
 	_noise.frequency = 0.72
+	_obstruction_query.collision_mask = obstruction_mask
 
 
 func _physics_process(_delta: float) -> void:
@@ -62,12 +65,15 @@ func _physics_process(_delta: float) -> void:
 	var desired_position := _compute_desired_position()
 	var ground_up := _get_ground_up()
 	var focus_position := target.global_position + ground_up * 1.42
-	var query := PhysicsRayQueryParameters3D.create(focus_position, desired_position)
-	query.collision_mask = obstruction_mask
+	_obstruction_query.from = focus_position
+	_obstruction_query.to = desired_position
+	_obstruction_query.collision_mask = obstruction_mask
 	var target_body := target as CollisionObject3D
-	if target_body != null:
-		query.exclude = [target_body.get_rid()]
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
+	var target_rid := target_body.get_rid() if target_body != null else RID()
+	if target_rid != _obstruction_target_rid:
+		_obstruction_target_rid = target_rid
+		_obstruction_query.exclude = [target_rid] if target_rid.is_valid() else []
+	var result := get_world_3d().direct_space_state.intersect_ray(_obstruction_query)
 	_has_obstruction = not result.is_empty()
 	if _has_obstruction:
 		var hit_position: Vector3 = result.get(&"position", desired_position)
@@ -384,6 +390,10 @@ func apply_contact_kick(intensity: float) -> void:
 
 
 func apply_racecraft_feedback(kind: StringName, payload: Variant = {}) -> void:
+	if kind == &"FLOW_DENIED":
+		# Insufficient resource is an input refusal, not a physical bike event.
+		# A camera punch here falsely reads as a successful technique activation.
+		return
 	var intensity := 0.55
 	if payload is Dictionary:
 		intensity = float((payload as Dictionary).get(&"intensity", (payload as Dictionary).get(&"catch_quality", 0.55)))

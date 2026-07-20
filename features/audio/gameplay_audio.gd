@@ -4,6 +4,15 @@ class_name GameplayAudio
 
 const MIX_RATE := 22_050
 const VOICE_COUNT := 5
+const FLOW_DENIED_CUE_COOLDOWN_USEC := 280_000
+const FLOW_DENIED_CUE_START_HZ := 420.0
+const FLOW_DENIED_CUE_END_HZ := 155.0
+const FLOW_DENIED_CUE_DURATION := 0.16
+const FLOW_DENIED_CUE_VOLUME_DB := -3.5
+const INTERFACE_FEEDBACK_COOLDOWN_USEC := 32_000
+const MUSIC_BUS_NAME: StringName = &"Music"
+const SFX_BUS_NAME: StringName = &"SFX"
+const ENGINE_BUS_NAME: StringName = &"Engine"
 const MUSIC_BEATS := 16.0
 const MUSIC_SILENCE_DB := -80.0
 const MUSIC_CROSSFADE_SECONDS := 0.72
@@ -22,6 +31,29 @@ const STATE_RACING: StringName = &"RACING"
 const STATE_FINAL_LAP: StringName = &"FINAL_LAP"
 const STATE_CLOSE_BATTLE: StringName = &"CLOSE_BATTLE"
 const STATE_RESULTS: StringName = &"RESULTS"
+
+const INTERFACE_FEEDBACK_CONTRACT := {
+	&"NAVIGATE": {
+		&"cue": &"ui_navigate", &"start_hz": 620.0, &"end_hz": 760.0,
+		&"duration": 0.055, &"amplitude": 0.18, &"harmonic": 0.10,
+		&"pitch": 1.0, &"volume_db": -7.0,
+	},
+	&"CONFIRM": {
+		&"cue": &"ui_confirm", &"start_hz": 470.0, &"end_hz": 920.0,
+		&"duration": 0.105, &"amplitude": 0.24, &"harmonic": 0.18,
+		&"pitch": 1.0, &"volume_db": -4.0,
+	},
+	&"CANCEL": {
+		&"cue": &"ui_cancel", &"start_hz": 480.0, &"end_hz": 260.0,
+		&"duration": 0.090, &"amplitude": 0.20, &"harmonic": 0.12,
+		&"pitch": 1.0, &"volume_db": -5.5,
+	},
+	&"DENIED": {
+		&"cue": &"ui_denied", &"start_hz": 230.0, &"end_hz": 125.0,
+		&"duration": 0.135, &"amplitude": 0.22, &"harmonic": 0.08,
+		&"pitch": 1.0, &"volume_db": -4.5,
+	},
+}
 
 const MUSIC_STEMS: Array[StringName] = [&"BASE", &"DRIVE", &"TENSION", &"RESULTS"]
 const MUSIC_STATE_MIXES := {
@@ -80,6 +112,15 @@ var _voices: Array[AudioStreamPlayer] = []
 var _voice_index: int = 0
 var _cues: Dictionary[StringName, AudioStreamWAV] = {}
 var _last_racecraft_cue_usec: int = -1_000_000
+var _last_flow_denied_cue_usec: int = -1_000_000
+var _flow_denied_cue_count: int = 0
+var _flow_denied_suppressed_count: int = 0
+var _last_flow_denied_payload: Dictionary = {}
+var _interface_feedback_count: int = 0
+var _interface_feedback_suppressed_count: int = 0
+var _last_interface_feedback_usec: int = -1_000_000
+var _last_interface_feedback_kind: StringName = &""
+var _last_interface_feedback_context: StringName = &""
 var _music_banks: Array[Dictionary] = []
 var _active_music_bank: int = 0
 var _active_arrangement_hash: StringName = &""
@@ -108,20 +149,19 @@ var _music_prepare_contract: Dictionary = {}
 
 
 func _ready() -> void:
+	ensure_audio_buses()
+	_connect_event_bus()
 	if &"--smoke-test" in OS.get_cmdline_user_args() or AudioServer.get_driver_name() == "Dummy":
 		return
 	_audio_enabled = true
-	_ensure_sfx_bus()
-	_ensure_music_bus()
 	for _index: int in VOICE_COUNT:
 		var voice := AudioStreamPlayer.new()
-		voice.bus = &"SFX"
+		voice.bus = SFX_BUS_NAME
 		voice.playback_type = AudioServer.PLAYBACK_TYPE_STREAM
 		add_child(voice)
 		_voices.append(voice)
 	_build_cues()
 	_build_music()
-	_connect_event_bus()
 
 
 func initialize(bike: DirtBikeController, ride_director: RideDirector) -> void:
@@ -257,7 +297,11 @@ static func get_music_state_mix(state: StringName) -> Dictionary:
 
 
 static func get_bus_routing_contract() -> Dictionary:
-	return {&"music": &"Music", &"feedback": &"SFX", &"engine": &"SFX"}
+	return {
+		&"music": MUSIC_BUS_NAME,
+		&"feedback": SFX_BUS_NAME,
+		&"engine": ENGINE_BUS_NAME,
+	}
 
 
 static func get_transition_contract() -> Dictionary:
@@ -266,6 +310,53 @@ static func get_transition_contract() -> Dictionary:
 		&"minimum_stem_transition_seconds": 0.35,
 		&"close_battle_enter_samples": CLOSE_BATTLE_ENTER_SAMPLES,
 		&"close_battle_exit_samples": CLOSE_BATTLE_EXIT_SAMPLES,
+	}
+
+
+static func get_flow_denied_audio_contract() -> Dictionary:
+	return {
+		&"cue": &"flow_denied",
+		&"bus": SFX_BUS_NAME,
+		&"start_hz": FLOW_DENIED_CUE_START_HZ,
+		&"end_hz": FLOW_DENIED_CUE_END_HZ,
+		&"duration": FLOW_DENIED_CUE_DURATION,
+		&"volume_db": FLOW_DENIED_CUE_VOLUME_DB,
+		&"cooldown_usec": FLOW_DENIED_CUE_COOLDOWN_USEC,
+		&"pooled_voices": VOICE_COUNT,
+	}
+
+
+static func get_interface_feedback_contract() -> Dictionary:
+	return {
+		&"bus": SFX_BUS_NAME,
+		&"cooldown_usec": INTERFACE_FEEDBACK_COOLDOWN_USEC,
+		&"pooled_voices": VOICE_COUNT,
+		&"kinds": INTERFACE_FEEDBACK_CONTRACT.duplicate(true),
+	}
+
+
+func get_racecraft_audio_feedback_snapshot() -> Dictionary:
+	return {
+		&"flow_denied_cue_count": _flow_denied_cue_count,
+		&"flow_denied_suppressed_count": _flow_denied_suppressed_count,
+		&"last_flow_denied_payload": _last_flow_denied_payload.duplicate(true),
+		&"flow_denied_cue_ready": _cues.has(&"flow_denied"),
+	}
+
+
+func get_interface_feedback_snapshot() -> Dictionary:
+	var cue_ready: Dictionary[StringName, bool] = {}
+	for raw_kind: Variant in INTERFACE_FEEDBACK_CONTRACT:
+		var spec := INTERFACE_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		var cue := StringName(spec.get(&"cue", &""))
+		cue_ready[StringName(raw_kind)] = not cue.is_empty() and _cues.has(cue)
+	return {
+		&"count": _interface_feedback_count,
+		&"suppressed_count": _interface_feedback_suppressed_count,
+		&"last_kind": _last_interface_feedback_kind,
+		&"last_context": _last_interface_feedback_context,
+		&"cue_ready": cue_ready,
+		&"contract": get_interface_feedback_contract(),
 	}
 
 
@@ -306,6 +397,8 @@ func shutdown() -> void:
 
 
 func _connect_event_bus() -> void:
+	if not EventBus.interface_feedback_requested.is_connected(_on_interface_feedback_requested):
+		EventBus.interface_feedback_requested.connect(_on_interface_feedback_requested)
 	if not EventBus.race_countdown_changed.is_connected(_on_countdown_changed):
 		EventBus.race_countdown_changed.connect(_on_countdown_changed)
 	if not EventBus.checkpoint_passed.is_connected(_on_checkpoint_passed):
@@ -346,6 +439,15 @@ func _connect_source_signal(source: Node, signal_name: StringName, callable: Cal
 
 
 func _build_cues() -> void:
+	for raw_kind: Variant in INTERFACE_FEEDBACK_CONTRACT:
+		var spec := INTERFACE_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		_cues[StringName(spec.get(&"cue", &""))] = _make_sweep(
+			float(spec.get(&"start_hz", 440.0)),
+			float(spec.get(&"end_hz", 440.0)),
+			float(spec.get(&"duration", 0.08)),
+			float(spec.get(&"amplitude", 0.2)),
+			float(spec.get(&"harmonic", 0.1))
+		)
 	_cues[&"count"] = _make_sweep(390.0, 390.0, 0.09, 0.34, 0.12)
 	_cues[&"go"] = _make_sweep(520.0, 880.0, 0.20, 0.38, 0.18)
 	_cues[&"gate"] = _make_sweep(660.0, 920.0, 0.13, 0.32, 0.16)
@@ -356,6 +458,15 @@ func _build_cues() -> void:
 	_cues[&"contract"] = _make_sweep(440.0, 1180.0, 0.48, 0.38, 0.30)
 	_cues[&"landing"] = _make_sweep(118.0, 48.0, 0.24, 0.46, 0.42)
 	_cues[&"racecraft"] = _make_sweep(185.0, 640.0, 0.18, 0.32, 0.28)
+	# A brief descending, lower-level refusal cue. It is deliberately unlike the
+	# rising racecraft success sound so an unaffordable press cannot read as a win.
+	_cues[&"flow_denied"] = _make_sweep(
+		FLOW_DENIED_CUE_START_HZ,
+		FLOW_DENIED_CUE_END_HZ,
+		FLOW_DENIED_CUE_DURATION,
+		0.24,
+		0.16
+	)
 
 
 func _make_sweep(start_hz: float, end_hz: float, duration: float, amplitude: float, harmonic: float) -> AudioStreamWAV:
@@ -388,7 +499,7 @@ func _build_music() -> void:
 		for stem: StringName in MUSIC_STEMS:
 			var player := AudioStreamPlayer.new()
 			player.name = "Music%s_%s" % ["A" if bank_index == 0 else "B", String(stem)]
-			player.bus = &"Music"
+			player.bus = MUSIC_BUS_NAME
 			player.playback_type = AudioServer.PLAYBACK_TYPE_STREAM
 			player.volume_db = MUSIC_SILENCE_DB
 			add_child(player)
@@ -831,6 +942,29 @@ func _play(cue: StringName, pitch: float = 1.0, volume_db: float = 0.0) -> void:
 	voice.play()
 
 
+func _on_interface_feedback_requested(kind: StringName, context: StringName) -> void:
+	var normalized_kind := StringName(String(kind).to_upper())
+	if not INTERFACE_FEEDBACK_CONTRACT.has(normalized_kind):
+		return
+	var now := Time.get_ticks_usec()
+	if (
+		normalized_kind == _last_interface_feedback_kind
+		and now - _last_interface_feedback_usec < INTERFACE_FEEDBACK_COOLDOWN_USEC
+	):
+		_interface_feedback_suppressed_count += 1
+		return
+	_last_interface_feedback_usec = now
+	_last_interface_feedback_kind = normalized_kind
+	_last_interface_feedback_context = context
+	_interface_feedback_count += 1
+	var spec := INTERFACE_FEEDBACK_CONTRACT[normalized_kind] as Dictionary
+	_play(
+		StringName(spec.get(&"cue", &"")),
+		float(spec.get(&"pitch", 1.0)),
+		float(spec.get(&"volume_db", 0.0))
+	)
+
+
 func _on_activity_prepared(activity: StringName) -> void:
 	_contract_cued = false
 	_flow_mix = 0.0
@@ -885,10 +1019,13 @@ func _on_race_results_ready(_result: Dictionary) -> void:
 	_set_music_state(STATE_RESULTS)
 
 
-func _on_activity_completed(_activity: StringName, _result_value: int, _medal: StringName, _is_new_best: bool) -> void:
+func _on_activity_completed(summary: Dictionary) -> void:
 	_session_phase = &"RESULTS"
 	_set_music_state(STATE_RESULTS)
-	_play(&"finish")
+	# The physical activity still ends when persistence is unavailable, but the
+	# celebratory finish cue belongs only to a durable or already-settled result.
+	if bool(summary.get(&"accepted", false)) or bool(summary.get(&"duplicate", false)):
+		_play(&"finish")
 
 
 func _on_activity_started(activity: StringName) -> void:
@@ -909,7 +1046,10 @@ func _on_boost_activated(_flow_remaining: float) -> void:
 
 
 func _on_bike_racecraft_event(kind: StringName, payload: Dictionary) -> void:
-	if kind in [&"LANDING", &"SLIDE_EXIT", &"FLOW_DENIED"]:
+	if kind == &"FLOW_DENIED":
+		_on_flow_denied(payload)
+		return
+	if kind in [&"LANDING", &"SLIDE_EXIT"]:
 		return
 	var now := Time.get_ticks_usec()
 	var high_priority := kind in [&"DRAFT_SLINGSHOT", &"BRACE_SAVE", &"COMPOSE_SAVE", &"SKILL_LINE"]
@@ -925,6 +1065,20 @@ func _on_bike_racecraft_event(kind: StringName, payload: Dictionary) -> void:
 		&"FLOW_COMPOSE", &"COMPOSE_SAVE": pitch = 1.28
 		&"SKILL_LINE": pitch = 1.36 if StringName(payload.get(&"outcome", &"")) == &"MASTERED" else 1.12
 	_play(&"racecraft", pitch, 0.5 if high_priority else -1.5)
+
+
+func _on_flow_denied(payload: Dictionary) -> void:
+	var now := Time.get_ticks_usec()
+	if now - _last_flow_denied_cue_usec < FLOW_DENIED_CUE_COOLDOWN_USEC:
+		_flow_denied_suppressed_count += 1
+		return
+	_last_flow_denied_cue_usec = now
+	_flow_denied_cue_count += 1
+	_last_flow_denied_payload = payload.duplicate(true)
+	var required := maxf(float(payload.get(&"required", 0.0)), 0.0)
+	var available := maxf(float(payload.get(&"available", 0.0)), 0.0)
+	var shortage_ratio := clampf((required - available) / maxf(required, 1.0), 0.0, 1.0)
+	_play(&"flow_denied", lerpf(1.04, 0.90, shortage_ratio), FLOW_DENIED_CUE_VOLUME_DB)
 
 
 func _on_bike_landed(intensity: float) -> void:
@@ -950,20 +1104,30 @@ func _on_contract_updated(_title: String, _current: int, _target: int, completed
 		_play(&"contract", 1.0, 1.0)
 
 
-func _ensure_sfx_bus() -> void:
-	if AudioServer.get_bus_index(&"SFX") >= 0:
-		return
-	AudioServer.add_bus()
-	AudioServer.set_bus_name(AudioServer.bus_count - 1, &"SFX")
+static func ensure_audio_buses() -> Dictionary:
+	## Establish the complete runtime mixer before settings are applied. Keeping
+	## engine/contact layers off SFX makes both player-facing sliders truthful.
+	var sfx_index := _ensure_named_bus(SFX_BUS_NAME)
+	var engine_index := _ensure_named_bus(ENGINE_BUS_NAME)
+	var music_was_missing := AudioServer.get_bus_index(MUSIC_BUS_NAME) < 0
+	var music_index := _ensure_named_bus(MUSIC_BUS_NAME)
+	if music_was_missing and music_index >= 0:
+		var low_pass := AudioEffectLowPassFilter.new()
+		low_pass.cutoff_hz = 6200.0
+		low_pass.resonance = 0.18
+		AudioServer.add_bus_effect(music_index, low_pass)
+	return {
+		&"music": music_index,
+		&"feedback": sfx_index,
+		&"engine": engine_index,
+	}
 
 
-func _ensure_music_bus() -> void:
-	if AudioServer.get_bus_index(&"Music") >= 0:
-		return
+static func _ensure_named_bus(bus_name: StringName) -> int:
+	var bus_index := AudioServer.get_bus_index(bus_name)
+	if bus_index >= 0:
+		return bus_index
 	AudioServer.add_bus()
-	var bus_index := AudioServer.bus_count - 1
-	AudioServer.set_bus_name(bus_index, &"Music")
-	var low_pass := AudioEffectLowPassFilter.new()
-	low_pass.cutoff_hz = 6200.0
-	low_pass.resonance = 0.18
-	AudioServer.add_bus_effect(bus_index, low_pass)
+	bus_index = AudioServer.bus_count - 1
+	AudioServer.set_bus_name(bus_index, bus_name)
+	return bus_index

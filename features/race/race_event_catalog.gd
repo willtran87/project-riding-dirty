@@ -68,7 +68,10 @@ const EVENTS: Dictionary = {
 		&"route_version": 4, &"checkpoint_count": 0, &"weather": &"MIST",
 		&"medal_times_usec": {&"gold": 245_000_000, &"silver": 325_000_000, &"bronze": 440_000_000},
 		&"description": "Long wooded enduro with creeks, ravines and technical rhythm.",
-		&"meta": "3.2 KM  //  12 RIDERS  //  ENDURANCE", &"unlock_rep": 80,
+		# Pine's complete OR gate lives in PlayerProfile: two Quarry clears, a
+		# Quarry Rook victory, or 80 total reputation. A second catalog threshold
+		# would silently turn those first two routes into an AND condition.
+		&"meta": "3.2 KM  //  12 RIDERS  //  ENDURANCE", &"unlock_rep": 0,
 	},
 	&"MESA_PRACTICE": {
 		&"event_id": &"MESA_PRACTICE", &"track_id": &"MESA_MX", &"display_name": "MESA OPEN PRACTICE",
@@ -321,6 +324,20 @@ static func is_unlocked(event_id: StringName, total_reputation: int) -> bool:
 	return total_reputation >= int(get_event(event_id).get(&"unlock_rep", 0))
 
 
+static func is_available_to_profile(event_id: StringName, profile: Node) -> bool:
+	if profile == null or not has_event(event_id):
+		return false
+	var activity_unlocked := (
+		not profile.has_method(&"is_activity_unlocked")
+		or bool(profile.call(&"is_activity_unlocked", event_id))
+	)
+	var reputation := (
+		int(profile.call(&"get_total_reputation"))
+		if profile.has_method(&"get_total_reputation") else 0
+	)
+	return activity_unlocked and is_unlocked(event_id, reputation)
+
+
 static func get_unlock_hint(event_id: StringName) -> String:
 	var required := int(get_event(event_id).get(&"unlock_rep", 0))
 	return "EARN %d TOTAL REP" % required if required > 0 else "AVAILABLE"
@@ -414,6 +431,7 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 	var lap_count := 2 if lesson_id in [&"PRELOAD_LANDING", &"RHYTHM_CHOICES", &"AIR_CONTROL", &"PASSING_RACECRAFT"] else 1
 	var target_usec := 86_000_000 * lap_count
 	var lesson_objectives := (lesson.get(&"objectives", []) as Array).duplicate(true)
+	var lesson_presentation := (lesson.get(&"presentation", {}) as Dictionary).duplicate(true)
 	return {
 		&"event_id": &"ACADEMY",
 		&"track_id": CourseCatalog.MESA_MX_ID,
@@ -428,6 +446,10 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 		&"weather": &"CLEAR",
 		&"surface_modifier": &"PACKED",
 		&"finish_grace_seconds": 5.0 if opponents > 0 else 0.0,
+		# Academy grades demonstrated skills and recovery counts, not elapsed
+		# time. A safe rejoin remains visible in the objective but adds no
+		# competitive time penalty.
+		&"reset_penalty_usec": 0,
 		&"rules": {
 			&"academy": true,
 			&"academy_lesson_id": lesson_id,
@@ -435,6 +457,7 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 			&"academy_category": StringName(lesson.get(&"category", &"FOUNDATIONS")),
 			&"academy_description": str(lesson.get(&"description", "Complete the marked riding lesson.")),
 			&"academy_objectives": lesson_objectives,
+			&"academy_presentation": lesson_presentation,
 		},
 		&"medal_times_usec": {
 			&"gold": target_usec,
@@ -489,9 +512,7 @@ static func get_recommended_event() -> StringName:
 
 
 static func _profile_can_enter(event_id: StringName) -> bool:
-	var activity_unlocked := not Profile.has_method(&"is_activity_unlocked") or Profile.is_activity_unlocked(event_id)
-	var reputation := Profile.get_total_reputation() if Profile.has_method(&"get_total_reputation") else 0
-	return activity_unlocked and is_unlocked(event_id, reputation)
+	return is_available_to_profile(event_id, Profile)
 
 
 static func get_default_weekend_config() -> Dictionary:
@@ -541,6 +562,7 @@ static func _challenge_to_event(event_id: StringName, challenge: Dictionary) -> 
 		modifier_labels.append(str(raw_modifier))
 	var rules: Dictionary = {
 		&"challenge_id": str(challenge.get("challenge_id", "")),
+		&"competition_id": StringName(challenge.get("competition_id", &"")),
 		&"challenge_kind": StringName(str(challenge.get("kind", "DAILY")).to_upper()),
 		&"competitive_event_id": "%s_CHALLENGE" % String(format),
 		&"competitive_bike_class": bike_class_source,

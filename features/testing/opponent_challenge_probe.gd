@@ -13,13 +13,18 @@ const UPGRADED_BUILD_ID := &"ROOK_450"
 const UPGRADED_SETUP := &"ATTACK"
 const UPGRADED_SETUP_FACTOR := 1.04
 const GOLD_BENCHMARK_RATIO := 1.0
-const STARTER_TRAFFIC_MIDPOINT_RATIO := 0.888
-const STARTER_TRAFFIC_MIDFIELD_MIN_PLACE := 5
-const STARTER_TRAFFIC_MIDFIELD_MAX_PLACE := 8
-const UPGRADED_MIDPOINT_RATIO := 0.680
+const FLOW_SURGE_BENCHMARK_RATIO := 0.710
+const FLOW_SURGE_STATIC_MIN_PLACE := 1
+const FLOW_SURGE_STATIC_MAX_PLACE := 4
+const FLOW_SURGE_PRESSURE_MIN_PLACE := 4
+const FLOW_SURGE_PRESSURE_MAX_PLACE := 10
+const FLOW_SURGE_ELITE_RATIO := 0.670
+const FLOW_SURGE_ELITE_MIN_PLACE := 1
+const FLOW_SURGE_ELITE_MAX_PLACE := 3
+const UPGRADED_MIDPOINT_RATIO := 0.555
 const UPGRADED_MIDFIELD_MIN_PLACE := 4
 const UPGRADED_MIDFIELD_MAX_PLACE := 9
-const UPGRADED_ELITE_RATIO := 0.65
+const UPGRADED_ELITE_RATIO := 0.530
 const DEFENSE_SETUP_SECONDS := 4.20
 const DEFENSE_MAX_STEPS := 30
 const DEFENSE_FOLLOW_THROUGH_STEPS := 2
@@ -43,16 +48,16 @@ const MAX_STARTER_CLASS_PENALTY_RATIO := 0.250
 # that becomes irrelevant or impossible while leaving room for AI tuning.
 const BENCHMARK_WINDOWS: Dictionary = {
 	&"RELAXED": {
-		&"leader_min": 0.65, &"leader_max": 1.00,
-		&"median_min": 0.67, &"median_max": 1.02,
+		&"leader_min": 0.55, &"leader_max": 0.82,
+		&"median_min": 0.56, &"median_max": 0.84,
 	},
 	&"STANDARD": {
-		&"leader_min": 0.61, &"leader_max": 0.96,
-		&"median_min": 0.63, &"median_max": 1.00,
+		&"leader_min": 0.49, &"leader_max": 0.75,
+		&"median_min": 0.50, &"median_max": 0.78,
 	},
 	&"EXPERT": {
-		&"leader_min": 0.58, &"leader_max": 0.92,
-		&"median_min": 0.60, &"median_max": 0.96,
+		&"leader_min": 0.45, &"leader_max": 0.68,
+		&"median_min": 0.46, &"median_max": 0.72,
 	},
 }
 
@@ -112,6 +117,34 @@ func _run() -> void:
 	_validate_sample(&"CIRCUIT_STARTER_TRAFFIC", &"STANDARD", starter_traffic_sample)
 	_print_sample(&"CIRCUIT_STARTER_TRAFFIC", &"STANDARD", starter_traffic_sample)
 	_validate_starter_traffic(starter_sample, starter_traffic_sample)
+	var flow_pressure_sample := _simulate_session(
+		RaceEventCatalog.get_session_config(REPLAY_EVENT, -1, STARTER_CLASS),
+		true,
+		FLOW_SURGE_BENCHMARK_RATIO
+	)
+	_validate_sample(&"CIRCUIT_FLOW_SURGE", &"STANDARD", flow_pressure_sample)
+	_print_sample(&"CIRCUIT_FLOW_SURGE", &"STANDARD", flow_pressure_sample)
+	_validate_flow_surge_pressure(
+		flow_pressure_sample,
+		FLOW_SURGE_BENCHMARK_RATIO,
+		FLOW_SURGE_PRESSURE_MIN_PLACE,
+		FLOW_SURGE_PRESSURE_MAX_PLACE,
+		&"STRONG"
+	)
+	var elite_flow_sample := _simulate_session(
+		RaceEventCatalog.get_session_config(REPLAY_EVENT, -1, STARTER_CLASS),
+		true,
+		FLOW_SURGE_ELITE_RATIO
+	)
+	_validate_sample(&"CIRCUIT_FLOW_ELITE", &"STANDARD", elite_flow_sample)
+	_print_sample(&"CIRCUIT_FLOW_ELITE", &"STANDARD", elite_flow_sample)
+	_validate_flow_surge_pressure(
+		elite_flow_sample,
+		FLOW_SURGE_ELITE_RATIO,
+		FLOW_SURGE_ELITE_MIN_PLACE,
+		FLOW_SURGE_ELITE_MAX_PLACE,
+		&"ELITE"
+	)
 
 	var upgraded_sample := _simulate_upgraded_build(REPLAY_EVENT)
 	_validate_sample(&"CIRCUIT_UPGRADED", &"STANDARD", upgraded_sample)
@@ -242,7 +275,11 @@ func _select_defense_target() -> Dictionary:
 	return selected
 
 
-func _simulate_session(session: RaceSessionConfig, resolve_traffic: bool = false) -> Dictionary:
+func _simulate_session(
+	session: RaceSessionConfig,
+	resolve_traffic: bool = false,
+	player_benchmark_ratio: float = 1.0
+) -> Dictionary:
 	_simulation_count += 1
 	if session == null:
 		return _invalid_result("session config is null")
@@ -263,13 +300,16 @@ func _simulate_session(session: RaceSessionConfig, resolve_traffic: bool = false
 		)
 	var gold_seconds := float(gold_usec) / 1_000_000.0
 	var benchmark_speed := total_distance / gold_seconds
+	var bounded_player_ratio := clampf(player_benchmark_ratio, 0.35, 1.5)
+	var player_reference_seconds := gold_seconds * bounded_player_ratio
+	var player_reference_speed := total_distance / player_reference_seconds
 	var elapsed := 0.0
 	while elapsed < MAX_SIMULATION_SECONDS and not _pack.all_riders_finished():
 		elapsed += STEP
-		var player_total := minf(benchmark_speed * elapsed, total_distance)
+		var player_total := minf(player_reference_speed * elapsed, total_distance)
 		# Most balance samples isolate rider pace from pair contacts. The explicit
 		# starter-traffic case below runs this same path with full production traffic.
-		_pack.simulate_competition_step(STEP, benchmark_speed, player_total, resolve_traffic)
+		_pack.simulate_competition_step(STEP, player_reference_speed, player_total, resolve_traffic)
 
 	var finish_usecs: Array[int] = []
 	var finished_statuses := 0
@@ -303,6 +343,9 @@ func _simulate_session(session: RaceSessionConfig, resolve_traffic: bool = false
 		&"gold_usec": gold_usec,
 		&"gold_seconds": gold_seconds,
 		&"benchmark_speed": benchmark_speed,
+		&"player_benchmark_ratio": bounded_player_ratio,
+		&"player_reference_seconds": player_reference_seconds,
+		&"player_reference_speed": player_reference_speed,
 		&"simulation_seconds": elapsed,
 		&"resolve_traffic": resolve_traffic,
 		&"timed_out": not _pack.all_riders_finished(),
@@ -323,6 +366,7 @@ func _simulate_session(session: RaceSessionConfig, resolve_traffic: bool = false
 		&"recoveries": int(chaos.get(&"recoveries", 0)),
 		&"player_difficulty_mode": StringName(tension.get(&"player_difficulty_mode", &"LOCKED")),
 		&"opponent_build_match_scale": float(tension.get(&"opponent_build_match_scale", 0.0)),
+		&"field_chase_adjustment_mps": float(tension.get(&"field_chase_adjustment_mps", 0.0)),
 	}
 
 
@@ -555,11 +599,11 @@ func _validate_starter_traffic(no_traffic: Dictionary, traffic: Dictionary) -> v
 	var traffic_median := float(traffic.get(&"median_seconds", INF))
 	var median_slowdown := (traffic_median - baseline_median) / baseline_median
 	var gold_place := _player_place_for_benchmark(traffic, GOLD_BENCHMARK_RATIO)
-	var midpoint_place := _player_place_for_benchmark(traffic, STARTER_TRAFFIC_MIDPOINT_RATIO)
+	var flow_benchmark_place := _player_place_for_benchmark(traffic, FLOW_SURGE_BENCHMARK_RATIO)
 	var placement_valid := (
 		gold_place == 12
-		and midpoint_place >= STARTER_TRAFFIC_MIDFIELD_MIN_PLACE
-		and midpoint_place <= STARTER_TRAFFIC_MIDFIELD_MAX_PLACE
+		and flow_benchmark_place >= FLOW_SURGE_STATIC_MIN_PLACE
+		and flow_benchmark_place <= FLOW_SURGE_STATIC_MAX_PLACE
 	)
 	var full_field := (
 		int(traffic.get(&"finished", 0)) == expected
@@ -579,12 +623,12 @@ func _validate_starter_traffic(no_traffic: Dictionary, traffic: Dictionary) -> v
 	_check(bounded_incidents, "starter traffic incidents were inactive or unbounded: %s" % str(traffic))
 	_check(gold_place == 12, "LITE Standard gold benchmark placed P%d instead of P12" % gold_place)
 	_check(
-		midpoint_place >= STARTER_TRAFFIC_MIDFIELD_MIN_PLACE
-		and midpoint_place <= STARTER_TRAFFIC_MIDFIELD_MAX_PLACE,
-		"LITE Standard fixed %.3fx-gold benchmark placed P%d outside P%d-P%d"
+		flow_benchmark_place >= FLOW_SURGE_STATIC_MIN_PLACE
+		and flow_benchmark_place <= FLOW_SURGE_STATIC_MAX_PLACE,
+		"LITE Standard Flow benchmark %.3fx-gold placed P%d outside P%d-P%d"
 		% [
-			STARTER_TRAFFIC_MIDPOINT_RATIO, midpoint_place,
-			STARTER_TRAFFIC_MIDFIELD_MIN_PLACE, STARTER_TRAFFIC_MIDFIELD_MAX_PLACE,
+			FLOW_SURGE_BENCHMARK_RATIO, flow_benchmark_place,
+			FLOW_SURGE_STATIC_MIN_PLACE, FLOW_SURGE_STATIC_MAX_PLACE,
 		]
 	)
 	_check(
@@ -592,14 +636,48 @@ func _validate_starter_traffic(no_traffic: Dictionary, traffic: Dictionary) -> v
 		"starter traffic median slowdown %.3f is outside [-0.150, 0.300]" % median_slowdown
 	)
 	print(
-		"OPPONENT CHALLENGE STARTER TRAFFIC: median=%.2f baseline=%.2f slowdown=%+.3f gold=P%d midpoint=%.3fx/P%d overtakes=%d contacts=%d crashes=%d recoveries=%d passed=%s"
+		"OPPONENT CHALLENGE STARTER TRAFFIC: median=%.2f baseline=%.2f slowdown=%+.3f gold=P%d flow=%.3fx/P%d overtakes=%d contacts=%d crashes=%d recoveries=%d passed=%s"
 		% [
 			traffic_median, baseline_median, median_slowdown, gold_place,
-			STARTER_TRAFFIC_MIDPOINT_RATIO, midpoint_place, overtakes, contacts, crashes, recoveries,
+			FLOW_SURGE_BENCHMARK_RATIO, flow_benchmark_place, overtakes, contacts, crashes, recoveries,
 			str(
 				full_field and overtakes >= 1 and bounded_incidents and placement_valid
-				and median_slowdown >= -0.15 and median_slowdown <= 0.30
+					and median_slowdown >= -0.15 and median_slowdown <= 0.30
 			),
+		]
+	)
+
+
+func _validate_flow_surge_pressure(
+	sample: Dictionary,
+	benchmark_ratio: float,
+	minimum_place: int,
+	maximum_place: int,
+	label: StringName
+) -> void:
+	var player_finish_usec := roundi(float(sample.get(&"player_reference_seconds", 0.0)) * 1_000_000.0)
+	var place := _player_place_from_opponent_finishes(sample.get(&"finish_usecs", []), player_finish_usec)
+	var chase_adjustment := float(sample.get(&"field_chase_adjustment_mps", 0.0))
+	var valid_place := place >= minimum_place and place <= maximum_place
+	_check(
+		is_equal_approx(float(sample.get(&"player_benchmark_ratio", 0.0)), benchmark_ratio),
+		"Flow-pressure simulation did not use the requested %.3fx-gold player pace" % benchmark_ratio
+	)
+	_check(
+		chase_adjustment >= 0.80,
+		"Flow-pressure field chase reserve %.2f m/s was below 0.80 m/s" % chase_adjustment
+	)
+	_check(
+		valid_place,
+		"a sustained Flow benchmark at %.3fx gold placed P%d outside P%d-P%d"
+		% [benchmark_ratio, place, minimum_place, maximum_place]
+	)
+	print(
+		"OPPONENT CHALLENGE FLOW PRESSURE: tier=%s player=%.3fx/P%d chase=%.2fm/s leader=%.2f median=%.2f passed=%s"
+		% [
+			label, benchmark_ratio, place, chase_adjustment,
+			float(sample.get(&"leader_seconds", INF)), float(sample.get(&"median_seconds", INF)),
+			str(valid_place and chase_adjustment >= 0.80),
 		]
 	)
 

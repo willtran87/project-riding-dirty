@@ -11,6 +11,7 @@ const MIX_RATE: int = 22_050
 const LOOP_SECONDS: float = 0.75
 const ENGINE_BASE_HZ: float = 80.0
 const SILENCE_DB: float = -80.0
+const ENGINE_BUS_NAME: StringName = &"Engine"
 const GEAR_RATIOS := [1.0, 0.78, 0.62, 0.5, 0.42]
 const SURFACE_KEYS := [&"PACKED", &"MUD", &"GRAVEL", &"ROCK", &"LOOSE_DIRT"]
 const DEFAULT_BIKE_CLASS: StringName = &"SPORT_250"
@@ -112,7 +113,7 @@ func _ready() -> void:
 	_surface_layer.volume_db = SILENCE_DB
 	add_child(_surface_layer)
 	_current_surface_key = &"PACKED"
-	_assign_sfx_bus()
+	_assign_engine_bus()
 	var loop_start := _loop_start_offset()
 	play(loop_start)
 	_surface_layer.play(loop_start)
@@ -122,7 +123,7 @@ func _process(delta: float) -> void:
 	if not _audio_enabled or _surface_layer == null:
 		return
 	if not _bus_assigned:
-		_assign_sfx_bus()
+		_assign_engine_bus()
 	_capture_external_volume()
 	_update_class_timbre(delta)
 	_update_virtual_gear()
@@ -331,12 +332,14 @@ func reset_surface_feedback() -> void:
 		_surface_layer.volume_db = SILENCE_DB
 
 
-func _assign_sfx_bus() -> void:
-	if AudioServer.get_bus_index(&"SFX") < 0:
+func _assign_engine_bus() -> void:
+	if AudioServer.get_bus_index(ENGINE_BUS_NAME) < 0:
+		GameplayAudio.ensure_audio_buses()
+	if AudioServer.get_bus_index(ENGINE_BUS_NAME) < 0:
 		return
-	bus = &"SFX"
+	bus = ENGINE_BUS_NAME
 	if _surface_layer != null:
-		_surface_layer.bus = &"SFX"
+		_surface_layer.bus = ENGINE_BUS_NAME
 	_bus_assigned = true
 
 

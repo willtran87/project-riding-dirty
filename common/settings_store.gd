@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 3
+const SETTINGS_VERSION: int = 4
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -46,8 +46,6 @@ const DEFAULTS: Dictionary = {
 		"music_volume": 0.72,
 		"engine_volume": 1.0,
 		"effects_volume": 0.9,
-		"voice_volume": 0.85,
-		"crowd_volume": 0.8,
 	},
 	"interface": {
 		"text_scale": 1.0,
@@ -306,7 +304,12 @@ func set_value(section: StringName, key: StringName, value: Variant) -> bool:
 	return true
 
 
-func set_bindings(action: StringName, events: Array[InputEvent], reject_conflicts: bool = true) -> Dictionary:
+func set_bindings(
+	action: StringName,
+	events: Array[InputEvent],
+	reject_conflicts: bool = true,
+	conflict_actions: Variant = null
+) -> Dictionary:
 	var action_name := String(action).strip_edges()
 	if action_name.is_empty() or events.size() > 8:
 		return {"ok": false, "error": "invalid_action_or_binding_count", "conflicts": []}
@@ -316,7 +319,7 @@ func set_bindings(action: StringName, events: Array[InputEvent], reject_conflict
 		var binding := serialize_binding(event)
 		if binding.is_empty():
 			return {"ok": false, "error": "unsupported_input_event", "conflicts": []}
-		var conflicts := find_conflicts(action, event)
+		var conflicts := find_conflicts(action, event, conflict_actions)
 		all_conflicts.append_array(conflicts)
 		serialized.append(binding)
 	if reject_conflicts and not all_conflicts.is_empty():
@@ -342,15 +345,26 @@ func bindings_for_action(action: StringName) -> Array[InputEvent]:
 	return result
 
 
-func find_conflicts(action: StringName, event: InputEvent) -> Array[Dictionary]:
+func find_conflicts(
+	action: StringName,
+	event: InputEvent,
+	conflict_actions: Variant = null
+) -> Array[Dictionary]:
 	var conflicts: Array[Dictionary] = []
 	var candidate := serialize_binding(event)
 	if candidate.is_empty():
 		return conflicts
+	var scoped_actions: Array[StringName] = []
+	var use_scope := conflict_actions is Array
+	if use_scope:
+		for raw_action: Variant in conflict_actions as Array:
+			scoped_actions.append(StringName(raw_action))
 	var bindings := values.get("bindings", {}) as Dictionary
 	for raw_action: Variant in bindings.keys():
 		var other_action := str(raw_action)
 		if other_action == String(action):
+			continue
+		if use_scope and StringName(other_action) not in scoped_actions:
 			continue
 		var slots: Variant = bindings.get(raw_action, [])
 		if not slots is Array:
@@ -533,8 +547,6 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"music_volume": clampf(float(audio.get("music_volume", 0.72)), 0.0, 1.0),
 			"engine_volume": clampf(float(audio.get("engine_volume", 1.0)), 0.0, 1.0),
 			"effects_volume": clampf(float(audio.get("effects_volume", 0.9)), 0.0, 1.0),
-			"voice_volume": clampf(float(audio.get("voice_volume", 0.85)), 0.0, 1.0),
-			"crowd_volume": clampf(float(audio.get("crowd_volume", 0.8)), 0.0, 1.0),
 		},
 		"interface": {
 			"text_scale": clampf(float(interface.get("text_scale", 1.0)), 0.8, 1.75),

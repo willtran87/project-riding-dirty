@@ -9,9 +9,15 @@ class FakeCompetitionSource:
 	extends RefCounted
 	var profile_id: String = "local_player"
 	var last_signature: String = ""
+	var board_enabled := true
+	var replay_is_available := true
+	var last_result: Dictionary = {&"event_id": &"CIRCUIT"}
+	var daily_challenge: Dictionary = {}
 
 	func get_local_board(run_signature: String, _limit: int = 8) -> Dictionary:
 		last_signature = run_signature
+		if not board_enabled:
+			return {"ok": true, "total": 0, "entries": []}
 		return {
 			"ok": true,
 			"total": 2,
@@ -31,9 +37,12 @@ class FakeCompetitionSource:
 
 	func get_competitive_snapshot() -> Dictionary:
 		return {
-			&"last_result": {&"event_id": &"CIRCUIT", &"signature": last_signature},
-			&"replay_available": true,
+			&"last_result": last_result.duplicate(true),
+			&"replay_available": replay_is_available,
 		}
+
+	func get_daily_challenge() -> Dictionary:
+		return daily_challenge.duplicate(true)
 
 
 var _failures: Array[String] = []
@@ -58,6 +67,7 @@ func _run() -> void:
 	}
 
 	var source := FakeCompetitionSource.new()
+	source.last_result[&"signature"] = ""
 	if Profile.has_method(&"get_profile_id"):
 		source.profile_id = str(Profile.call(&"get_profile_id"))
 	var garage := GARAGE_UI_SCRIPT.new() as GarageUi
@@ -84,15 +94,77 @@ func _run() -> void:
 	_check(bool(garage_presentation.get(&"visible", false)), "Garage competition briefing is not rendered for the selected race")
 	_check(garage_text.contains("LOCAL P1/2") and garage_text.contains("PB GHOST"), "Garage briefing omitted local PB or ghost state")
 	_check(garage_text.contains("TOUR S01 R2/6 LIVE") and garage_text.contains("ROOK MERCER"), "Garage briefing omitted tour stakes or named rival")
-	_check(garage_text.contains("REPLAY [V]"), "Garage briefing does not advertise the replay action")
+	_check(garage_text.contains("REPLAY READY"), "Garage briefing does not expose the matching replay")
 	_check(int(milestone_snapshot.get(&"total", 0)) == 8, "Garage does not project the complete milestone ladder")
+
+	var schedule := ChallengeSchedule.new()
+	var challenge_a := schedule.daily(1_900_000_000, 0)
+	var challenge_b := schedule.daily(1_900_000_000, 5)
+	var challenge_identity: Dictionary = Profile.begin_race_run(
+		&"DAILY_CHALLENGE",
+		str(challenge_a.get("run_signature", "")),
+		{
+			&"challenge_id": StringName(challenge_a.get("challenge_id", &"")),
+			&"competition_id": StringName(challenge_a.get("competition_id", &"")),
+		}
+	)
+	var challenge_result := {
+		&"run_id": str(challenge_identity.get(&"run_id", "")),
+		&"signature": str(challenge_identity.get(&"signature", "")),
+		&"event_id": &"DAILY_CHALLENGE",
+		&"challenge_id": StringName(challenge_a.get("challenge_id", &"")),
+		&"competition_id": StringName(challenge_a.get("competition_id", &"")),
+		&"valid": true,
+		&"player_position": 1,
+		&"player_time_usec": 90_000_000,
+		&"player_penalty_usec": 0,
+		&"fastest_lap_usec": 90_000_000,
+		&"lap_times_usec": [90_000_000],
+		&"medal": &"GOLD",
+		&"classification": [{
+			&"rider_id": &"PLAYER", &"display_name": "YOU", &"is_player": true,
+			&"position": 1, &"status": &"FINISHED",
+		}],
+	}
+	_check(bool(Profile.record_race_result(challenge_result).get(&"accepted", false)), "challenge A could not seed rotation progression")
+	source.daily_challenge = challenge_b
+	source.board_enabled = false
+	source.last_result = {
+		&"event_id": &"DAILY_CHALLENGE",
+		&"signature": str(challenge_a.get("run_signature", "")),
+		&"challenge_id": StringName(challenge_a.get("challenge_id", &"")),
+		&"competition_id": StringName(challenge_a.get("competition_id", &"")),
+	}
+	garage.update_competition_context(
+		&"DAILY_CHALLENGE",
+		90_000_000,
+		StringName(challenge_a.get("competition_id", &""))
+	)
+	_check(garage.focus_event_briefing(&"DAILY_CHALLENGE"), "Garage could not focus the daily challenge")
+	var challenge_briefing := garage.get_event_competition_snapshot(&"DAILY_CHALLENGE")
+	var challenge_presentation := garage.get_event_briefing_presentation_snapshot()
+	_check(
+		StringName(challenge_briefing.get(&"challenge_id", &"")) == StringName(challenge_b.get("challenge_id", &""))
+		and StringName(challenge_briefing.get(&"competition_id", &"")) == StringName(challenge_b.get("competition_id", &"")),
+		"Garage did not project the selected challenge identities"
+	)
+	_check(
+		str(challenge_presentation.get(&"event_meta", "")).contains("MEDAL  GOLD")
+		and str(challenge_presentation.get(&"event_meta", "")).contains("NEXT POST PB"),
+		"same-rotation tier change hid bucket completion or advertised a nonexistent exact PB"
+	)
+	_check(
+		int(challenge_briefing.get(&"personal_best_usec", -1)) < 0
+		and not bool(challenge_briefing.get(&"ghost_available", true))
+		and not bool(challenge_briefing.get(&"replay_available", true)),
+		"challenge B inherited challenge A's exact PB, ghost, or replay"
+	)
 
 	var circuit_classification := _circuit_classification()
 	_check(Profile.record_championship_round(&"QUARRY_SPRINT", circuit_classification), "test championship could not accept the quarry round")
 	var hud := HUD_SCENE.instantiate() as RaceHud
 	add_child(hud)
 	await get_tree().process_frame
-	hud.update_replay_available({&"duration_usec": 184_000_000, &"samples": 920})
 	var result := {
 		&"run_id": "competition-visibility-result",
 		&"signature": str(briefing.get(&"run_signature", "")),
@@ -110,6 +182,7 @@ func _run() -> void:
 		&"rewards": {&"cash": 600, &"reputation": 80},
 	}
 	hud.show_results(result)
+	hud.update_replay_available({&"duration_usec": 184_000_000, &"samples": 920})
 	hud.update_leaderboard_result({
 		"ok": true, "accepted": true, "personal_best": true, "rank": 1,
 		"entry": {
@@ -128,7 +201,13 @@ func _run() -> void:
 	_check(hud_text.contains("LOCAL BOARD") and hud_text.contains("NEW PERSONAL BEST"), "post-race local rank or PB state is missing")
 	_check(hud_text.contains("DIRT TOUR") and hud_text.contains("ROOK MERCER"), "post-race championship stakes are missing")
 	_check(hud_text.contains("RACE RIVAL") and hud_text.contains("REPLAY READY"), "post-race rival or replay state is missing")
-	_check(footer.contains("V  WATCH REPLAY") and footer.contains("G / B  GARAGE"), "post-race replay action is not discoverable")
+	var replay_binding := InputRouter.get_action_label(InputRouter.TOGGLE_REPLAY, InputRouter.input_mode, 2)
+	var garage_binding := InputRouter.get_action_label(InputRouter.OPEN_GARAGE, InputRouter.input_mode, 2)
+	_check(
+		footer.contains(replay_binding) and footer.contains("WATCH REPLAY")
+		and footer.contains(garage_binding) and footer.contains("GARAGE"),
+		"post-race replay action is not discoverable on the active device"
+	)
 	hud.update_replay_state(true)
 	_check(not bool(hud.get_competition_presentation_snapshot().get(&"results_visible", true)), "replay remains hidden behind the official results panel")
 	hud.update_replay_state(false)

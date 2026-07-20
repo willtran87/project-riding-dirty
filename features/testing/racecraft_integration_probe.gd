@@ -7,6 +7,7 @@ extends Node3D
 ## calculations alone.
 
 const BIKE_SCENE := preload("res://entities/bike/bike.tscn")
+const HUD_SCRIPT := preload("res://features/hud/race_hud.gd")
 
 var _bike: DirtBikeController
 var _passed := true
@@ -28,9 +29,11 @@ func _run() -> void:
 
 	await _verify_prestart_motion_lock()
 	_verify_semantic_technique_action()
+	await _verify_flow_denied_feedback_contract()
 	await _verify_contextual_flow_selection()
 	await _verify_negative_forward_scrub()
 	await _verify_technique_events_and_context_bounds()
+	await _verify_fast_line_choice_contract()
 	_verify_pack_racecraft_reward_window()
 	_verify_respawn_reset_contract()
 
@@ -99,6 +102,49 @@ func _verify_semantic_technique_action() -> void:
 		and not events.is_empty()
 	)
 	_check(present, "semantic racecraft technique action", "bindings=%d" % events.size())
+
+
+func _verify_flow_denied_feedback_contract() -> void:
+	_release_riding_actions()
+	_bike.set(&"_flow", 0.0)
+	_racecraft_events.clear()
+	var before := _bike.get_racecraft_snapshot()
+	Input.action_press(InputRouter.FLOW_BOOST, 1.0)
+	# Match the production one-shot path and hold long enough for either side of
+	# the current physics boundary, as the successful Context Flow check does.
+	await _wait_physics_frames(2)
+	Input.action_release(InputRouter.FLOW_BOOST)
+	var after := _bike.get_racecraft_snapshot()
+	var denial_payload: Dictionary = {}
+	var denial_count := 0
+	for event: Dictionary in _racecraft_events:
+		if StringName(event.get(&"kind", &"")) == &"FLOW_DENIED":
+			denial_count += 1
+			denial_payload = (event.get(&"payload", {}) as Dictionary).duplicate(true)
+	var haptic := _bike.get_haptic_feedback_snapshot()
+	var haptic_request := haptic.get(&"last_request", {}) as Dictionary
+	var denied_without_side_effects := (
+		is_zero_approx(float(before.get(&"flow", -1.0)))
+		and denial_count == 1
+		and StringName(denial_payload.get(&"technique", &"")) == &"SURGE"
+		and float(denial_payload.get(&"required", 0.0)) > float(denial_payload.get(&"available", -1.0))
+		and is_zero_approx(float(denial_payload.get(&"available", -1.0)))
+		and StringName(after.get(&"active_flow_mode", &"INVALID")) == &"NONE"
+		and is_zero_approx(float(after.get(&"flow", -1.0)))
+		and int((after.get(&"counters", {}) as Dictionary).get(&"FLOW_DENIED", 0)) == 1
+		and int((after.get(&"counters", {}) as Dictionary).get(&"FLOW_SURGE", 0)) == 0
+	)
+	var refusal_haptic := (
+		StringName(haptic_request.get(&"kind", &"")) == &"FLOW_DENIED"
+		and float(haptic_request.get(&"low_motor", 0.0)) > float(haptic_request.get(&"high_motor", 1.0))
+		and float(haptic_request.get(&"duration", 0.0)) > 0.0
+		and float(haptic.get(&"flow_denied_cooldown", 0.0)) > 0.0
+	)
+	_check(
+		denied_without_side_effects and refusal_haptic,
+		"unaffordable Context Flow has explicit side-effect-free refusal feedback",
+		"events=%d payload=%s after=%s haptic=%s" % [denial_count, str(denial_payload), str(after), str(haptic)]
+	)
 
 
 func _verify_contextual_flow_selection() -> void:
@@ -213,6 +259,148 @@ func _verify_technique_events_and_context_bounds() -> void:
 	var lower_bounded := _bike.get_racecraft_snapshot()
 	var course_lower_bound := is_equal_approx(float(lower_bounded.get(&"berm_strength", -1.0)), 0.0)
 	_check(upper_bounds and course_lower_bound, "course and pack context clamps", "upper=%s lower=%s" % [str(bounded), str(lower_bounded)])
+
+
+func _verify_fast_line_choice_contract() -> void:
+	_release_riding_actions()
+	_bike.respawn_at(Transform3D(Basis.IDENTITY, Vector3(0.0, 0.67, 0.0)))
+	_bike.set_controls_enabled(true)
+	_check(await _wait_until_grounded(90), "fast-line setup is grounded")
+	_racecraft_events.clear()
+	_bike.set_course_racecraft_context({
+		&"skill_zone_id": &"PROBE_FAST_LINE",
+		&"skill_zone_kind": &"RUT",
+		&"skill_zone_phase": &"PREVIEW",
+		&"skill_zone_preview": true,
+		&"skill_zone_active": false,
+		&"skill_line_direction": &"LEFT",
+		&"skill_line_target_delta": -2.0,
+		&"skill_line_distance_m": 28.0,
+		&"skill_line_preview_seconds": 1.25,
+		&"skill_line_alignment": 0.20,
+		&"skill_line_difficulty": 0.55,
+	})
+	await _wait_physics_frames(2)
+	var preview := _bike.get_racecraft_snapshot()
+	var preview_cue: String = HUD_SCRIPT.format_fast_line_cue(preview)
+	var readable_preview := (
+		StringName(preview.get(&"skill_zone", &"")) == &"PROBE_FAST_LINE"
+		and StringName(preview.get(&"skill_zone_phase", &"")) == &"PREVIEW"
+		and StringName(preview.get(&"skill_line_direction", &"")) == &"LEFT"
+		and is_equal_approx(float(preview.get(&"skill_line_distance_m", 0.0)), 28.0)
+		and not bool(preview.get(&"skill_line_committed", true))
+		and preview_cue.contains("FAST LINE")
+		and preview_cue.contains("RUT")
+		and preview_cue.contains("28m")
+	)
+	_check(readable_preview, "fast line is telegraphed before grading", "cue=%s snapshot=%s" % [preview_cue, str(preview)])
+
+	_bike.set_course_racecraft_context({
+		&"skill_zone_id": &"PROBE_FAST_LINE",
+		&"skill_zone_kind": &"RUT",
+		&"skill_zone_phase": &"ACTIVE",
+		&"skill_zone_preview": false,
+		&"skill_zone_active": true,
+		&"skill_line_direction": &"LEFT",
+		&"skill_line_target_delta": -2.0,
+		&"skill_line_distance_m": 0.0,
+		&"skill_line_preview_seconds": 0.0,
+		&"skill_line_alignment": 0.10,
+		&"skill_line_difficulty": 0.55,
+	})
+	var flow_before := float(_bike.get_racecraft_snapshot().get(&"flow", 0.0))
+	await _wait_physics_frames(45)
+	var bypassed := _bike.get_racecraft_snapshot()
+	var bypass_event_count := 0
+	for event: Dictionary in _racecraft_events:
+		if StringName(event.get(&"kind", &"")) == &"SKILL_LINE":
+			bypass_event_count += 1
+	var neutral_bypass := (
+		StringName(bypassed.get(&"skill_line_outcome", &"")) == &"BYPASSED"
+		and not bool(bypassed.get(&"skill_line_committed", true))
+		and bypass_event_count == 0
+		and is_equal_approx(float(bypassed.get(&"flow", 0.0)), flow_before)
+	)
+	_check(neutral_bypass, "uncommitted fast line bypass is exactly neutral", "events=%d snapshot=%s" % [bypass_event_count, str(bypassed)])
+
+	_bike.set_course_racecraft_context({
+		&"skill_zone_id": &"PROBE_PUMP_INTENT",
+		&"skill_zone_kind": &"PUMP",
+		&"skill_zone_phase": &"PREVIEW",
+		&"skill_zone_preview": true,
+		&"skill_zone_active": false,
+		&"skill_line_direction": &"CENTER",
+		&"skill_line_target_delta": -1.0,
+		&"skill_line_distance_m": 20.0,
+		&"skill_line_preview_seconds": 1.0,
+		&"skill_line_alignment": 0.90,
+		&"skill_line_difficulty": 0.35,
+	})
+	Input.action_press(InputRouter.STEER_LEFT, 1.0)
+	await _wait_physics_frames(16)
+	Input.action_release(InputRouter.STEER_LEFT)
+	var steering_only_pump := _bike.get_racecraft_snapshot()
+	_check(
+		not bool(steering_only_pump.get(&"skill_line_committed", true)),
+		"ordinary steering cannot opt into a PUMP fast line",
+		"snapshot=%s" % str(steering_only_pump)
+	)
+
+	_bike.set_course_racecraft_context({
+		&"skill_zone_id": &"PROBE_FAST_LINE_COMMIT",
+		&"skill_zone_kind": &"BERM",
+		&"skill_zone_phase": &"PREVIEW",
+		&"skill_zone_preview": true,
+		&"skill_zone_active": false,
+		&"skill_line_direction": &"LEFT",
+		# The rider has crossed the authored left lane; corrective right input is
+		# still deliberate intent and must be judged from the live target delta.
+		&"skill_line_target_delta": 1.0,
+		&"skill_line_distance_m": 22.0,
+		&"skill_line_preview_seconds": 1.1,
+		&"skill_line_alignment": 0.90,
+		&"skill_line_difficulty": 0.35,
+	})
+	Input.action_press(InputRouter.STEER_RIGHT, 1.0)
+	await _wait_physics_frames(32)
+	Input.action_release(InputRouter.STEER_RIGHT)
+	var committed_preview := _bike.get_racecraft_snapshot()
+	_bike.set_course_racecraft_context({
+		&"skill_zone_id": &"PROBE_FAST_LINE_COMMIT",
+		&"skill_zone_kind": &"BERM",
+		&"skill_zone_phase": &"ACTIVE",
+		&"skill_zone_preview": false,
+		&"skill_zone_active": true,
+		&"skill_line_direction": &"LEFT",
+		&"skill_line_target_delta": 0.05,
+		&"skill_line_distance_m": 0.0,
+		&"skill_line_preview_seconds": 0.0,
+		&"skill_line_alignment": 0.95,
+		&"skill_line_difficulty": 0.35,
+	})
+	await _wait_physics_frames(45)
+	var committed_result := _bike.get_racecraft_snapshot()
+	var committed_event_count := 0
+	for event: Dictionary in _racecraft_events:
+		if StringName(event.get(&"kind", &"")) == &"SKILL_LINE":
+			committed_event_count += 1
+	var committed_attempt := (
+		bool(committed_preview.get(&"skill_line_committed", false))
+		and StringName(committed_result.get(&"skill_line_outcome", &"")) in [&"CLEAN", &"MASTERED"]
+		and committed_event_count == 1
+		and float(committed_result.get(&"flow", 0.0)) > flow_before
+	)
+	_check(committed_attempt, "deliberately steered fast line retains bounded reward path", "events=%d snapshot=%s" % [committed_event_count, str(committed_result)])
+
+	_bike.set_course_racecraft_context({})
+	await _wait_physics_frames(2)
+	var cleared := _bike.get_racecraft_snapshot()
+	_check(
+		StringName(cleared.get(&"skill_zone", &"INVALID")).is_empty()
+		and HUD_SCRIPT.format_fast_line_cue(cleared).is_empty(),
+		"fast-line cue clears outside its decision window",
+		"snapshot=%s" % str(cleared)
+	)
 
 
 func _verify_respawn_reset_contract() -> void:
