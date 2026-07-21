@@ -18,6 +18,7 @@ const EVENTS: Array[StringName] = [
 	&"QUARRY_HILLCLIMB", &"PINE_WET", &"MESA_RHYTHM", &"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE",
 	&"ACADEMY", &"FREESTYLE", &"DISCOVERY",
 ]
+const INITIAL_EVENT: StringName = &"CIRCUIT"
 const CREAM := Color("f7e5b2")
 const AMBER := Color("ffb52d")
 const CYAN := Color("56d6ff")
@@ -1492,7 +1493,9 @@ func _is_continue_weekend_input(event: InputEvent) -> bool:
 
 func _focus_continue_weekend_event() -> void:
 	if Profile.has_method(&"is_first_run_onboarding_active") and Profile.is_first_run_onboarding_active():
-		_event_index = maxi(EVENTS.find(&"ACADEMY"), 0)
+		# Recommendation and selection are separate concerns. Academy remains the
+		# guided first-ride recommendation, but a fresh menu starts at level 1.
+		_event_index = maxi(EVENTS.find(INITIAL_EVENT), 0)
 		return
 	var activity := StringName(get_continue_weekend_snapshot().get(&"activity", &""))
 	var index := EVENTS.find(activity)

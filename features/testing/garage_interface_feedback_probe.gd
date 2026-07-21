@@ -22,6 +22,10 @@ func _run() -> void:
 	await get_tree().process_frame
 
 	garage.show_garage()
+	_check(
+		StringName(garage.get_event_briefing_presentation_snapshot().get(&"event_id", &"")) == &"CIRCUIT",
+		"Fresh Garage did not start at the first event"
+	)
 	_feedback.clear()
 	var workshop_click := InputEventMouseButton.new()
 	workshop_click.button_index = MOUSE_BUTTON_LEFT
