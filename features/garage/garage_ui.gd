@@ -488,13 +488,32 @@ func get_continue_weekend_snapshot() -> Dictionary:
 			&"complete": phase == &"RESULTS",
 			&"action_text": "RED MESA WEEKEND COMPLETE" if phase == &"RESULTS" else "",
 		}
+	var onboarding_active: bool = (
+		Profile.has_method(&"is_first_run_onboarding_active")
+		and Profile.is_first_run_onboarding_active()
+	)
+	var pristine_first_run_weekend: bool = (
+		onboarding_active
+		and phase == &"PRACTICE"
+		and weekend.session_results.is_empty()
+	)
+	var available: bool = _is_event_unlocked(activity) and not pristine_first_run_weekend
 	return {
 		&"weekend_id": StringName(weekend.weekend_id),
 		&"phase": phase,
 		&"activity": activity,
-		&"available": _is_event_unlocked(activity),
+		&"available": available,
 		&"complete": false,
-		&"action_text": "%s  CONTINUE %s  //  %s" % [_any_action_label(InputRouter.CONTINUE_WEEKEND), str(weekend.display_name).to_upper(), String(phase)],
+		# Never advertise a shortcut that the same screen will reject. First-run
+		# riders start with event 1; the weekend remains visible as future context.
+		&"action_text": (
+			"%s  CONTINUE %s  //  %s" % [
+				_any_action_label(InputRouter.CONTINUE_WEEKEND),
+				str(weekend.display_name).to_upper(),
+				String(phase),
+			]
+			if available else ""
+		),
 	}
 
 

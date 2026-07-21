@@ -2,6 +2,7 @@ extends Node
 ## Real Garage/Workshop action feedback across success, navigation and refusal.
 
 const GARAGE_SCENE := preload("res://features/garage/garage_ui.tscn")
+const WEEKEND_DIRECTOR_SCRIPT := preload("res://features/career/race_weekend_director.gd")
 
 var _failures: Array[String] = []
 var _feedback: Array[Dictionary] = []
@@ -15,6 +16,9 @@ func _ready() -> void:
 func _run() -> void:
 	Profile.persistence_enabled = false
 	Profile.reset_profile_for_testing()
+	var fresh_weekend: Variant = WEEKEND_DIRECTOR_SCRIPT.create(RaceEventCatalog.get_default_weekend_config())
+	fresh_weekend.start_weekend()
+	_check(Profile.set_race_weekend_snapshot(fresh_weekend.to_dictionary()), "Probe could not seed the production first-run weekend")
 	EventBus.interface_feedback_requested.connect(_on_interface_feedback_requested)
 	var garage := GARAGE_SCENE.instantiate() as GarageUi
 	garage.ride_requested.connect(_on_ride_requested)
@@ -26,6 +30,11 @@ func _run() -> void:
 		StringName(garage.get_event_briefing_presentation_snapshot().get(&"event_id", &"")) == &"CIRCUIT",
 		"Fresh Garage did not start at the first event"
 	)
+	var fresh_weekend_action := garage.get_continue_weekend_snapshot()
+	var weekend_action_label := garage.get_node_or_null("GarageRoot/ContinueWeekendAction") as Label
+	_check(not bool(fresh_weekend_action.get(&"available", true)), "Fresh profile unexpectedly unlocked the Red Mesa weekend")
+	_check(str(fresh_weekend_action.get(&"action_text", "")).is_empty(), "Locked weekend still advertises a continue shortcut")
+	_check(weekend_action_label != null and not weekend_action_label.visible, "Locked weekend continue label remains visible")
 	_feedback.clear()
 	var workshop_click := InputEventMouseButton.new()
 	workshop_click.button_index = MOUSE_BUTTON_LEFT
