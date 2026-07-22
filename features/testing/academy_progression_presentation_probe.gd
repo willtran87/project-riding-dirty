@@ -438,7 +438,7 @@ func _probe_live_and_result_presentation() -> void:
 
 	EventBus.activity_prepared.emit(&"CIRCUIT")
 	hud.update_line("CLEAN LANDING", 2, 1.25, 400, 3.5)
-	hud.update_contract("SPONSOR: LAND 2 CLEAN JUMPS", 1, 2, false)
+	hud.update_contract("DUSTLINE WORKS SIGNED  //  LAND 2 CLEAN JUMPS", 1, 2, false, 425, 40)
 	hud.update_modifier("TAILWIND", "+12% drive force")
 	hud.update_integrity({
 		&"warning": &"MANUAL_RESET",
@@ -448,6 +448,7 @@ func _probe_live_and_result_presentation() -> void:
 	var ordinary := hud.get_academy_presentation_snapshot()
 	_check(bool(ordinary.get(&"line_visible", false)) and not str(ordinary.get(&"line_score_text", "")).is_empty(), "ordinary race lost line feedback")
 	_check(bool(ordinary.get(&"contract_visible", false)) and not str(ordinary.get(&"contract_text", "")).is_empty(), "ordinary race lost sponsor feedback")
+	_check(str(ordinary.get(&"contract_text", "")).contains("DUSTLINE WORKS SIGNED") and str(ordinary.get(&"contract_text", "")).contains("$425 +40REP +1 TOKEN"), "ordinary race hid sponsor identity or exact reward")
 	_check(bool(ordinary.get(&"modifier_visible", false)) and not str(ordinary.get(&"modifier_text", "")).is_empty(), "ordinary race lost daily modifier feedback")
 	_check(bool(ordinary.get(&"racecraft_visible", false)) and bool(ordinary.get(&"flow_meter_visible", false)), "ordinary race lost full racecraft feedback")
 	_check(str(ordinary.get(&"integrity_text", "")).contains("PENALTY APPLIED"), "ordinary race lost competitive reset-penalty feedback")

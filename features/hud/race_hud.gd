@@ -1144,11 +1144,21 @@ func update_line(label: String, chain: int, multiplier: float, score: int, time_
 		_pulse_highlight()
 
 
-func update_contract(title: String, current: int, target: int, completed: bool) -> void:
+func update_contract(
+	title: String,
+	current: int,
+	target: int,
+	completed: bool,
+	cash_reward: int = 350,
+	reputation_reward: int = 35
+) -> void:
 	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_sponsor_contract", false)):
 		_contract_label.text = ""
 		return
-	_contract_label.text = "%s   //   %s" % [title, "COMPLETE +$350 +1 TOKEN" if completed else "%d / %d" % [current, target]]
+	var outcome := "COMPLETE +$%d +%dREP +1 TOKEN" % [cash_reward, reputation_reward]
+	if not completed:
+		outcome = "%d/%d  //  $%d +%dREP +1 TOKEN" % [current, target, cash_reward, reputation_reward]
+	_contract_label.text = "%s  //  %s" % [title, outcome]
 	_contract_label.modulate = CYAN if completed else CREAM
 
 

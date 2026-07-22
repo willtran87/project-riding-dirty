@@ -30,6 +30,8 @@ var _terrain_surface_profiles: Array[Dictionary] = []
 
 
 func _ready() -> void:
+	var profile_build := OS.get_environment("RIDING_DIRTY_PROFILE_QUARRY") == "1"
+	var phase_begin_usec := Time.get_ticks_usec()
 	_track_points = CourseCatalog.get_local_points(CourseCatalog.QUARRY_ID)
 	_ride_points = CourseCatalog.get_local_riding_points(CourseCatalog.QUARRY_ID)
 	_surface_ride_points = _build_surface_ride_points(_ride_points)
@@ -44,18 +46,26 @@ func _ready() -> void:
 		_alternate_ride_trails.append(CourseSpline.bake_motocross(
 			_alternate_trails[index], 2.5, 1.6, 0.26, TERRAIN_SEED + 31 + index * 17
 		))
+	phase_begin_usec = _finish_profiled_phase(&"catalog_and_route", phase_begin_usec, profile_build)
 	_terrain_surface_profiles = _build_terrain_surface_profiles()
+	phase_begin_usec = _finish_profiled_phase(&"terrain_profiles", phase_begin_usec, profile_build)
 	_configure_terrain_noise(_terrain_noise)
 	_create_materials()
+	phase_begin_usec = _finish_profiled_phase(&"materials", phase_begin_usec, profile_build)
 	_build_environment()
 	_build_ground_and_walls()
+	phase_begin_usec = _finish_profiled_phase(&"environment_and_ground", phase_begin_usec, profile_build)
 	_start_terrain_build()
+	phase_begin_usec = _finish_profiled_phase(&"terrain", phase_begin_usec, profile_build)
 	_build_track()
+	phase_begin_usec = _finish_profiled_phase(&"track", phase_begin_usec, profile_build)
 	_build_jump_line()
+	phase_begin_usec = _finish_profiled_phase(&"jumps", phase_begin_usec, profile_build)
 	_build_quarry_props()
 	_build_course_markers()
 	_build_trackside_life()
 	_flush_visual_boulders()
+	phase_begin_usec = _finish_profiled_phase(&"props_markers_life", phase_begin_usec, profile_build)
 	CourseDressingBuilder.build(
 		self,
 		CourseCatalog.QUARRY_ID,
@@ -64,6 +74,16 @@ func _ready() -> void:
 		Callable(self, &"_terrain_height_at"),
 		[_finish_apron_centerline()]
 	)
+	_finish_profiled_phase(&"course_dressing", phase_begin_usec, profile_build)
+
+
+func _finish_profiled_phase(phase: StringName, begin_usec: int, enabled: bool) -> int:
+	var finish_usec := Time.get_ticks_usec()
+	if enabled:
+		print("QUARRY BUILD PHASE: %s %.3fs" % [
+			String(phase), float(finish_usec - begin_usec) / 1_000_000.0,
+		])
+	return finish_usec
 
 
 func get_authoritative_route_world() -> PackedVector3Array:
@@ -1110,14 +1130,44 @@ func _make_terrain_surface_profile(centerline: PackedVector3Array, width: float,
 			if frame_distance - last_query_distance >= TERRAIN_PROFILE_QUERY_SPACING or index == frames.size() - 1:
 				query_indices.append(index)
 				last_query_distance = frame_distance
+	var query_cache := _build_terrain_profile_query_cache(frames, query_indices)
 	return {
 		&"frames": frames,
 		&"query_indices": query_indices,
+		&"query_cache": query_cache,
 		&"width": width,
 		&"outer_half_width": half_width + shoulder_width,
 		&"offsets": offsets,
 		&"heights": heights,
 		&"maximum_frame_span": maxf(maximum_frame_span, 0.1),
+	}
+
+
+func _build_terrain_profile_query_cache(
+	frames: Array[Dictionary],
+	query_indices: PackedInt32Array
+) -> Dictionary:
+	var starts := PackedVector2Array()
+	var deltas := PackedVector2Array()
+	var length_squared := PackedFloat32Array()
+	if frames.size() < 2 or query_indices.size() < 2:
+		return {
+			&"starts": starts,
+			&"deltas": deltas,
+			&"length_squared": length_squared,
+		}
+	for query_segment: int in query_indices.size() - 1:
+		var start_position: Vector3 = frames[query_indices[query_segment]][&"position"]
+		var end_position: Vector3 = frames[query_indices[query_segment + 1]][&"position"]
+		var start := Vector2(start_position.x, start_position.z)
+		var delta := Vector2(end_position.x, end_position.z) - start
+		starts.append(start)
+		deltas.append(delta)
+		length_squared.append(maxf(delta.length_squared(), 0.001))
+	return {
+		&"starts": starts,
+		&"deltas": deltas,
+		&"length_squared": length_squared,
 	}
 
 
@@ -1144,25 +1194,12 @@ func _terrain_surface_context(x: float, z: float) -> Dictionary:
 				_terrain_profile_clearance_ceiling(profile, sample, point, influence_radius)
 			)
 	return {&"nearest": nearest, &"clearance_ceiling": clearance_ceiling}
-
-
 func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dictionary:
 	var frames: Array[Dictionary] = profile[&"frames"]
 	var query_indices: PackedInt32Array = profile[&"query_indices"]
 	if frames.size() < 2 or query_indices.size() < 2:
 		return {}
-	var best_query_segment := 0
-	var best_distance_squared := INF
-	for query_index: int in query_indices.size() - 1:
-		var start_position: Vector3 = frames[query_indices[query_index]][&"position"]
-		var end_position: Vector3 = frames[query_indices[query_index + 1]][&"position"]
-		var start := Vector2(start_position.x, start_position.z)
-		var segment := Vector2(end_position.x, end_position.z) - start
-		var weight := clampf((point - start).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
-		var distance_squared := point.distance_squared_to(start + segment * weight)
-		if distance_squared < best_distance_squared:
-			best_distance_squared = distance_squared
-			best_query_segment = query_index
+	var best_query_segment := _nearest_terrain_query_segment(profile, point)
 
 	var query_start := maxi(best_query_segment - 1, 0)
 	var query_end := mini(best_query_segment + 2, query_indices.size() - 1)
@@ -1170,7 +1207,7 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 	var frame_end := mini(query_indices[query_end] + 2, frames.size() - 1)
 	var best_segment := frame_start
 	var best_weight := 0.0
-	best_distance_squared = INF
+	var best_distance_squared := INF
 	for frame_index: int in range(frame_start, frame_end):
 		var frame_start_position: Vector3 = frames[frame_index][&"position"]
 		var frame_end_position: Vector3 = frames[frame_index + 1][&"position"]
@@ -1183,6 +1220,7 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 			best_segment = frame_index
 			best_weight = weight
 
+	var distance := sqrt(best_distance_squared)
 	var frame_a: Dictionary = frames[best_segment]
 	var frame_b: Dictionary = frames[best_segment + 1]
 	var position_a: Vector3 = frame_a[&"position"]
@@ -1202,8 +1240,8 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 		best_weight
 	)
 	return {
-		&"distance": sqrt(best_distance_squared),
-		&"edge_distance": maxf(sqrt(best_distance_squared) - outer_half_width, 0.0),
+		&"distance": distance,
+		&"edge_distance": maxf(distance - outer_half_width, 0.0),
 		&"center_height": center.y,
 		&"surface_height": surface_height,
 		&"signed_offset": signed_offset,
@@ -1211,6 +1249,74 @@ func _nearest_terrain_profile_sample(profile: Dictionary, point: Vector2) -> Dic
 		&"segment_weight": best_weight,
 		&"arc_distance": lerpf(float(frame_a[&"distance"]), float(frame_b[&"distance"]), best_weight),
 	}
+
+
+func _nearest_terrain_query_segment(profile: Dictionary, point: Vector2) -> int:
+	var query_cache: Dictionary = profile.get(&"query_cache", {})
+	var starts: PackedVector2Array = query_cache.get(&"starts", PackedVector2Array())
+	var deltas: PackedVector2Array = query_cache.get(&"deltas", PackedVector2Array())
+	var length_squared: PackedFloat32Array = query_cache.get(
+		&"length_squared", PackedFloat32Array()
+	)
+	if (
+		starts.is_empty()
+		or starts.size() != deltas.size()
+		or starts.size() != length_squared.size()
+	):
+		var frames: Array[Dictionary] = profile[&"frames"]
+		var query_indices: PackedInt32Array = profile[&"query_indices"]
+		return _nearest_terrain_query_segment_linear(frames, query_indices, point)
+
+	var best_query_segment := 0
+	var best_distance_squared := INF
+	for query_segment: int in starts.size():
+		var start := starts[query_segment]
+		var delta := deltas[query_segment]
+		var weight := clampf(
+			(point - start).dot(delta) / maxf(float(length_squared[query_segment]), 0.001),
+			0.0,
+			1.0
+		)
+		var distance_squared := point.distance_squared_to(start + delta * weight)
+		if distance_squared < best_distance_squared:
+			best_distance_squared = distance_squared
+			best_query_segment = query_segment
+	return best_query_segment
+
+
+func _nearest_terrain_query_segment_linear(
+	frames: Array[Dictionary],
+	query_indices: PackedInt32Array,
+	point: Vector2
+) -> int:
+	var best_query_segment := 0
+	var best_distance_squared := INF
+	for query_segment: int in query_indices.size() - 1:
+		var distance_squared := _terrain_query_segment_distance_squared(
+			frames, query_indices, query_segment, point
+		)
+		if distance_squared < best_distance_squared:
+			best_distance_squared = distance_squared
+			best_query_segment = query_segment
+	return best_query_segment
+
+
+func _terrain_query_segment_distance_squared(
+	frames: Array[Dictionary],
+	query_indices: PackedInt32Array,
+	query_segment: int,
+	point: Vector2
+) -> float:
+	var start_position: Vector3 = frames[query_indices[query_segment]][&"position"]
+	var end_position: Vector3 = frames[query_indices[query_segment + 1]][&"position"]
+	var start := Vector2(start_position.x, start_position.z)
+	var segment := Vector2(end_position.x, end_position.z) - start
+	var weight := clampf(
+		(point - start).dot(segment) / maxf(segment.length_squared(), 0.001),
+		0.0,
+		1.0
+	)
+	return point.distance_squared_to(start + segment * weight)
 
 
 func _terrain_profile_clearance_ceiling(profile: Dictionary, sample: Dictionary, point: Vector2, influence_radius: float) -> float:

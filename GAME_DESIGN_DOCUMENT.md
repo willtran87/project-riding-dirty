@@ -401,7 +401,7 @@ The project now contains a playable Godot vertical slice of the recommended dire
 
 ### Next Expansion Targets
 
-1. Expand authored sponsor relationships and give saved bike builds event-specific comparison guidance.
-2. Add additional named rivals and district-specific sponsor arcs.
+1. Run representative long-session playtests to tune sponsor rank pacing, objective variety, and event-build recommendations.
+2. Add voiced sponsor briefings and trackside sponsor treatments while retaining readable text-only feedback.
 3. Add authored production music and voice while retaining the synthesized Web fallback.
 4. Add optional online leaderboards and shared daily seeds without making progression network-dependent.

@@ -10,6 +10,7 @@ signal workshop_action_completed(category: StringName, item_id: StringName, succ
 const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.gd")
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
 const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_catalog.gd")
+const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
 
 const SETUPS: Array[StringName] = [&"TRAIL", &"BALANCED", &"ATTACK"]
 const EVENTS: Array[StringName] = [
@@ -314,6 +315,7 @@ func get_progression_presentation_snapshot() -> Dictionary:
 	return {
 		&"first_run_path": _is_pristine_first_run_context(),
 		&"context": _garage_context_label.text if _garage_context_label != null else "",
+		&"tour": _tour_label.text if _tour_label != null else "",
 		&"summary": _workshop_meta_label.text if _workshop_meta_label != null else "",
 	}
 
@@ -409,8 +411,17 @@ func get_event_briefing_presentation_snapshot() -> Dictionary:
 		&"visible": _event_competition_label != null and _event_competition_label.visible,
 		&"text": _event_competition_label.text if _event_competition_label != null else "",
 		&"event_meta": _event_meta_label.text if _event_meta_label != null else "",
+		&"sponsor": get_event_sponsor_presentation_snapshot(selected_event),
 		&"competition": get_event_competition_snapshot(selected_event) if not selected_event.is_empty() else {},
 	}
+
+
+func get_event_sponsor_presentation_snapshot(activity: StringName = &"") -> Dictionary:
+	if activity.is_empty():
+		activity = EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	if activity == &"ACADEMY":
+		return {}
+	return SPONSOR_CONTRACT_CATALOG.get_contract(activity, Profile.completed_contracts)
 
 
 func get_event_competition_snapshot(activity: StringName) -> Dictionary:
@@ -1675,7 +1686,7 @@ func _refresh_event() -> void:
 	var recommended := RaceEventCatalog.get_recommended_event()
 	var recommended_name := str(RaceEventCatalog.get_event(recommended).get(&"display_name", recommended)).to_upper()
 	if Profile.has_method(&"is_first_run_onboarding_active") and Profile.is_first_run_onboarding_active():
-		_tour_label.text = "FIRST RIDE  //  ACADEMY RECOMMENDED  //  QUARRY TRAIL ALSO OPEN"
+		_tour_label.text = "FIRST ROUTE  //  QUARRY TRAIL READY  //  ACADEMY OPTIONAL"
 	else:
 		_tour_label.text = "NEXT EVENT  //  %s  //  %02d CLEARED" % [recommended_name, _completed_event_count()]
 	for index: int in _event_markers.size():
@@ -1748,7 +1759,7 @@ func _refresh_garage_context(activity: StringName, event_data: Dictionary) -> vo
 	if _garage_context_label == null:
 		return
 	if _is_pristine_first_run_context() and activity == INITIAL_EVENT:
-		_garage_context_label.text = "QUARRY TRAIL  //  FIRST EVENT READY"
+		_garage_context_label.text = "QUARRY TRAIL  //  FIRST EVENT READY  //  %s" % _sponsor_context(activity)
 		return
 	if activity == &"ACADEMY":
 		_garage_context_label.text = "RIDING ACADEMY  //  OPTIONAL SKILLS COACHING"
@@ -1759,7 +1770,17 @@ func _refresh_garage_context(activity: StringName, event_data: Dictionary) -> vo
 		&"QUARRY": district_name = "QUARRY DISTRICT"
 		&"PINE": district_name = "PINE RIDGE"
 		&"MESA_MX": district_name = "RED MESA"
-	_garage_context_label.text = "%s  //  BUILD FOR THE SELECTED LINE" % district_name
+	_garage_context_label.text = "%s  //  %s  //  BUILD FOR THE LINE" % [district_name, _sponsor_context(activity)]
+
+
+func _sponsor_context(activity: StringName) -> String:
+	var sponsor := get_event_sponsor_presentation_snapshot(activity)
+	if sponsor.is_empty():
+		return "NO SPONSOR"
+	return "%s %s" % [
+		String(sponsor.get(&"sponsor_id", &"DUSTLINE")),
+		str(sponsor.get(&"rank_title", "PROSPECT")),
+	]
 
 
 func _is_pristine_first_run_context() -> bool:

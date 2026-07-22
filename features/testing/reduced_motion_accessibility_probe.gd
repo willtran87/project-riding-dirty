@@ -95,6 +95,11 @@ func _run() -> void:
 	_check(is_equal_approx(float(covered.get(&"sweep_x", -1.0)), 0.0), "Reduced transition left the cover offscreen")
 	_check(bool(covered.get(&"briefing_visible", false)), "Reduced transition removed essential event briefing feedback")
 	_check(not str(covered.get(&"title", "")).is_empty(), "Reduced transition has no event title")
+	_check(
+		bool(covered.get(&"sponsor_visible", false))
+		and str(covered.get(&"sponsor_text", "")).contains("DUSTLINE WORKS"),
+		"Reduced transition removed the text-first sponsor briefing"
+	)
 	await transition.reveal()
 	var revealed := transition.get_motion_accessibility_snapshot()
 	_check(not bool(revealed.get(&"visible", true)), "Reduced transition did not reveal the loaded district")

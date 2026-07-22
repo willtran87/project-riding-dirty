@@ -5,6 +5,7 @@ class_name DistrictTransition
 const CREAM := Color("f7e5b2")
 const AMBER := Color("ffb52d")
 const CANVAS_WIDTH: float = 1600.0
+const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
 
 var _root: Control
 var _blackout: ColorRect
@@ -13,6 +14,7 @@ var _accent: ColorRect
 var _kicker: Label
 var _title: Label
 var _description: Label
+var _sponsor: Label
 var _rival: Label
 var _route: Label
 var _active_tween: Tween
@@ -42,6 +44,7 @@ func cover(activity: StringName) -> void:
 	_kicker.modulate.a = 0.0
 	_title.modulate.a = 0.0
 	_description.modulate.a = 0.0
+	_sponsor.modulate.a = 0.0
 	_rival.modulate.a = 0.0
 	_route.modulate.a = 0.0
 	_title.position.y = 372.0
@@ -55,8 +58,9 @@ func cover(activity: StringName) -> void:
 	_active_tween.tween_property(_title, "modulate:a", 1.0, 0.2).set_delay(0.18)
 	_active_tween.tween_property(_title, "position:y", 350.0, 0.3).set_delay(0.14).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_active_tween.tween_property(_description, "modulate:a", 1.0, 0.2).set_delay(0.24)
-	_active_tween.tween_property(_rival, "modulate:a", 1.0, 0.2).set_delay(0.28)
-	_active_tween.tween_property(_route, "modulate:a", 1.0, 0.2).set_delay(0.3)
+	_active_tween.tween_property(_sponsor, "modulate:a", 1.0, 0.2).set_delay(0.27)
+	_active_tween.tween_property(_rival, "modulate:a", 1.0, 0.2).set_delay(0.3)
+	_active_tween.tween_property(_route, "modulate:a", 1.0, 0.2).set_delay(0.32)
 	await _active_tween.finished
 
 
@@ -72,6 +76,7 @@ func reveal() -> void:
 	_active_tween.tween_property(_kicker, "modulate:a", 0.0, 0.12)
 	_active_tween.tween_property(_title, "modulate:a", 0.0, 0.14)
 	_active_tween.tween_property(_description, "modulate:a", 0.0, 0.12)
+	_active_tween.tween_property(_sponsor, "modulate:a", 0.0, 0.12)
 	_active_tween.tween_property(_rival, "modulate:a", 0.0, 0.12)
 	_active_tween.tween_property(_route, "modulate:a", 0.0, 0.12)
 	_active_tween.tween_property(_sweep, "position:x", CANVAS_WIDTH, 0.46).set_delay(0.08).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
@@ -98,6 +103,8 @@ func get_motion_accessibility_snapshot() -> Dictionary:
 		&"accent_scale_x": _accent.scale.x if _accent != null else 0.0,
 		&"title_y": _title.position.y if _title != null else 0.0,
 		&"title": _title.text if _title != null else "",
+		&"sponsor_visible": _sponsor != null and _sponsor.visible and _sponsor.modulate.a >= 0.99,
+		&"sponsor_text": _sponsor.text if _sponsor != null else "",
 		&"briefing_visible": _title != null and _title.modulate.a >= 0.99,
 	}
 
@@ -109,6 +116,7 @@ func _apply_covered_state() -> void:
 	_kicker.modulate.a = 1.0
 	_title.modulate.a = 1.0
 	_description.modulate.a = 1.0
+	_sponsor.modulate.a = 1.0
 	_rival.modulate.a = 1.0
 	_route.modulate.a = 1.0
 	_title.position.y = 350.0
@@ -119,6 +127,7 @@ func _apply_revealed_state() -> void:
 	_kicker.modulate.a = 0.0
 	_title.modulate.a = 0.0
 	_description.modulate.a = 0.0
+	_sponsor.modulate.a = 0.0
 	_rival.modulate.a = 0.0
 	_route.modulate.a = 0.0
 	_sweep.position.x = CANVAS_WIDTH
@@ -159,15 +168,19 @@ func _build_ui() -> void:
 	_sweep.add_child(_title)
 	_description = _label("", 21, Color("aab9c2"))
 	_description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-650.0, 22.0, 1300.0, 38.0))
+	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-650.0, 14.0, 1300.0, 34.0))
 	_sweep.add_child(_description)
+	_sponsor = _label("", 14, AMBER)
+	_sponsor.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(_sponsor, Vector2(0.5, 0.5), Rect2(-690.0, 50.0, 1380.0, 26.0))
+	_sweep.add_child(_sponsor)
 	_rival = _label("", 18, Color("56d6ff"))
 	_rival.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_rival, Vector2(0.5, 0.5), Rect2(-650.0, 70.0, 1300.0, 36.0))
+	_anchor_rect(_rival, Vector2(0.5, 0.5), Rect2(-650.0, 80.0, 1300.0, 32.0))
 	_sweep.add_child(_rival)
 	_route = _label("", 13, Color("7e919d"))
 	_route.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_route, Vector2(0.5, 0.5), Rect2(-500.0, 128.0, 1000.0, 28.0))
+	_anchor_rect(_route, Vector2(0.5, 0.5), Rect2(-620.0, 118.0, 1240.0, 28.0))
 	_sweep.add_child(_route)
 
 
@@ -176,6 +189,11 @@ func _configure(activity: StringName) -> void:
 	_kicker.text = str(briefing[&"kicker"])
 	_title.text = str(briefing[&"title"])
 	_description.text = str(briefing[&"description"])
+	_sponsor.text = str(briefing.get(&"sponsor_text", ""))
+	_sponsor.visible = bool(briefing.get(&"sponsor_visible", false))
+	_sponsor.add_theme_color_override(
+		&"font_color", briefing.get(&"sponsor_accent", AMBER) as Color
+	)
 	_rival.text = str(briefing[&"target"])
 	_route.text = str(briefing[&"route"])
 	_set_accent(briefing[&"accent"] as Color)
@@ -184,7 +202,7 @@ func _configure(activity: StringName) -> void:
 func get_briefing_snapshot(activity: StringName) -> Dictionary:
 	var event := RaceEventCatalog.get_event(activity)
 	if activity == &"FREESTYLE":
-		return {
+		return _with_sponsor({
 			&"event_id": activity, &"track_id": CourseCatalog.QUARRY_ID,
 			&"kicker": "DISTRICT 01   //   QUARRY WORKS",
 			&"title": str(event.get(&"display_name", "QUARRY FREESTYLE")),
@@ -193,9 +211,9 @@ func get_briefing_snapshot(activity: StringName) -> Dictionary:
 			&"route": str(event.get(&"meta", "60 SEC  //  SCORE ATTACK")),
 			&"format": &"FREESTYLE", &"laps": 0, &"weather": &"SUNSET",
 			&"accent": Color("56d6ff"),
-		}
+		}, activity)
 	if activity == &"DISCOVERY":
-		return {
+		return _with_sponsor({
 			&"event_id": activity, &"track_id": CourseCatalog.QUARRY_ID,
 			&"kicker": "DISTRICT 01   //   QUARRY WORKS",
 			&"title": str(event.get(&"display_name", "SALVAGE HUNT")),
@@ -204,7 +222,7 @@ func get_briefing_snapshot(activity: StringName) -> Dictionary:
 			&"route": str(event.get(&"meta", "6 CACHES  //  EXPLORATION")),
 			&"format": &"DISCOVERY", &"laps": 0, &"weather": &"MIST",
 			&"accent": Color("d8b35a"),
-		}
+		}, activity)
 
 	var session := RaceEventCatalog.get_session_config(activity)
 	var track_name := "QUARRY WORKS"
@@ -235,7 +253,7 @@ func get_briefing_snapshot(activity: StringName) -> Dictionary:
 		difficulty_label = "ACADEMY GRADING LOCKED"
 	elif difficulty_locked:
 		difficulty_label = "AI DIFFICULTY FIXED"
-	return {
+	return _with_sponsor({
 		&"event_id": activity,
 		&"track_id": session.track_id,
 		&"kicker": "DISTRICT %s   //   %s" % [district_number, track_name],
@@ -254,7 +272,23 @@ func get_briefing_snapshot(activity: StringName) -> Dictionary:
 		&"difficulty_offset": difficulty_offset,
 		&"difficulty_locked": difficulty_locked,
 		&"accent": accent,
-	}
+	}, activity)
+
+
+func _with_sponsor(briefing: Dictionary, activity: StringName) -> Dictionary:
+	if activity == &"ACADEMY":
+		briefing[&"sponsor_visible"] = false
+		briefing[&"sponsor_text"] = ""
+		briefing[&"sponsor"] = {}
+		return briefing
+	var contract: Dictionary = SPONSOR_CONTRACT_CATALOG.get_contract(
+		activity, Profile.completed_contracts
+	)
+	briefing[&"sponsor_visible"] = true
+	briefing[&"sponsor_text"] = str(contract.get(&"briefing_line", ""))
+	briefing[&"sponsor_accent"] = contract.get(&"sponsor_accent", AMBER)
+	briefing[&"sponsor"] = contract
+	return briefing
 
 
 func _format_time_usec(time_usec: int) -> String:

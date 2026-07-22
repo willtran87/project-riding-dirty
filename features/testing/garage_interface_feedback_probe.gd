@@ -36,6 +36,19 @@ func _run() -> void:
 	var fresh_progression := garage.get_progression_presentation_snapshot()
 	_check(bool(fresh_progression.get(&"first_run_path", false)), "Fresh Garage did not expose its first-run progression path")
 	_check(str(fresh_progression.get(&"context", "")).contains("QUARRY TRAIL"), "Fresh Garage context still leads with a later district")
+	_check(
+		str(fresh_progression.get(&"tour", "")).contains("QUARRY TRAIL READY")
+		and str(fresh_progression.get(&"tour", "")).contains("ACADEMY OPTIONAL")
+		and not str(fresh_progression.get(&"tour", "")).contains("ACADEMY RECOMMENDED"),
+		"Fresh Garage still gives optional Academy stronger priority than event one"
+	)
+	var fresh_sponsor: Dictionary = garage.get_event_briefing_presentation_snapshot().get(&"sponsor", {}) as Dictionary
+	_check(
+		StringName(fresh_sponsor.get(&"sponsor_id", &"")) == &"DUSTLINE"
+		and str(fresh_sponsor.get(&"rank_title", "")) == "PROSPECT"
+		and str(fresh_progression.get(&"context", "")).contains("DUSTLINE PROSPECT"),
+		"Fresh Garage does not preview the first event's sponsor relationship"
+	)
 	var fresh_summary := str(fresh_progression.get(&"summary", ""))
 	_check(fresh_summary.contains("FIRST ROUTE") and fresh_summary.contains("EVENT 01"), "Fresh Garage summary does not identify the first route")
 	_check(fresh_summary.contains("CLEAR 2 QUARRY EVENTS"), "Fresh Garage summary omits the next concrete unlock goal")
@@ -54,12 +67,14 @@ func _run() -> void:
 	var strategy_signature := str(Profile.get_active_bike_setup_snapshot().get(&"signature", ""))
 	_check(garage.focus_event_briefing(&"PINE_ENDURO"), "Pine Enduro is absent from the Garage event list")
 	var pine_strategy := garage.get_event_strategy_presentation_snapshot()
+	var pine_sponsor: Dictionary = garage.get_event_briefing_presentation_snapshot().get(&"sponsor", {}) as Dictionary
 	_check(
 		StringName(pine_strategy.get(&"recommended_setup", &"")) == &"TRAIL"
 		and StringName(pine_strategy.get(&"recommended_tune", &"")) == &"ENDURO",
 		"Pine strategy does not expose its traction and compliance tradeoff"
 	)
 	_check(not bool(pine_strategy.get(&"full_match", true)), "Baseline build is incorrectly presented as the Pine-specific plan")
+	_check(StringName(pine_sponsor.get(&"sponsor_id", &"")) == &"WILDBRUSH", "Pine does not introduce its terrain sponsor")
 	_check(
 		str(garage.get_event_briefing_presentation_snapshot().get(&"event_meta", "")).contains("TWO QUARRY EVENTS"),
 		"Pine unlock presentation does not name the authoritative Quarry-clear gate"
@@ -73,11 +88,13 @@ func _run() -> void:
 	)
 	_check(garage.focus_event_briefing(&"MESA_RHYTHM"), "Rhythm Attack is absent from the Garage event list")
 	var rhythm_strategy := garage.get_event_strategy_presentation_snapshot()
+	var rhythm_sponsor: Dictionary = garage.get_event_briefing_presentation_snapshot().get(&"sponsor", {}) as Dictionary
 	_check(
 		StringName(rhythm_strategy.get(&"recommended_setup", &"")) == &"ATTACK"
 		and StringName(rhythm_strategy.get(&"recommended_tune", &"")) == &"RHYTHM",
 		"Rhythm strategy does not expose its jump-support tradeoff"
 	)
+	_check(StringName(rhythm_sponsor.get(&"sponsor_id", &"")) == &"SUNDOWN", "Rhythm does not introduce its style sponsor")
 	_check(
 		int(rhythm_strategy.get(&"recommended_setup_price", -1)) == 1_500
 		and int(rhythm_strategy.get(&"recommended_setup_shortfall", -1)) == 1_500

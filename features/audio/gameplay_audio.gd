@@ -54,6 +54,28 @@ const INTERFACE_FEEDBACK_CONTRACT := {
 		&"pitch": 1.0, &"volume_db": -4.5,
 	},
 }
+const SPONSOR_FEEDBACK_CONTRACT := {
+	&"DUSTLINE": {
+		&"cue": &"sponsor_dustline", &"start_hz": 410.0, &"end_hz": 980.0,
+		&"duration": 0.42, &"amplitude": 0.36, &"harmonic": 0.34,
+		&"volume_db": 0.5,
+	},
+	&"WILDBRUSH": {
+		&"cue": &"sponsor_wildbrush", &"start_hz": 285.0, &"end_hz": 720.0,
+		&"duration": 0.50, &"amplitude": 0.35, &"harmonic": 0.46,
+		&"volume_db": 0.0,
+	},
+	&"SUNDOWN": {
+		&"cue": &"sponsor_sundown", &"start_hz": 650.0, &"end_hz": 1320.0,
+		&"duration": 0.34, &"amplitude": 0.32, &"harmonic": 0.16,
+		&"volume_db": -0.5,
+	},
+	&"GENERIC": {
+		&"cue": &"contract", &"start_hz": 440.0, &"end_hz": 1180.0,
+		&"duration": 0.48, &"amplitude": 0.38, &"harmonic": 0.30,
+		&"volume_db": 1.0,
+	},
+}
 
 const MUSIC_STEMS: Array[StringName] = [&"BASE", &"DRIVE", &"TENSION", &"RESULTS"]
 const MUSIC_STATE_MIXES := {
@@ -139,6 +161,9 @@ var _close_exit_samples: int = 0
 var _state_transition_count: int = 0
 var _last_transition_seconds: float = 0.0
 var _contract_cued: bool = false
+var _sponsor_feedback_count: int = 0
+var _last_sponsor_feedback_id: StringName = &""
+var _last_sponsor_feedback_cue: StringName = &""
 var _shut_down: bool = false
 var _audio_enabled: bool = false
 var _race_snapshot_source: Node
@@ -335,6 +360,29 @@ static func get_interface_feedback_contract() -> Dictionary:
 	}
 
 
+static func get_sponsor_feedback_contract() -> Dictionary:
+	return {
+		&"bus": SFX_BUS_NAME,
+		&"pooled_voices": VOICE_COUNT,
+		&"identities": SPONSOR_FEEDBACK_CONTRACT.duplicate(true),
+	}
+
+
+func get_sponsor_feedback_snapshot() -> Dictionary:
+	var cue_ready: Dictionary[StringName, bool] = {}
+	for raw_sponsor_id: Variant in SPONSOR_FEEDBACK_CONTRACT:
+		var spec := SPONSOR_FEEDBACK_CONTRACT[raw_sponsor_id] as Dictionary
+		var cue := StringName(spec.get(&"cue", &""))
+		cue_ready[StringName(raw_sponsor_id)] = not cue.is_empty() and _cues.has(cue)
+	return {
+		&"count": _sponsor_feedback_count,
+		&"last_sponsor_id": _last_sponsor_feedback_id,
+		&"last_cue": _last_sponsor_feedback_cue,
+		&"cue_ready": cue_ready,
+		&"contract": get_sponsor_feedback_contract(),
+	}
+
+
 func get_racecraft_audio_feedback_snapshot() -> Dictionary:
 	return {
 		&"flow_denied_cue_count": _flow_denied_cue_count,
@@ -447,6 +495,15 @@ func _build_cues() -> void:
 			float(spec.get(&"duration", 0.08)),
 			float(spec.get(&"amplitude", 0.2)),
 			float(spec.get(&"harmonic", 0.1))
+		)
+	for raw_sponsor_id: Variant in SPONSOR_FEEDBACK_CONTRACT:
+		var sponsor_spec := SPONSOR_FEEDBACK_CONTRACT[raw_sponsor_id] as Dictionary
+		_cues[StringName(sponsor_spec.get(&"cue", &"contract"))] = _make_sweep(
+			float(sponsor_spec.get(&"start_hz", 440.0)),
+			float(sponsor_spec.get(&"end_hz", 1180.0)),
+			float(sponsor_spec.get(&"duration", 0.48)),
+			float(sponsor_spec.get(&"amplitude", 0.38)),
+			float(sponsor_spec.get(&"harmonic", 0.30))
 		)
 	_cues[&"count"] = _make_sweep(390.0, 390.0, 0.09, 0.34, 0.12)
 	_cues[&"go"] = _make_sweep(520.0, 880.0, 0.20, 0.38, 0.18)
@@ -1098,10 +1155,36 @@ func _on_route_discovered(_title: String) -> void:
 	_play(&"route", 1.0, 0.5)
 
 
-func _on_contract_updated(_title: String, _current: int, _target: int, completed: bool) -> void:
+func _on_contract_updated(
+	title: String,
+	_current: int,
+	_target: int,
+	completed: bool,
+	_cash_reward: int,
+	_reputation_reward: int
+) -> void:
 	if completed and not _contract_cued:
 		_contract_cued = true
-		_play(&"contract", 1.0, 1.0)
+		var sponsor_id := _sponsor_id_from_contract_title(title)
+		var spec := SPONSOR_FEEDBACK_CONTRACT.get(
+			sponsor_id, SPONSOR_FEEDBACK_CONTRACT[&"GENERIC"]
+		) as Dictionary
+		var cue := StringName(spec.get(&"cue", &"contract"))
+		_sponsor_feedback_count += 1
+		_last_sponsor_feedback_id = sponsor_id
+		_last_sponsor_feedback_cue = cue
+		_play(cue, 1.0, float(spec.get(&"volume_db", 1.0)))
+
+
+static func _sponsor_id_from_contract_title(title: String) -> StringName:
+	var normalized := title.to_upper()
+	if normalized.contains("DUSTLINE WORKS"):
+		return &"DUSTLINE"
+	if normalized.contains("WILDBRUSH OUTPOST"):
+		return &"WILDBRUSH"
+	if normalized.contains("SUNDOWN STATIC"):
+		return &"SUNDOWN"
+	return &"GENERIC"
 
 
 static func ensure_audio_buses() -> Dictionary:

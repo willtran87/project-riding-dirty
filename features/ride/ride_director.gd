@@ -3,13 +3,14 @@ class_name RideDirector
 ## Owns run-scoped line chains, route mastery, daily modifiers, and sponsor contracts.
 
 signal line_updated(label: String, chain: int, multiplier: float, score: int, time_left: float)
-signal contract_updated(title: String, current: int, target: int, completed: bool)
+signal contract_updated(title: String, current: int, target: int, completed: bool, cash_reward: int, reputation_reward: int)
 signal modifier_updated(title: String, description: String)
 signal route_discovered(title: String)
 signal feat_unlocked(title: String)
 
 const CHAIN_WINDOW := 4.5
 const CONTRACT_RETRY_INTERVAL := 1.0
+const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
 const ROUTES: Array[Dictionary] = [
 	# Quarry route gates now reward committed main-line sections. Their former
 	# locations sat on removed optional branches and visually instructed riders
@@ -53,6 +54,10 @@ var _contract_progress: int = 0
 var _contract_target: int = 2
 var _contract_complete: bool = false
 var _contract_id: String = ""
+var _contract_sponsor_id: StringName = &"DUSTLINE"
+var _contract_rank_index: int = 0
+var _contract_cash_reward: int = 350
+var _contract_reputation_reward: int = 35
 var _contract_retry_time: float = 0.0
 var _pending_contracts: Dictionary[String, Dictionary] = {}
 var _pending_feats: Dictionary[String, String] = {}
@@ -118,6 +123,22 @@ func get_presentation_snapshot() -> Dictionary:
 		&"contract_enabled": _contract_enabled,
 		&"modifier_enabled": _modifier_enabled,
 		&"modifier": _modifier,
+		&"contract": get_contract_snapshot(),
+	}
+
+
+func get_contract_snapshot() -> Dictionary:
+	return {
+		&"id": _contract_id,
+		&"sponsor_id": _contract_sponsor_id,
+		&"rank_index": _contract_rank_index,
+		&"title": _contract_title,
+		&"kind": _contract_kind,
+		&"current": _contract_progress,
+		&"target": _contract_target,
+		&"completed": _contract_complete,
+		&"cash_reward": _contract_cash_reward,
+		&"reputation_reward": _contract_reputation_reward,
 	}
 
 
@@ -172,7 +193,10 @@ func _on_activity_started(activity: StringName) -> void:
 	_set_surface_visibility()
 	_bike.apply_run_modifier(_modifier)
 	line_updated.emit("BUILD THE LINE" if _line_enabled else "", 0, 1.0, 0, 0.0)
-	contract_updated.emit(_contract_title, 0, _contract_target, false)
+	contract_updated.emit(
+		_contract_title, _contract_progress, _contract_target, _contract_complete,
+		_contract_cash_reward, _contract_reputation_reward
+	)
 
 
 func _on_race_reset() -> void:
@@ -258,7 +282,9 @@ func _update_contract() -> void:
 	_contract_progress = mini(_contract_progress, _contract_target)
 	if not _contract_complete and _contract_progress >= _contract_target:
 		_contract_complete = (
-			Profile.complete_contract(_contract_id, _activity)
+			Profile.complete_contract(
+				_contract_id, _activity, _contract_cash_reward, _contract_reputation_reward
+			)
 			or Profile.completed_contracts.has(_contract_id)
 		)
 		_contract_retry_time = 0.0 if _contract_complete else CONTRACT_RETRY_INTERVAL
@@ -271,8 +297,24 @@ func _update_contract() -> void:
 				&"title": _contract_title,
 				&"current": _contract_progress,
 				&"target": _contract_target,
+				&"cash_reward": _contract_cash_reward,
+				&"reputation_reward": _contract_reputation_reward,
 			}
-	contract_updated.emit(_contract_title, _contract_progress, _contract_target, _contract_complete)
+	var presentation_title := _contract_title
+	if _contract_complete:
+		var relationship := SPONSOR_CONTRACT_CATALOG.get_relationship_snapshot(
+			_contract_sponsor_id, Profile.completed_contracts
+		)
+		var completed_rank := int(relationship.get(&"rank_index", _contract_rank_index))
+		if completed_rank > _contract_rank_index:
+			presentation_title = "%s %s  //  RELATIONSHIP UPGRADE" % [
+				str(SPONSOR_CONTRACT_CATALOG.SPONSORS.get(_contract_sponsor_id, {}).get(&"display_name", _contract_sponsor_id)),
+				str(relationship.get(&"rank_title", "SIGNED")),
+			]
+	contract_updated.emit(
+		presentation_title, _contract_progress, _contract_target, _contract_complete,
+		_contract_cash_reward, _contract_reputation_reward
+	)
 
 
 func _retry_pending_contract(delta: float) -> void:
@@ -284,9 +326,11 @@ func _retry_pending_contract(delta: float) -> void:
 	var contract_id: String = _pending_contracts.keys()[0]
 	var pending: Dictionary = _pending_contracts[contract_id]
 	var activity := StringName(pending.get(&"activity", &""))
+	var cash_reward := int(pending.get(&"cash_reward", 350))
+	var reputation_reward := int(pending.get(&"reputation_reward", 35))
 	var settled := (
 		Profile.completed_contracts.has(contract_id)
-		or Profile.complete_contract(contract_id, activity)
+		or Profile.complete_contract(contract_id, activity, cash_reward, reputation_reward)
 	)
 	if not settled:
 		_contract_retry_time = CONTRACT_RETRY_INTERVAL
@@ -300,7 +344,9 @@ func _retry_pending_contract(delta: float) -> void:
 			str(completed.get(&"title", _contract_title)),
 			int(completed.get(&"current", _contract_progress)),
 			int(completed.get(&"target", _contract_target)),
-			true
+			true,
+			cash_reward,
+			reputation_reward
 		)
 	if not _pending_contracts.is_empty():
 		_contract_retry_time = CONTRACT_RETRY_INTERVAL
@@ -322,19 +368,14 @@ func _select_daily_modifier() -> void:
 
 
 func _select_contract() -> void:
-	match _activity:
-		&"FREESTYLE":
-			_contract_title = "SPONSOR: CHAIN 4 MOVES"
-			_contract_kind = &"CHAIN"
-			_contract_target = 4
-		&"DISCOVERY":
-			_contract_title = "SPONSOR: FIND 2 SECRET LINES"
-			_contract_kind = &"ROUTE"
-			_contract_target = 2
-		_:
-			_contract_title = "SPONSOR: LAND 2 CLEAN JUMPS"
-			_contract_kind = &"CLEAN"
-			_contract_target = 2
+	var contract := SPONSOR_CONTRACT_CATALOG.get_contract(_activity, Profile.completed_contracts)
+	_contract_title = str(contract.get(&"title", "SPONSOR  //  LAND 2 CLEAN JUMPS"))
+	_contract_sponsor_id = StringName(contract.get(&"sponsor_id", &"DUSTLINE"))
+	_contract_rank_index = int(contract.get(&"rank_index", 0))
+	_contract_kind = StringName(contract.get(&"kind", &"CLEAN"))
+	_contract_target = int(contract.get(&"target", 2))
+	_contract_cash_reward = int(contract.get(&"cash_reward", 350))
+	_contract_reputation_reward = int(contract.get(&"reputation_reward", 35))
 	_contract_progress = 0
 	_contract_complete = false
 	_contract_retry_time = 0.0
@@ -352,6 +393,10 @@ func _disable_contract() -> void:
 	_contract_target = 0
 	_contract_complete = false
 	_contract_id = ""
+	_contract_sponsor_id = &"DUSTLINE"
+	_contract_rank_index = 0
+	_contract_cash_reward = 0
+	_contract_reputation_reward = 0
 	_contract_retry_time = 0.0
 
 

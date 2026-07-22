@@ -68,10 +68,36 @@ func _run() -> void:
 		if spec_value is Dictionary:
 			interface_cues.append(String((spec_value as Dictionary).get(&"cue", "")))
 	_expect(interface_cues.size() == 4 and interface_cues[0] != interface_cues[1] and interface_cues[0] != interface_cues[2] and interface_cues[0] != interface_cues[3] and interface_cues[1] != interface_cues[2] and interface_cues[1] != interface_cues[3] and interface_cues[2] != interface_cues[3], "Interface meanings share an ambiguous cue identity")
+	var sponsor_contract := GameplayAudio.get_sponsor_feedback_contract()
+	var sponsor_identities := sponsor_contract.get(&"identities", {}) as Dictionary
+	_expect(StringName(sponsor_contract.get(&"bus", &"")) == &"SFX", "Sponsor feedback bypasses the SFX bus")
+	_expect(int(sponsor_contract.get(&"pooled_voices", 0)) >= 4, "Sponsor feedback bypasses the shared voice pool")
+	_expect(sponsor_identities.size() == 4, "Sponsor feedback does not expose three identities plus fallback")
+	var sponsor_cues := PackedStringArray()
+	for sponsor_id: StringName in [&"DUSTLINE", &"WILDBRUSH", &"SUNDOWN"]:
+		var sponsor_spec := sponsor_identities.get(sponsor_id, {}) as Dictionary
+		var sponsor_cue := String(sponsor_spec.get(&"cue", ""))
+		_expect(not sponsor_cue.is_empty(), "Sponsor feedback is missing %s" % String(sponsor_id))
+		sponsor_cues.append(sponsor_cue)
+	_expect(sponsor_cues[0] != sponsor_cues[1] and sponsor_cues[0] != sponsor_cues[2] and sponsor_cues[1] != sponsor_cues[2], "Sponsor identities share an ambiguous completion cue")
 
 	var audio := GameplayAudio.new()
 	add_child(audio)
 	audio.call(&"_build_cues")
+	for sponsor_title: String in [
+		"DUSTLINE WORKS PROSPECT // LAND 2 CLEAN JUMPS",
+		"WILDBRUSH OUTPOST PROSPECT // FIND 2 SECRET LINES",
+		"SUNDOWN STATIC PROSPECT // CHAIN 4 MOVES",
+	]:
+		audio.set("_contract_cued", false)
+		audio.call(&"_on_contract_updated", sponsor_title, 1, 1, true, 350, 35)
+	var sponsor_snapshot := audio.get_sponsor_feedback_snapshot()
+	var sponsor_ready := sponsor_snapshot.get(&"cue_ready", {}) as Dictionary
+	_expect(int(sponsor_snapshot.get(&"count", 0)) == 3, "Sponsor completion feedback did not accept three distinct programs")
+	_expect(StringName(sponsor_snapshot.get(&"last_sponsor_id", &"")) == &"SUNDOWN", "Sponsor completion feedback lost the selected program")
+	_expect(StringName(sponsor_snapshot.get(&"last_cue", &"")) == &"sponsor_sundown", "Sponsor completion feedback selected the wrong motif")
+	for sponsor_id: StringName in [&"DUSTLINE", &"WILDBRUSH", &"SUNDOWN", &"GENERIC"]:
+		_expect(bool(sponsor_ready.get(sponsor_id, false)), "Sponsor cue was not built for %s" % String(sponsor_id))
 	EventBus.interface_feedback_requested.emit(&"NAVIGATE", &"PROBE_NAV")
 	EventBus.interface_feedback_requested.emit(&"CONFIRM", &"PROBE_CONFIRM")
 	EventBus.interface_feedback_requested.emit(&"CANCEL", &"PROBE_CANCEL")
