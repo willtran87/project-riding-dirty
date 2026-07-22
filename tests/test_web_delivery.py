@@ -225,6 +225,23 @@ class WebReleaseBuilderTests(unittest.TestCase):
 
 
 class WebReadinessContractTests(unittest.TestCase):
+    def test_export_preset_excludes_every_local_only_tree(self) -> None:
+        preset = (PROJECT_ROOT / "export_presets.cfg").read_text(encoding="utf-8")
+        match = re.search(r'^exclude_filter="([^"]*)"$', preset, re.MULTILINE)
+        self.assertIsNotNone(match)
+        excluded = set(match.group(1).split(","))
+        self.assertTrue(
+            {
+                "artifacts/*",
+                ".codex_tmp/*",
+                "tools/*",
+                "web/*",
+                "output/*",
+                "Godot/*",
+                "features/testing/*",
+            }.issubset(excluded)
+        )
+
     def test_wrapper_accessibility_contract_is_present(self) -> None:
         wrapper = (PROJECT_ROOT / "web" / "index.html").read_text(encoding="utf-8")
         styles = (PROJECT_ROOT / "web" / "styles.css").read_text(encoding="utf-8")

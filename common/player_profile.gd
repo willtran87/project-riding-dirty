@@ -22,6 +22,15 @@ const MAX_CHALLENGE_RECORDS: int = 64
 const MAX_LEADERBOARD_SUMMARIES: int = 48
 const MAX_SAVED_BUILD_SLOTS: int = 3
 const SAVED_BUILD_SLOT_IDS: Array[StringName] = [&"BUILD_A", &"BUILD_B", &"BUILD_C"]
+## Setup prices follow the minimum no-medal progression path. Two distinct
+## first-time Quarry activity clears fund Trail; Pine plus the two pre-Heat
+## Mesa sessions fund Attack. Optional repairs and Workshop purchases can delay
+## either unlock, but the authored route itself never advertises an impossible
+## strategy.
+const SETUP_PRICES: Dictionary[StringName, int] = {
+	&"TRAIL": 750,
+	&"ATTACK": 1_500,
+}
 const TOUR_EVENTS: Array[StringName] = [&"CIRCUIT", &"FREESTYLE", &"DISCOVERY", &"PINE_ENDURO"]
 const QUARRY_EVENTS: Array[StringName] = [&"CIRCUIT", &"FREESTYLE", &"DISCOVERY"]
 const RACE_EVENTS: Array[StringName] = [&"CIRCUIT", &"PINE_ENDURO"]
@@ -224,18 +233,24 @@ func get_activity_unlock_hint(activity: StringName) -> String:
 	if is_activity_unlocked(activity):
 		return ""
 	if activity == &"PINE_ENDURO":
-		return "COMPLETE ANY TWO RED MESA EVENTS OR BEAT ROOK'S QUARRY TIME"
+		return "COMPLETE ANY TWO QUARRY EVENTS OR BEAT ROOK'S QUARRY TIME"
 	return "KEEP BUILDING YOUR TOUR REPUTATION"
 
 
 func get_setup_price(setup: StringName) -> int:
-	match setup:
-		&"TRAIL":
-			return 800
-		&"ATTACK":
-			return 1500
-		_:
-			return 0
+	return int(SETUP_PRICES.get(setup, 0))
+
+
+func get_setup_purchase_snapshot(setup: StringName) -> Dictionary:
+	var owned := is_setup_unlocked(setup)
+	var price := get_setup_price(setup)
+	return {
+		&"setup_id": setup,
+		&"owned": owned,
+		&"price": price,
+		&"affordable": owned or (price > 0 and cash >= price),
+		&"shortfall": 0 if owned else maxi(price - cash, 0),
+	}
 
 
 func purchase_setup(setup: StringName) -> bool:

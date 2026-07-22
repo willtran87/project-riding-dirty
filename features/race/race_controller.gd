@@ -1048,18 +1048,9 @@ func _build_race_result() -> RaceResult:
 	if not reward_eligible:
 		result.medal = &"NO_AWARD"
 		result.championship_points = 0
-	var base_cash := 200
-	match result.medal:
-		&"GOLD":
-			base_cash = 900
-		&"SILVER":
-			base_cash = 600
-		&"BRONZE":
-			base_cash = 350
-	if _is_new_best:
-		base_cash += 250
+	var base_cash := get_base_cash_reward(result.medal, _is_new_best)
 	var clean_bonus := 150 if result.contacts == 0 and result.crashes == 0 and result.recoveries == 0 else 0
-	var placement_bonus := 350 if result.player_position == 1 else 200 if result.player_position <= 3 else 100 if result.player_position <= 5 else 0
+	var placement_bonus := get_placement_cash_reward(result.player_position)
 	var modifier_bonus := 0
 	var airtime_bonus_enabled := bool(competitive_rules.get(&"airtime_bonus", false)) or "AIRTIME_BONUS" in modifier_names
 	if airtime_bonus_enabled:
@@ -1115,6 +1106,28 @@ func _build_race_result() -> RaceResult:
 	}
 	result.academy_metrics = _get_academy_metrics(result)
 	return result
+
+
+static func get_base_cash_reward(medal: StringName, is_new_best: bool) -> int:
+	## Public pure policy used by progression tests and the live settlement path.
+	var reward := 200
+	match medal:
+		&"GOLD": reward = 900
+		&"SILVER": reward = 600
+		&"BRONZE": reward = 350
+	if is_new_best:
+		reward += 250
+	return reward
+
+
+static func get_placement_cash_reward(position: int) -> int:
+	if position == 1:
+		return 350
+	if position <= 3:
+		return 200
+	if position <= 5:
+		return 100
+	return 0
 
 
 func _build_competitive_signature() -> String:

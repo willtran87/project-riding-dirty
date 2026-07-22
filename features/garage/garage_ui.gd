@@ -45,8 +45,10 @@ var _profile_label: Label
 var _setup_name: Label
 var _tagline: Label
 var _description: Label
+var _strategy_label: Label
 var _price_label: Label
 var _status_label: Label
+var _garage_context_label: Label
 var _event_label: Label
 var _event_description: Label
 var _event_meta_label: Label
@@ -308,6 +310,65 @@ func get_input_prompt_snapshot() -> Dictionary:
 	}
 
 
+func get_progression_presentation_snapshot() -> Dictionary:
+	return {
+		&"first_run_path": _is_pristine_first_run_context(),
+		&"context": _garage_context_label.text if _garage_context_label != null else "",
+		&"summary": _workshop_meta_label.text if _workshop_meta_label != null else "",
+	}
+
+
+func get_event_strategy_presentation_snapshot() -> Dictionary:
+	var activity := EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	var selected_setup := SETUPS[_selected_index] if _selected_index >= 0 and _selected_index < SETUPS.size() else &"BALANCED"
+	var active_tune := _active_tune_id()
+	var snapshot := _event_strategy_fit(activity, selected_setup, active_tune)
+	snapshot[&"label"] = _strategy_label.text if _strategy_label != null else ""
+	return snapshot
+
+
+func _event_strategy_fit(activity: StringName, setup_id: StringName, tune_id: StringName) -> Dictionary:
+	var strategy := RaceEventCatalog.get_event_strategy(activity)
+	var event_data := RaceEventCatalog.get_event(activity)
+	var recommended_setup := StringName(strategy.get(&"setup_id", &"BALANCED"))
+	var recommended_tune := StringName(strategy.get(&"tune_id", &"BALANCED"))
+	var setup_match := setup_id == recommended_setup
+	var tune_match := tune_id == recommended_tune
+	var purchase: Dictionary = Profile.get_setup_purchase_snapshot(recommended_setup)
+	var setup_owned := bool(purchase.get(&"owned", false))
+	var fit_status := "FULL PLAN MATCH"
+	if setup_match and tune_match and not setup_owned:
+		fit_status = "PLAN CONFIGURED  //  KIT NOT OWNED"
+	elif setup_match and not tune_match:
+		fit_status = "KIT MATCH  //  TRY TUNE %s" % String(recommended_tune).replace("_", " ")
+	elif tune_match and not setup_match:
+		fit_status = "TUNE MATCH  //  TRY KIT %s" % String(recommended_setup).replace("_", " ")
+	elif not setup_match and not tune_match:
+		fit_status = "ALTERNATE  //  PLAN KIT %s + TUNE %s" % [
+			String(recommended_setup).replace("_", " "), String(recommended_tune).replace("_", " "),
+		]
+	return {
+		&"event_id": activity,
+		&"event_name": str(event_data.get(&"display_name", String(activity))).to_upper(),
+		&"recommended_setup": recommended_setup,
+		&"recommended_tune": recommended_tune,
+		&"selected_setup": setup_id,
+		&"active_tune": tune_id,
+		&"setup_match": setup_match,
+		&"tune_match": tune_match,
+		&"full_match": setup_match and tune_match,
+		&"ready_to_ride": setup_owned and setup_match and tune_match,
+		&"recommended_setup_owned": setup_owned,
+		&"recommended_setup_price": int(purchase.get(&"price", 0)),
+		&"recommended_setup_affordable": bool(purchase.get(&"affordable", false)),
+		&"recommended_setup_shortfall": int(purchase.get(&"shortfall", 0)),
+		&"fit_status": fit_status,
+		&"focus": str(strategy.get(&"focus", "READABLE PACE")),
+		&"why": str(strategy.get(&"why", "")),
+		&"challenge_rule": bool(strategy.get(&"challenge_rule", false)),
+	}
+
+
 func bind_competition_source(source: Object) -> void:
 	## RaceServices remains the authority for the local board and last replay. The
 	## Garage only projects that data and stays usable in isolated/headless tests.
@@ -488,12 +549,8 @@ func get_continue_weekend_snapshot() -> Dictionary:
 			&"complete": phase == &"RESULTS",
 			&"action_text": "RED MESA WEEKEND COMPLETE" if phase == &"RESULTS" else "",
 		}
-	var onboarding_active: bool = (
-		Profile.has_method(&"is_first_run_onboarding_active")
-		and Profile.is_first_run_onboarding_active()
-	)
 	var pristine_first_run_weekend: bool = (
-		onboarding_active
+		_is_pristine_first_run_context()
 		and phase == &"PRACTICE"
 		and weekend.session_results.is_empty()
 	)
@@ -619,9 +676,12 @@ func _build_ui() -> void:
 	var title := _label("THE GARAGE", 58, CREAM)
 	_anchor_rect(title, Vector2.ZERO, Rect2(82.0, 60.0, 620.0, 80.0))
 	_root.add_child(title)
-	var subtitle := _label("RED MESA  //  BUILD FOR THE LINE AHEAD", 19, AMBER)
-	_anchor_rect(subtitle, Vector2.ZERO, Rect2(88.0, 137.0, 610.0, 40.0))
-	_root.add_child(subtitle)
+	_garage_context_label = _label("", 19, AMBER)
+	_garage_context_label.name = "GarageContext"
+	_garage_context_label.clip_text = true
+	_garage_context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_rect(_garage_context_label, Vector2.ZERO, Rect2(88.0, 137.0, 610.0, 40.0))
+	_root.add_child(_garage_context_label)
 	var build_label := _label("PACKAGE %s  //  TRACK-AUTHORITY" % _build_id().to_upper(), 13, CYAN)
 	build_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(build_label, Vector2(1.0, 1.0), Rect2(-470.0, -42.0, 390.0, 24.0))
@@ -708,8 +768,13 @@ func _build_ui() -> void:
 	_description = _label("", 18, Color("aab9c2"))
 	_description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-290.0, -82.0, 800.0, 64.0))
+	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-290.0, -82.0, 800.0, 52.0))
 	_root.add_child(_description)
+	_strategy_label = _label("", 15, CYAN)
+	_strategy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_strategy_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_rect(_strategy_label, Vector2(0.5, 0.5), Rect2(-290.0, -28.0, 800.0, 26.0))
+	_root.add_child(_strategy_label)
 
 	var stat_names: Array[StringName] = [&"POWER", &"GRIP", &"SUSPENSION", &"TOP SPEED"]
 	for index: int in stat_names.size():
@@ -875,6 +940,7 @@ func _refresh() -> void:
 	_bars[&"GRIP"].value = clampf(inverse_lerp(450.0, 850.0, float(runtime.get(&"lateral_grip", 0.0))) * 10.0, 0.0, 10.0)
 	_bars[&"SUSPENSION"].value = clampf(inverse_lerp(16_000.0, 24_000.0, float(runtime.get(&"spring_stiffness", 0.0))) * 10.0, 0.0, 10.0)
 	_bars[&"TOP SPEED"].value = clampf(inverse_lerp(23.0, 43.0, float(runtime.get(&"maximum_speed_mps", 0.0))) * 10.0, 0.0, 10.0)
+	_refresh_event_strategy()
 	_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
 	if Profile.is_setup_unlocked(setup):
 		_price_label.text = "INSTALLED" if setup == Profile.current_setup else "OWNED"
@@ -939,9 +1005,12 @@ func _refresh_workshop_summary() -> void:
 		float(runtime.get(&"maximum_speed_mps", 0.0)),
 	]
 
+	var first_run_path: bool = _is_pristine_first_run_context()
 	var championship: Variant = Profile.get_championship_service()
 	var championship_text := "DIRT TOUR  //  NOT STARTED"
-	if championship != null:
+	if first_run_path:
+		championship_text = "FIRST ROUTE\nQUARRY TRAIL  //  EVENT 01\nFINISH FOR REP + A PB"
+	elif championship != null:
 		var calendar: Array[Dictionary] = championship.get_calendar()
 		var next_round: Dictionary = championship.get_next_round()
 		var player_standing := "UNRANKED"
@@ -957,7 +1026,9 @@ func _refresh_workshop_summary() -> void:
 
 	var weekend_text := "WEEKEND  //  NOT ENTERED"
 	var weekend: Variant = Profile.get_race_weekend_director()
-	if weekend != null:
+	if first_run_path:
+		weekend_text = "TOUR PATH\nCLEAR 2 QUARRY EVENTS\nPINE, THEN RED MESA"
+	elif weekend != null:
 		weekend_text = "%s\nPHASE  %s  //  %d%%" % [
 			str(weekend.display_name).to_upper(), String(weekend.get_current_phase()),
 			int(round(weekend.get_progress_ratio() * 100.0)),
@@ -1200,18 +1271,24 @@ func _saved_build_projection(item: Dictionary) -> Dictionary:
 				&"action": "EMPTY  //  SELECT SAVE BUILD %s" % slot_label,
 				&"available": false,
 			}
+		var saved_fit := _saved_build_event_fit(saved)
 		return {
 			&"title": "LOAD BUILD %s" % slot_label,
-			&"detail": "%s  //  READY TO APPLY" % str(saved.get(&"display_name", "SAVED BUILD")),
+			&"detail": "%s  //  READY TO APPLY\nSELECTED EVENT  //  %s  //  %s" % [
+				str(saved.get(&"display_name", "SAVED BUILD")),
+				str(saved_fit.get(&"event_name", "EVENT")), str(saved_fit.get(&"fit_status", "ALTERNATE")),
+			],
 			&"build": _saved_build_summary(saved),
 			&"action": "%s  LOAD BUILD  //  CURRENT CONDITION IS PRESERVED" % confirm_label,
 			&"available": true,
 		}
 	var active_name := _current_saved_build_name()
+	var active_fit := _event_strategy_fit(EVENTS[_event_index], Profile.current_setup, _active_tune_id())
 	return {
 		&"title": "SAVE CURRENT  //  BUILD %s" % slot_label,
-		&"detail": "%s\n%s" % [
+		&"detail": "%s\nSELECTED EVENT  //  %s  //  %s\n%s" % [
 			active_name,
+			str(active_fit.get(&"event_name", "EVENT")), str(active_fit.get(&"fit_status", "ALTERNATE")),
 			"Replace this slot's configuration. Condition and odometer are never copied."
 			if occupied else "Store this configuration for one-step reuse across events.",
 		],
@@ -1377,10 +1454,19 @@ func _active_tune_name() -> String:
 	return "CUSTOM"
 
 
+func _active_tune_id() -> StringName:
+	var build: Dictionary = Profile.get_bike_build_snapshot(Profile.active_bike_id)
+	return _tune_id_for_dictionary(build.get(&"tune", {}) as Dictionary)
+
+
 func _current_saved_build_name() -> String:
+	var activity := EVENTS[_event_index]
+	var fit := _event_strategy_fit(activity, Profile.current_setup, _active_tune_id())
+	if _is_event_unlocked(activity) and bool(fit.get(&"full_match", false)):
+		return ("%s // %s" % [str(fit.get(&"event_name", "EVENT")), str(fit.get(&"focus", "PLAN"))]).substr(0, 40)
 	var definition: Dictionary = _bike_catalog.get_bike(Profile.active_bike_id)
 	var bike_name := str(definition.get(&"display_name", String(Profile.active_bike_id))).replace("_", " ")
-	return "%s  //  %s" % [bike_name.to_upper(), _active_tune_name().to_upper()]
+	return ("%s // %s" % [bike_name.to_upper(), _active_tune_name().to_upper()]).substr(0, 40)
 
 
 func _current_saved_build_summary() -> String:
@@ -1421,6 +1507,21 @@ func _tune_name_for_dictionary(tune: Dictionary) -> String:
 		if _tune_dictionaries_equal(preset.get(&"tune", {}) as Dictionary, tune):
 			return str(preset.get(&"display_name", "BALANCED"))
 	return "CUSTOM"
+
+
+func _tune_id_for_dictionary(tune: Dictionary) -> StringName:
+	for preset: Dictionary in TUNE_PRESETS:
+		if _tune_dictionaries_equal(preset.get(&"tune", {}) as Dictionary, tune):
+			return StringName(preset.get(&"preset_id", &"BALANCED"))
+	return &"CUSTOM"
+
+
+func _saved_build_event_fit(saved: Dictionary) -> Dictionary:
+	return _event_strategy_fit(
+		EVENTS[_event_index],
+		StringName(saved.get(&"setup_id", &"BALANCED")),
+		_tune_id_for_dictionary(saved.get(&"tune", {}) as Dictionary)
+	)
 
 
 func _tune_matches(build: Dictionary, tune: Dictionary) -> bool:
@@ -1600,6 +1701,7 @@ func _refresh_event() -> void:
 		_:
 			_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
 	var data := RaceEventCatalog.get_event(activity)
+	_refresh_garage_context(activity, data)
 	_event_label.text = "%s   //   EVENT %02d / %02d   //   %s" % [
 		str(data.get(&"display_name", String(activity))), _event_index + 1, EVENTS.size(),
 		StringName(data.get(&"format", activity)),
@@ -1619,6 +1721,59 @@ func _refresh_event() -> void:
 	if not is_unlocked and Profile.is_setup_unlocked(SETUPS[_selected_index]):
 		_status_label.text = "LOCKED   //   %s" % _event_unlock_hint(activity)
 		_status_label.modulate = Color("ff6f5e")
+
+
+func _refresh_event_strategy() -> void:
+	if _strategy_label == null:
+		return
+	var snapshot := get_event_strategy_presentation_snapshot()
+	var recommended_setup := String(snapshot.get(&"recommended_setup", &"BALANCED")).replace("_", " ")
+	var recommended_tune := String(snapshot.get(&"recommended_tune", &"BALANCED")).replace("_", " ")
+	var setup_owned := bool(snapshot.get(&"recommended_setup_owned", false))
+	var setup_affordable := bool(snapshot.get(&"recommended_setup_affordable", false))
+	var setup_price := int(snapshot.get(&"recommended_setup_price", 0))
+	var setup_shortfall := int(snapshot.get(&"recommended_setup_shortfall", 0))
+	var match_text := "MATCH" if bool(snapshot.get(&"ready_to_ride", false)) else "ALTERNATE BUILD"
+	if not setup_owned:
+		match_text = "KIT READY $%d" % setup_price if setup_affordable else "KIT $%d AWAY" % setup_shortfall
+	elif bool(snapshot.get(&"setup_match", false)) and not bool(snapshot.get(&"tune_match", false)):
+		match_text = "KIT MATCH"
+	_strategy_label.text = "EVENT PLAN  //  KIT %s + TUNE %s  //  %s  //  %s" % [
+		recommended_setup, recommended_tune, str(snapshot.get(&"focus", "READABLE PACE")), match_text,
+	]
+	_set_label_color(_strategy_label, CYAN if bool(snapshot.get(&"ready_to_ride", false)) else AMBER if setup_affordable and not setup_owned else CREAM)
+
+
+func _refresh_garage_context(activity: StringName, event_data: Dictionary) -> void:
+	if _garage_context_label == null:
+		return
+	if _is_pristine_first_run_context() and activity == INITIAL_EVENT:
+		_garage_context_label.text = "QUARRY TRAIL  //  FIRST EVENT READY"
+		return
+	if activity == &"ACADEMY":
+		_garage_context_label.text = "RIDING ACADEMY  //  OPTIONAL SKILLS COACHING"
+		return
+	var track_id := StringName(event_data.get(&"track_id", &""))
+	var district_name := "BACKCOUNTRY TOUR"
+	match track_id:
+		&"QUARRY": district_name = "QUARRY DISTRICT"
+		&"PINE": district_name = "PINE RIDGE"
+		&"MESA_MX": district_name = "RED MESA"
+	_garage_context_label.text = "%s  //  BUILD FOR THE SELECTED LINE" % district_name
+
+
+func _is_pristine_first_run_context() -> bool:
+	if not Profile.has_method(&"is_first_run_onboarding_active") or not Profile.is_first_run_onboarding_active():
+		return false
+	if _completed_event_count() > 0:
+		return false
+	var weekend: Variant = Profile.get_race_weekend_director()
+	if weekend == null:
+		return true
+	return (
+		StringName(weekend.get_current_phase()) == &"PRACTICE"
+		and weekend.session_results.is_empty()
+	)
 
 
 func _competition_session(activity: StringName) -> RaceSessionConfig:
@@ -1822,6 +1977,8 @@ func _refresh_event_competition(
 			event_round_number, round_total, table_text,
 			str(next_round.get(&"display_name", "SEASON COMPLETE")).to_upper(),
 		]
+	if _is_pristine_first_run_context() and activity == INITIAL_EVENT:
+		tour_text = "FIRST ROUTE  //  FINISH TO SET A PB"
 
 	var rival: Dictionary = briefing.get(&"rival", {}) as Dictionary
 	var rival_text := "TARGET --"
@@ -1942,11 +2099,11 @@ func _set_label_color(label: Label, color: Color) -> void:
 func _setup_data(setup: StringName) -> Dictionary:
 	match setup:
 		&"TRAIL":
-			return {&"name": "TRAIL KIT", &"tagline": "SOFT, SURE-FOOTED, HARD TO RATTLE", &"description": "More grip and forgiving suspension for rough ground. Gives up outright speed on the long quarry straights.", &"power": 5.0, &"grip": 9.0, &"suspension": 9.0, &"speed": 5.0}
+			return {&"name": "TRAIL KIT", &"tagline": "SOFT, SURE-FOOTED, HARD TO RATTLE", &"description": "Forgiving grip and soft suspension trade straight-line speed for control.", &"power": 5.0, &"grip": 9.0, &"suspension": 9.0, &"speed": 5.0}
 		&"ATTACK":
-			return {&"name": "ATTACK KIT", &"tagline": "POWER FIRST. CONSEQUENCES LATER.", &"description": "A harder engine map and stiff jump setup with less lateral grip. Fast in expert hands and busy everywhere else.", &"power": 9.0, &"grip": 5.0, &"suspension": 7.0, &"speed": 10.0}
+			return {&"name": "ATTACK KIT", &"tagline": "POWER FIRST. CONSEQUENCES LATER.", &"description": "Hard power and jump support trade lateral grip for expert pace.", &"power": 9.0, &"grip": 5.0, &"suspension": 7.0, &"speed": 10.0}
 		_:
-			return {&"name": "BALANCED", &"tagline": "THE BASELINE THAT NEVER MAKES EXCUSES", &"description": "Predictable power, useful grip, and enough suspension for every line in the quarry. The right setup for learning the course.", &"power": 7.0, &"grip": 7.0, &"suspension": 7.0, &"speed": 7.0}
+			return {&"name": "BALANCED", &"tagline": "THE BASELINE THAT NEVER MAKES EXCUSES", &"description": "Predictable power and grip make every Quarry line readable.", &"power": 7.0, &"grip": 7.0, &"suspension": 7.0, &"speed": 7.0}
 
 
 func _on_profile_changed(_cash: int, _reputation: int, _setup: StringName) -> void:

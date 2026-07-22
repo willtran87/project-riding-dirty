@@ -299,16 +299,18 @@ def verify_release() -> None:
     if "notifyHost('engine-ready')" not in html or "notifyHost('engine-error')" not in html:
         raise RuntimeError("Host readiness handshake missing from final shell")
     pck_bytes = (GAME_ROOT / str(config["mainPack"])).read_bytes()
-    banned_test_markers = (
+    banned_resource_markers = (
         b"features/testing",
         b"runtime_smoke_test",
         b"competitive_services_probe",
         b"mesa_mx_smoke",
         b"mesa_mx_visual_probe",
+        b"output/web-game",
+        b"Godot/",
     )
-    leaked_markers = [marker.decode("ascii") for marker in banned_test_markers if marker in pck_bytes]
+    leaked_markers = [marker.decode("ascii") for marker in banned_resource_markers if marker in pck_bytes]
     if leaked_markers:
-        raise RuntimeError(f"Test-only resources leaked into the release PCK: {leaked_markers}")
+        raise RuntimeError(f"Local-only resources leaked into the release PCK: {leaked_markers}")
 
 
 def main() -> int:

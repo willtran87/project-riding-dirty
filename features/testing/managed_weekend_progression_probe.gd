@@ -177,9 +177,12 @@ func _validate_garage_continue_action(qualified: RaceWeekendDirector, _non_quali
 	await get_tree().process_frame
 	garage.show_garage()
 	var action := garage.get_continue_weekend_snapshot()
+	var progression := garage.get_progression_presentation_snapshot()
 	var action_label := garage.get_node_or_null("GarageRoot/ContinueWeekendAction") as Label
 	_check(StringName(action.get(&"phase", &"")) == RaceWeekendDirector.MAIN, "Garage reads director's actual Main phase")
 	_check(StringName(action.get(&"activity", &"")) == &"MESA_MX", "Garage maps Main phase to MESA_MX")
+	_check(not bool(progression.get(&"first_run_path", true)), "Managed Main was mislabeled as a first-run path")
+	_check(str(progression.get(&"summary", "")).contains("PHASE  MAIN"), "Managed Main progression summary lost its active weekend state")
 	_check(action_label != null and action_label.visible and action_label.text.contains("CONTINUE"), "Continue Weekend action is production-visible")
 	_check(garage.continue_weekend(), "visible Continue Weekend action dispatches")
 	_check(_garage_launch_activity == &"MESA_MX", "Continue Weekend launches director's actual event")

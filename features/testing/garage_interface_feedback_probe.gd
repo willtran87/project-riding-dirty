@@ -30,6 +30,62 @@ func _run() -> void:
 		StringName(garage.get_event_briefing_presentation_snapshot().get(&"event_id", &"")) == &"CIRCUIT",
 		"Fresh Garage did not start at the first event"
 	)
+	var fresh_briefing_text := str(garage.get_event_briefing_presentation_snapshot().get(&"text", ""))
+	_check(fresh_briefing_text.contains("FIRST ROUTE"), "Fresh competition briefing does not reinforce the first route")
+	_check(not fresh_briefing_text.contains("NEXT RED MESA"), "Fresh competition briefing still leads toward a later district")
+	var fresh_progression := garage.get_progression_presentation_snapshot()
+	_check(bool(fresh_progression.get(&"first_run_path", false)), "Fresh Garage did not expose its first-run progression path")
+	_check(str(fresh_progression.get(&"context", "")).contains("QUARRY TRAIL"), "Fresh Garage context still leads with a later district")
+	var fresh_summary := str(fresh_progression.get(&"summary", ""))
+	_check(fresh_summary.contains("FIRST ROUTE") and fresh_summary.contains("EVENT 01"), "Fresh Garage summary does not identify the first route")
+	_check(fresh_summary.contains("CLEAR 2 QUARRY EVENTS"), "Fresh Garage summary omits the next concrete unlock goal")
+	_check(not fresh_summary.contains("PHASE  PRACTICE"), "Fresh Garage summary still presents a later weekend as active")
+	var fresh_strategy := garage.get_event_strategy_presentation_snapshot()
+	_check(StringName(fresh_strategy.get(&"event_id", &"")) == &"CIRCUIT", "Fresh strategy guidance targets the wrong event")
+	_check(StringName(fresh_strategy.get(&"recommended_setup", &"")) == &"BALANCED", "First event does not recommend the readable baseline kit")
+	_check(StringName(fresh_strategy.get(&"recommended_tune", &"")) == &"BALANCED", "First event does not recommend the readable baseline tune")
+	_check(bool(fresh_strategy.get(&"full_match", false)), "Fresh baseline build is not recognized as matching the first event plan")
+	_check(
+		str(fresh_strategy.get(&"label", "")).contains("EVENT PLAN")
+		and str(fresh_strategy.get(&"label", "")).ends_with("MATCH")
+		and not str(fresh_strategy.get(&"label", "")).ends_with("KIT MATCH"),
+		"First event strategy is absent or does not present its complete ready state: %s" % str(fresh_strategy.get(&"label", ""))
+	)
+	var strategy_signature := str(Profile.get_active_bike_setup_snapshot().get(&"signature", ""))
+	_check(garage.focus_event_briefing(&"PINE_ENDURO"), "Pine Enduro is absent from the Garage event list")
+	var pine_strategy := garage.get_event_strategy_presentation_snapshot()
+	_check(
+		StringName(pine_strategy.get(&"recommended_setup", &"")) == &"TRAIL"
+		and StringName(pine_strategy.get(&"recommended_tune", &"")) == &"ENDURO",
+		"Pine strategy does not expose its traction and compliance tradeoff"
+	)
+	_check(not bool(pine_strategy.get(&"full_match", true)), "Baseline build is incorrectly presented as the Pine-specific plan")
+	_check(
+		str(garage.get_event_briefing_presentation_snapshot().get(&"event_meta", "")).contains("TWO QUARRY EVENTS"),
+		"Pine unlock presentation does not name the authoritative Quarry-clear gate"
+	)
+	_check(
+		not bool(pine_strategy.get(&"recommended_setup_owned", true))
+		and int(pine_strategy.get(&"recommended_setup_price", -1)) == 750
+		and int(pine_strategy.get(&"recommended_setup_shortfall", -1)) == 750
+		and str(pine_strategy.get(&"label", "")).contains("KIT $750 AWAY"),
+		"Pine strategy does not disclose the fresh profile's exact Trail-kit path"
+	)
+	_check(garage.focus_event_briefing(&"MESA_RHYTHM"), "Rhythm Attack is absent from the Garage event list")
+	var rhythm_strategy := garage.get_event_strategy_presentation_snapshot()
+	_check(
+		StringName(rhythm_strategy.get(&"recommended_setup", &"")) == &"ATTACK"
+		and StringName(rhythm_strategy.get(&"recommended_tune", &"")) == &"RHYTHM",
+		"Rhythm strategy does not expose its jump-support tradeoff"
+	)
+	_check(
+		int(rhythm_strategy.get(&"recommended_setup_price", -1)) == 1_500
+		and int(rhythm_strategy.get(&"recommended_setup_shortfall", -1)) == 1_500
+		and str(rhythm_strategy.get(&"label", "")).contains("KIT $1500 AWAY"),
+		"Attack strategy does not disclose its exact progression price"
+	)
+	_check(str(Profile.get_active_bike_setup_snapshot().get(&"signature", "")) == strategy_signature, "Browsing strategy guidance mutated the active build")
+	_check(garage.focus_event_briefing(&"CIRCUIT"), "Probe could not return to the first Garage event")
 	var fresh_weekend_action := garage.get_continue_weekend_snapshot()
 	var weekend_action_label := garage.get_node_or_null("GarageRoot/ContinueWeekendAction") as Label
 	_check(not bool(fresh_weekend_action.get(&"available", true)), "Fresh profile unexpectedly unlocked the Red Mesa weekend")
@@ -66,7 +122,12 @@ func _run() -> void:
 	var saved_build := garage.confirm_workshop_item()
 	_expect_last_feedback(&"CONFIRM", &"WORKSHOP_ACTION", "Saving Build A")
 	_check(saved_build, "Workshop could not save Build A")
-	_check(not Profile.get_saved_bike_build_snapshot(&"BUILD_A").is_empty(), "Workshop save did not reach Profile")
+	var saved_a := Profile.get_saved_bike_build_snapshot(&"BUILD_A")
+	_check(not saved_a.is_empty(), "Workshop save did not reach Profile")
+	_check(
+		str(saved_a.get(&"display_name", "")) == "QUARRY TRAIL // LINE CONTROL",
+		"A full event-plan match did not receive a memorable event-focused build name"
+	)
 	_check(Profile.set_current_setup(&"TRAIL"), "Probe could not change setup before build reload")
 	garage.cycle_workshop_item(-1)
 	var loaded_build := garage.confirm_workshop_item()
@@ -74,6 +135,22 @@ func _run() -> void:
 	_check(loaded_build and Profile.current_setup == &"BALANCED", "Workshop load did not restore Build A")
 	var loaded_snapshot := garage.get_workshop_snapshot()
 	_check(str(loaded_snapshot.get(&"workshop_status", "")).contains("BUILD A LOADED"), "Build-load status is not explicit")
+	_check(
+		str(loaded_snapshot.get(&"workshop_detail", "")).contains("QUARRY TRAIL // LINE CONTROL")
+		and str(loaded_snapshot.get(&"workshop_detail", "")).contains("FULL PLAN MATCH"),
+		"Saved-build review does not connect the named build to its selected-event fit"
+	)
+	var loaded_signature := str(Profile.get_active_bike_setup_snapshot().get(&"signature", ""))
+	_check(garage.focus_event_briefing(&"PINE_ENDURO"), "Probe could not compare Build A against Pine")
+	var pine_build_detail := str(garage.get_workshop_snapshot().get(&"workshop_detail", ""))
+	_check(
+		pine_build_detail.contains("PINE RIDGE ENDURO")
+		and pine_build_detail.contains("ALTERNATE")
+		and pine_build_detail.contains("TRAIL + TUNE ENDURO"),
+		"Saved-build review does not expose the selected event's alternate plan"
+	)
+	_check(str(Profile.get_active_bike_setup_snapshot().get(&"signature", "")) == loaded_signature, "Saved-build comparison mutated the active setup")
+	_check(garage.focus_event_briefing(&"CIRCUIT"), "Probe could not return saved-build comparison to Quarry")
 	garage.cycle_workshop_item(1)
 	garage.cycle_workshop_item(1)
 	var before_empty_load := str(Profile.get_active_bike_setup_snapshot().get(&"signature", ""))

@@ -181,6 +181,28 @@ const EVENTS: Dictionary = {
 	},
 }
 
+## Advisory setup plans make the physical kit/tune tradeoffs discoverable without
+## turning them into mandatory loadouts. Race rules and run signatures remain the
+## authorities; these entries only explain a useful starting strategy.
+const EVENT_STRATEGIES: Dictionary = {
+	&"CIRCUIT": {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "LINE CONTROL", &"why": "Predictable grip makes alternate quarry lines easier to learn."},
+	&"PINE_ENDURO": {&"setup_id": &"TRAIL", &"tune_id": &"ENDURO", &"focus": "ROUGH GRIP", &"why": "Compliance and traction calm roots, creeks, and a long rough stage."},
+	&"MESA_PRACTICE": {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "CLEAN BASELINE", &"why": "A neutral baseline makes line and braking comparisons honest."},
+	&"MESA_QUALIFYING": {&"setup_id": &"BALANCED", &"tune_id": &"HARDPACK", &"focus": "LAP PRECISION", &"why": "Defined grip rewards two precise laps without nervous power delivery."},
+	&"MESA_HEAT": {&"setup_id": &"ATTACK", &"tune_id": &"HOLESHOT", &"focus": "GATE DRIVE", &"why": "Launch authority protects track position in a short transfer race."},
+	&"MESA_LCQ": {&"setup_id": &"ATTACK", &"tune_id": &"HOLESHOT", &"focus": "EARLY PASSES", &"why": "The last-chance format rewards an assertive gate and early passes."},
+	&"MESA_MX": {&"setup_id": &"ATTACK", &"tune_id": &"RHYTHM", &"focus": "JUMP FLOW", &"why": "Jump support helps connect the main event's fastest rhythm options."},
+	&"MESA_ELIMINATION": {&"setup_id": &"BALANCED", &"tune_id": &"HARDPACK", &"focus": "SAFE PACE", &"why": "Predictable pace and firm grip reduce costly last-place mistakes."},
+	&"MESA_RIVAL": {&"setup_id": &"ATTACK", &"tune_id": &"HARDPACK", &"focus": "DIRECT PACE", &"why": "With no traffic, direct power and precise lines can pressure Rook."},
+	&"MESA_ENDURANCE": {&"setup_id": &"TRAIL", &"tune_id": &"ENDURO", &"focus": "CONSISTENCY", &"why": "Forgiving control preserves consistency as condition and grip change."},
+	&"QUARRY_HILLCLIMB": {&"setup_id": &"ATTACK", &"tune_id": &"HARDPACK", &"focus": "CREST DRIVE", &"why": "Strong drive and a supported chassis suit steep, defined crests."},
+	&"PINE_WET": {&"setup_id": &"TRAIL", &"tune_id": &"ENDURO", &"focus": "WET TRACTION", &"why": "Maximum compliance and traction make wet roots less abrupt."},
+	&"MESA_RHYTHM": {&"setup_id": &"ATTACK", &"tune_id": &"RHYTHM", &"focus": "COMBO WINDOW", &"why": "Preload and damping widen the window for linked jump combos."},
+	&"ACADEMY": {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "RIDER TECHNIQUE", &"why": "Neutral behavior keeps each lesson focused on rider technique."},
+	&"FREESTYLE": {&"setup_id": &"ATTACK", &"tune_id": &"RHYTHM", &"focus": "AIR CONTROL", &"why": "Jump support creates more controllable airtime and combo options."},
+	&"DISCOVERY": {&"setup_id": &"TRAIL", &"tune_id": &"ENDURO", &"focus": "OFF-LINE GRIP", &"why": "Forgiving traction suits off-line cache routes and rough exploration."},
+}
+
 const CHAMPIONSHIP_POINTS: Array[int] = [25, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9]
 const WEEKEND_EVENT_PHASES: Dictionary[StringName, StringName] = {
 	&"MESA_PRACTICE": &"PRACTICE",
@@ -209,6 +231,37 @@ static func get_event(event_id: StringName) -> Dictionary:
 		var fallback: Dictionary = EVENTS[&"CIRCUIT"]
 		data = (EVENTS.get(event_id, fallback) as Dictionary).duplicate(true)
 	return _with_retention_contract(event_id, data)
+
+
+static func get_event_strategy(event_id: StringName) -> Dictionary:
+	## Suggestions are intentionally presentation-only. Challenge setup rules take
+	## precedence so the Garage never recommends an invalid competitive signature.
+	var data := get_event(event_id)
+	if is_challenge_event(event_id):
+		var rules := data.get(&"rules", {}) as Dictionary
+		var required_setup := StringName(rules.get(&"competitive_setup_id", &"BALANCED"))
+		return {
+			&"setup_id": required_setup,
+			&"tune_id": _challenge_tune_strategy(data),
+			&"focus": "RULES FIT",
+			&"why": "Matches the rotating rules while tuning for this surface and format.",
+			&"challenge_rule": true,
+		}
+	var fallback := {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "READABLE PACE", &"why": "A neutral baseline keeps the event readable before specializing."}
+	return (EVENT_STRATEGIES.get(event_id, fallback) as Dictionary).duplicate(true)
+
+
+static func _challenge_tune_strategy(data: Dictionary) -> StringName:
+	var format := StringName(data.get(&"format", &"TIME_ATTACK"))
+	var track_id := StringName(data.get(&"track_id", CourseCatalog.QUARRY_ID))
+	var surface := StringName(data.get(&"surface_modifier", &"PACKED"))
+	if surface in [&"WET", &"MUD"] or track_id == CourseCatalog.PINE_ID:
+		return &"ENDURO"
+	if format in [&"RHYTHM", &"FREESTYLE"]:
+		return &"RHYTHM"
+	if format in [&"HEAT", &"LCQ", &"RIVAL_DUEL"]:
+		return &"HOLESHOT"
+	return &"HARDPACK"
 
 
 static func get_session_config(event_id: StringName, difficulty: int = -1, bike_class: StringName = &"OPEN") -> RaceSessionConfig:
