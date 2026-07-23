@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://features/input/touch_riding_controls.gd" id="1_touch"]
+
+[node name="TouchRidingControls" type="CanvasLayer" groups=["touch_controls"]]
+unique_name_in_owner = true
+layer = 90
+script = ExtResource("1_touch")

@@ -1,38 +1,48 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://entities/bike/bike_controller.gd" id="1_controller"]
 [ext_resource type="Script" path="res://entities/bike/bike_visual.gd" id="2_visual"]
 [ext_resource type="Script" path="res://entities/bike/engine_audio.gd" id="3_audio"]
 
-[sub_resource type="BoxShape3D" id="BoxShape_bike"]
-size = Vector3(0.58, 0.5, 1.78)
+[sub_resource type="CapsuleShape3D" id="CapsuleShape_bike"]
+radius = 0.31
+height = 1.197989
 
 [sub_resource type="PhysicsMaterial" id="PhysicsMaterial_bike"]
-friction = 0.72
-bounce = 0.05
+friction = 0.65
+bounce = 0.02
+
+[sub_resource type="SphereShape3D" id="SphereShape_barrier_wheel"]
+radius = 0.334
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape_barrier_bars"]
+radius = 0.045
+height = 0.93
 
 [node name="Bike" type="RigidBody3D" groups=["player"]]
 unique_name_in_owner = true
 collision_layer = 1
 collision_mask = 2
-mass = 138.0
+mass = 200.0
+gravity_scale = 0.612245
 physics_material_override = SubResource("PhysicsMaterial_bike")
 continuous_cd = true
 contact_monitor = true
 max_contacts_reported = 8
 center_of_mass_mode = 1
-center_of_mass = Vector3(0, -0.48, 0.08)
-linear_damp = 0.05
-angular_damp = 0.22
+center_of_mass = Vector3(0, -0.22, 0.1)
+linear_damp = 0.0
+angular_damp = 0.0
 script = ExtResource("1_controller")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
-position = Vector3(0, 0.16, 0.04)
-shape = SubResource("BoxShape_bike")
+position = Vector3(0, 0.16, 0.130365)
+rotation = Vector3(1.5708, 0, 0)
+shape = SubResource("CapsuleShape_bike")
 
 [node name="FrontSuspension" type="RayCast3D" parent="."]
 unique_name_in_owner = true
-position = Vector3(0, 0.25, -1.18)
+position = Vector3(0, 0.25, -0.594)
 target_position = Vector3(0, -1.25, 0)
 collision_mask = 2
 exclude_parent = true
@@ -40,10 +50,44 @@ enabled = true
 
 [node name="RearSuspension" type="RayCast3D" parent="."]
 unique_name_in_owner = true
-position = Vector3(0, 0.25, 1.05)
+position = Vector3(0, 0.25, 0.74329)
 target_position = Vector3(0, -1.25, 0)
 collision_mask = 2
 exclude_parent = true
+enabled = true
+
+[node name="BarrierFrontEnvelope" type="ShapeCast3D" parent="."]
+unique_name_in_owner = true
+position = Vector3(0, -0.35, -0.594)
+target_position = Vector3(0, 0, -0.001)
+margin = 0.02
+max_results = 32
+collision_mask = 2
+exclude_parent = true
+shape = SubResource("SphereShape_barrier_wheel")
+enabled = true
+
+[node name="BarrierRearEnvelope" type="ShapeCast3D" parent="."]
+unique_name_in_owner = true
+position = Vector3(0, -0.35, 0.74329)
+target_position = Vector3(0, 0, -0.001)
+margin = 0.02
+max_results = 32
+collision_mask = 2
+exclude_parent = true
+shape = SubResource("SphereShape_barrier_wheel")
+enabled = true
+
+[node name="BarrierHandlebarEnvelope" type="ShapeCast3D" parent="."]
+unique_name_in_owner = true
+position = Vector3(0, 0.82, -0.371119)
+rotation = Vector3(0, 0, 1.5708)
+target_position = Vector3(0, 0, -0.001)
+margin = 0.02
+max_results = 32
+collision_mask = 2
+exclude_parent = true
+shape = SubResource("CapsuleShape_barrier_bars")
 enabled = true
 
 [node name="BikeVisual" type="Node3D" parent="."]
@@ -53,4 +97,3 @@ script = ExtResource("2_visual")
 [node name="EngineAudio" type="AudioStreamPlayer3D" parent="."]
 unique_name_in_owner = true
 script = ExtResource("3_audio")
-

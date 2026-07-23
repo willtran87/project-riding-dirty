@@ -1,0 +1,27 @@
+{
+  "assets": {
+    "audio_position_worklet": {
+      "bytes": 2973,
+      "file": "index.9778df3b5d0e.audio.position.worklet.js",
+      "sha256": "be33985bc7160d6bf9646f259cd86b259cd67b02ccb297ee5c44f8ac84327bc8"
+    },
+    "audio_worklet": {
+      "bytes": 7298,
+      "file": "index.9778df3b5d0e.audio.worklet.js",
+      "sha256": "5b476a9c9ce642c0ee4256436d1bc31d9c38f868aca0f9a8e2a57c18d2dec2a3"
+    },
+    "pck": {
+      "bytes": 5103684,
+      "file": "index.d53c48f2c046.pck",
+      "sha256": "d53c48f2c046d04bbfdbcfdb9d8a0dfd57188106339dbabcec18a65986413ffd"
+    },
+    "wasm": {
+      "bytes": 38814086,
+      "file": "index.9778df3b5d0e.wasm",
+      "runtime_bundle_sha256": "9778df3b5d0eb131a6415e78f101ab4f07b6a41ab2dac25204ad40d4b06a59f1",
+      "sha256": "5f424353884e68cd480a813678be02e0e4525531764c36002980c1c2c927b0da"
+    }
+  },
+  "build": "racecraft-v28",
+  "version": "0.3.8-racecraft-v28"
+}

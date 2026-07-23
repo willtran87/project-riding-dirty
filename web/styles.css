@@ -102,7 +102,8 @@ button, a { font: inherit; }
   cursor: pointer;
 }
 
-.icon-button:hover, .icon-button:focus-visible { border-color: rgba(255, 106, 26, .75); outline: none; }
+.icon-button:hover { border-color: rgba(255, 106, 26, .75); }
+.icon-button:focus-visible { border-color: rgba(255, 106, 26, .9); outline: 2px solid #fff; outline-offset: 3px; }
 .icon-button svg { width: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .icon-button span { font-size: 11px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
 
@@ -138,6 +139,59 @@ button, a { font: inherit; }
 }
 
 #gameFrame { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; border: 0; background: #111; }
+
+.orientation-notice {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  color: var(--ink);
+  text-align: center;
+  background: rgba(10, 12, 10, .94);
+}
+
+.orientation-notice span { color: var(--orange); font-size: 58px; line-height: 1; }
+.orientation-notice strong { font-size: 24px; letter-spacing: .13em; }
+.orientation-notice small { color: var(--muted); font: 700 12px/1.4 system-ui, sans-serif; }
+
+/* The Godot viewport is authored at 16:9. Once live, keep the host frame on
+   that same stage ratio so "keep" stretch never crops the sides of the HUD. */
+.game-stage.is-running {
+  min-height: 0;
+  height: auto;
+  aspect-ratio: 16 / 9;
+}
+
+/* Once the engine is running, the race is the product. Use the available
+   viewport at every desktop width instead of leaving the launch-page notes
+   rail and a large band of unused space beside or below the 16:9 canvas. */
+.app-shell.is-playing {
+  --playing-chrome: 102px;
+  width: 100%;
+  max-width: none;
+  padding: clamp(10px, 1.25vw, 22px);
+}
+
+.app-shell.is-playing .topbar { margin-bottom: 8px; }
+.app-shell.is-playing .game-layout { display: block; }
+.app-shell.is-playing .ride-card,
+.app-shell.is-playing .stage-footer { display: none; }
+.app-shell.is-playing .game-stage {
+  width: min(100%, calc((100dvh - var(--playing-chrome)) * 16 / 9));
+  margin-inline: auto;
+}
+
+.game-stage:fullscreen {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  aspect-ratio: auto;
+  border: 0;
+}
 
 .start-panel, .loading-panel {
   position: absolute;
@@ -180,13 +234,15 @@ button, a { font: inherit; }
 
 .start-button:hover, .start-button:focus-visible { background: #ff8a46; outline: 2px solid #fff; outline-offset: 3px; }
 .start-button b { font-size: 22px; }
-.start-hint { margin: 12px 0 0; color: var(--muted); font-family: system-ui, sans-serif; font-size: 11px; }
+.start-hint { margin: 12px 0 0; color: var(--muted); font-family: system-ui, sans-serif; font-size: 10px; font-weight: 750; letter-spacing: .08em; }
+.start-feedback { max-width: 530px; margin: 14px 0 0; padding: 10px 12px; color: #ffd8c1; border-left: 3px solid var(--orange); background: rgba(255, 106, 26, .1); font-family: system-ui, sans-serif; font-size: 12px; }
 
 .loading-panel { align-items: center; justify-content: center; gap: 8px; background: rgba(15,17,14,.96); }
 .loading-panel[hidden] { display: none; }
 .loading-panel strong { margin-top: 15px; font-size: 14px; letter-spacing: .18em; }
 .loading-panel span { color: var(--muted); font-family: system-ui, sans-serif; font-size: 12px; }
 .loader-wheel { width: 46px; height: 46px; border: 4px solid rgba(255,255,255,.12); border-top-color: var(--orange); border-radius: 50%; animation: spin .8s linear infinite; }
+.loading-panel progress { width: min(320px, 70%); height: 8px; margin-top: 10px; accent-color: var(--orange); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .stage-footer { display: flex; justify-content: space-between; gap: 18px; padding: 12px 2px 0; color: #777a70; font-size: 9px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
@@ -204,20 +260,38 @@ button, a { font: inherit; }
 
 .ride-card h2 { margin: 7px 0 22px; font-size: 31px; text-transform: uppercase; letter-spacing: -.025em; }
 .controls-grid { display: grid; gap: 14px; margin: 0; }
-.controls-grid div { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.controls-grid div { display: grid; grid-template-columns: 76px 1fr; gap: 10px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .controls-grid dt { color: var(--ink); font-size: 11px; font-weight: 900; letter-spacing: .08em; }
 .controls-grid dd { margin: 0; color: var(--muted); font-family: system-ui, sans-serif; font-size: 11px; }
+.advanced-controls { margin-top: 13px; border-bottom: 1px solid var(--line); }
+.advanced-controls summary { padding: 0 0 11px; color: var(--muted); font-size: 10px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+.advanced-controls summary:hover { color: var(--ink); }
+.advanced-controls summary:focus-visible { color: var(--ink); outline: 2px solid var(--orange); outline-offset: 4px; }
+.advanced-grid { display: grid; gap: 8px; margin: 0 0 13px; padding: 0; }
+.advanced-grid div { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
+.advanced-grid dt { color: var(--ink); font-size: 10px; font-weight: 900; }
+.advanced-grid dd { margin: 0; color: var(--muted); font-family: system-ui, sans-serif; font-size: 10px; }
 .event-list ul { display: grid; gap: 13px; margin: 17px 0 0; padding: 0; list-style: none; }
 .event-list li { display: flex; align-items: center; gap: 10px; color: #c9c8bd; font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .event-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--orange); }
 .event-dot.green { background: #8db76b; }.event-dot.blue { background: #54a4c9; }.event-dot.gold { background: #d9ad55; }
 .save-note { margin: 0; padding: 15px; color: var(--muted); border-left: 2px solid var(--green); background: rgba(159,199,68,.06); font-family: system-ui, sans-serif; font-size: 10px; line-height: 1.5; }
 
-@media (max-width: 1050px) {
+/* The authored game viewport is 1600x900. Below this breakpoint the notes rail
+   made the live canvas too small to read, so the race becomes the sole visual
+   priority while running and the reference material moves below the fold. */
+@media (max-width: 1450px) {
   .game-layout { grid-template-columns: 1fr; }
-  .game-stage { height: min(68vh, 760px); }
-  .ride-card { display: grid; grid-template-columns: 1.4fr 1fr; }
+  .game-stage { height: min(70vh, 760px); }
+  .ride-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(230px, 1fr); }
+  .controls-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 18px; }
+  .controls-grid div { grid-template-columns: 76px 1fr; }
   .save-note { grid-column: 1 / -1; }
+
+  .app-shell.is-playing {
+    --playing-chrome: 80px;
+    padding: 12px;
+  }
 }
 
 @media (max-width: 620px) {
@@ -226,14 +300,36 @@ button, a { font: inherit; }
   .build-status, .icon-button span { display: none; }
   .icon-button { padding: 0 11px; }
   .game-stage { min-height: 350px; height: 58vh; }
-  .game-stage.is-running { min-height: 0; height: auto; aspect-ratio: 16 / 9; }
   .start-panel { padding: 25px; }
   .start-copy h1 { font-size: clamp(43px, 16vw, 72px); }
   .stage-footer { display: none; }
   .ride-card { grid-template-columns: 1fr; }
+  .controls-grid { grid-template-columns: 1fr; }
   .save-note { grid-column: auto; }
 }
 
+@media (pointer: coarse) and (orientation: landscape) {
+  .app-shell.is-playing {
+    --playing-chrome: calc(max(4px, env(safe-area-inset-top)) + max(4px, env(safe-area-inset-bottom)));
+    padding-top: max(4px, env(safe-area-inset-top));
+    padding-right: max(4px, env(safe-area-inset-right));
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+    padding-left: max(4px, env(safe-area-inset-left));
+  }
+  .app-shell.is-playing .topbar { display: none; }
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .app-shell.is-playing .orientation-notice { display: grid; }
+  .app-shell.is-playing #gameFrame { filter: saturate(.4) brightness(.32); pointer-events: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .loader-wheel { animation-duration: 2s; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .loader-wheel { animation: none; border-color: var(--orange); }
 }

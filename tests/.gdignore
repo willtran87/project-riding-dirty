@@ -1,0 +1,1 @@
+# Keep delivery-only Python tests outside Godot's resource scan and Web PCK.

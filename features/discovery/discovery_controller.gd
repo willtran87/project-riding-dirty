@@ -5,6 +5,7 @@ class_name DiscoveryController
 signal hud_updated(elapsed_usec: int, current: int, total: int, compass_angle: float, distance: float)
 
 const SPAWN_TRANSFORM := Transform3D(Basis.IDENTITY, Vector3(0.0, 1.4, 31.0))
+const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 const PICKUP_POSITIONS: Array[Vector3] = [
 	Vector3(-38.0, 1.25, 23.0),
 	Vector3(24.0, 1.25, 29.0),
@@ -19,14 +20,16 @@ var ghost: GhostController
 var active: bool = false
 var collected_count: int = 0
 
-var _start_usec: int = 0
+var _run_clock: SimulationClock = SIMULATION_CLOCK_SCRIPT.new()
 var _pickups: Array[Area3D] = []
+var _attempt_context: Dictionary = {}
+var _pending_submission: Dictionary = {}
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if not active or bike == null:
 		return
-	var elapsed_usec := Time.get_ticks_usec() - _start_usec
+	var elapsed_usec := _run_clock.advance(delta)
 	var nearest: Area3D = _find_nearest_pickup()
 	var compass_angle := 0.0
 	var distance := 0.0
@@ -52,20 +55,43 @@ func initialize(player_bike: DirtBikeController, ghost_controller: GhostControll
 func start_hunt() -> void:
 	if bike == null or ghost == null:
 		return
+	# Preserve a failed durable settlement until the rider explicitly retries it.
+	# Starting a new hunt first would overwrite the Profile run authority and turn
+	# a recoverable save failure into permanent progress loss.
+	if not _pending_submission.is_empty():
+		# Re-establish Main's run-keyed settlement baseline without restarting the
+		# physical hunt or its run-scoped RideDirector systems.
+		EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
+		_settle_pending_submission()
+		return
+	var attempt: Dictionary = Profile.begin_activity_run(&"DISCOVERY")
+	_attempt_context = attempt.duplicate(true)
+	if not bool(attempt.get(&"accepted", false)):
+		active = false
+		bike.set_controls_enabled(false)
+		EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
+		EventBus.activity_completed.emit(_begin_failure_receipt(attempt))
+		return
 	_cleanup_pickups()
 	active = true
 	collected_count = 0
-	_start_usec = Time.get_ticks_usec()
+	_run_clock.reset()
 	bike.respawn_at(SPAWN_TRANSFORM)
+	bike.set_motion_locked(false)
 	bike.set_controls_enabled(true)
 	ghost.cancel_run()
 	_spawn_pickups()
 	EventBus.activity_started.emit(&"DISCOVERY")
+	EventBus.activity_attempt_started.emit(_attempt_context.duplicate(true))
 	EventBus.discovery_progress_changed.emit(0, PICKUP_POSITIONS.size())
 
 
 func enter_waiting() -> void:
 	active = false
+	if _pending_submission.is_empty() and Profile.has_method(&"abandon_activity_run"):
+		Profile.call(
+			&"abandon_activity_run", &"DISCOVERY", str(_attempt_context.get(&"run_id", ""))
+		)
 	_cleanup_pickups()
 	if bike != null:
 		bike.set_controls_enabled(false)
@@ -83,6 +109,18 @@ func get_active_pickup_count() -> int:
 		if is_instance_valid(pickup) and not bool(pickup.get_meta(&"collected", false)):
 			count += 1
 	return count
+
+
+func get_activity_attempt_context() -> Dictionary:
+	return _attempt_context.duplicate(true)
+
+
+func has_pending_settlement() -> bool:
+	return not _pending_submission.is_empty()
+
+
+func get_elapsed_usec() -> int:
+	return _run_clock.elapsed_usec
 
 
 func _spawn_pickups() -> void:
@@ -231,17 +269,64 @@ func _finish_hunt() -> void:
 		return
 	active = false
 	bike.set_controls_enabled(false)
-	var elapsed_usec := Time.get_ticks_usec() - _start_usec
-	var medal := _medal_for_time(elapsed_usec)
-	var is_new_best := Profile.best_discovery_usec < 0 or elapsed_usec < Profile.best_discovery_usec
-	EventBus.activity_completed.emit(&"DISCOVERY", elapsed_usec, medal, is_new_best)
+	_pending_submission = {
+		&"schema_version": 1,
+		&"activity_id": &"DISCOVERY",
+		&"run_id": str(_attempt_context.get(&"run_id", "")),
+		&"result_value": _run_clock.elapsed_usec,
+	}
+	_settle_pending_submission()
 
 
-func _medal_for_time(elapsed_usec: int) -> StringName:
-	if elapsed_usec <= 50_000_000:
-		return &"GOLD"
-	if elapsed_usec <= 80_000_000:
-		return &"SILVER"
-	if elapsed_usec <= 120_000_000:
-		return &"BRONZE"
-	return &"FINISHER"
+func _settle_pending_submission() -> Dictionary:
+	if _pending_submission.is_empty():
+		return {}
+	var submission := _pending_submission.duplicate(true)
+	var receipt: Dictionary = Profile.record_activity_result(submission)
+	receipt = _normalize_receipt(receipt, submission)
+	var terminal := (
+		bool(receipt.get(&"accepted", false))
+		or bool(receipt.get(&"duplicate", false))
+		or not bool(receipt.get(&"retryable", false))
+	)
+	if terminal:
+		_pending_submission.clear()
+	EventBus.activity_completed.emit(receipt.duplicate(true))
+	return receipt
+
+
+func _normalize_receipt(receipt: Dictionary, submission: Dictionary) -> Dictionary:
+	var normalized := receipt.duplicate(true)
+	normalized[&"schema_version"] = int(normalized.get(&"schema_version", submission.get(&"schema_version", 1)))
+	normalized[&"activity_id"] = StringName(normalized.get(
+		&"activity_id", submission.get(&"activity_id", &"DISCOVERY")
+	))
+	normalized[&"run_id"] = str(normalized.get(&"run_id", submission.get(&"run_id", "")))
+	normalized[&"result_value"] = int(normalized.get(&"result_value", submission.get(&"result_value", 0)))
+	normalized[&"accepted"] = bool(normalized.get(&"accepted", false))
+	normalized[&"duplicate"] = bool(normalized.get(&"duplicate", false))
+	normalized[&"durable"] = bool(normalized.get(&"durable", false))
+	normalized[&"retryable"] = bool(normalized.get(&"retryable", false))
+	normalized[&"reason"] = StringName(normalized.get(&"reason", &"UNKNOWN"))
+	var rewards_value: Variant = normalized.get(&"rewards_granted", {})
+	normalized[&"rewards_granted"] = (
+		(rewards_value as Dictionary).duplicate(true)
+		if rewards_value is Dictionary
+		else {&"cash": 0, &"reputation": 0}
+	)
+	return normalized
+
+
+func _begin_failure_receipt(attempt: Dictionary) -> Dictionary:
+	return {
+		&"accepted": false,
+		&"duplicate": false,
+		&"durable": false,
+		&"retryable": bool(attempt.get(&"retryable", false)),
+		&"reason": StringName(attempt.get(&"reason", &"RUN_START_FAILED")),
+		&"schema_version": int(attempt.get(&"schema_version", 1)),
+		&"activity_id": &"DISCOVERY",
+		&"run_id": str(attempt.get(&"run_id", "")),
+		&"result_value": 0,
+		&"rewards_granted": {&"cash": 0, &"reputation": 0},
+	}

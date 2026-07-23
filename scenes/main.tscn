@@ -1,28 +1,26 @@
-[gd_scene load_steps=16 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="Script" path="res://scenes/main.gd" id="1_main"]
-[ext_resource type="PackedScene" path="res://levels/quarry/quarry.tscn" id="2_quarry"]
 [ext_resource type="PackedScene" path="res://entities/bike/bike.tscn" id="3_bike"]
 [ext_resource type="PackedScene" path="res://features/camera/chase_camera.tscn" id="4_camera"]
 [ext_resource type="PackedScene" path="res://features/race/race_controller.tscn" id="5_race"]
 [ext_resource type="PackedScene" path="res://features/race/ghost_controller.tscn" id="6_ghost"]
 [ext_resource type="PackedScene" path="res://features/hud/race_hud.tscn" id="7_hud"]
-[ext_resource type="Script" path="res://features/testing/runtime_smoke_test.gd" id="8_smoke"]
 [ext_resource type="PackedScene" path="res://features/garage/garage_ui.tscn" id="9_garage"]
 [ext_resource type="PackedScene" path="res://features/freestyle/freestyle_controller.tscn" id="10_freestyle"]
 [ext_resource type="PackedScene" path="res://features/discovery/discovery_controller.tscn" id="11_discovery"]
-[ext_resource type="PackedScene" path="res://levels/pine_ridge/pine_ridge.tscn" id="12_pine"]
 [ext_resource type="PackedScene" path="res://features/tour/district_transition.tscn" id="13_transition"]
 [ext_resource type="Script" path="res://features/audio/gameplay_audio.gd" id="14_audio"]
 [ext_resource type="Script" path="res://features/ride/ride_director.gd" id="15_ride"]
 [ext_resource type="Script" path="res://features/environment/atmosphere_director.gd" id="16_atmosphere"]
+[ext_resource type="Script" path="res://features/race/race_services.gd" id="18_services"]
+[ext_resource type="PackedScene" path="res://features/input/touch_riding_controls.tscn" id="19_touch_controls"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
 
-[node name="Quarry" parent="." instance=ExtResource("2_quarry")]
-
-[node name="PineRidge" parent="." instance=ExtResource("12_pine")]
+[node name="LevelRoot" type="Node3D" parent="."]
+unique_name_in_owner = true
 
 [node name="Bike" parent="." instance=ExtResource("3_bike")]
 
@@ -34,11 +32,9 @@ script = ExtResource("1_main")
 
 [node name="RaceHud" parent="." instance=ExtResource("7_hud")]
 
-[node name="RuntimeSmokeTest" type="Node" parent="."]
-unique_name_in_owner = true
-script = ExtResource("8_smoke")
-
 [node name="GarageUi" parent="." instance=ExtResource("9_garage")]
+
+[node name="TouchRidingControls" parent="." instance=ExtResource("19_touch_controls")]
 
 [node name="FreestyleController" parent="." instance=ExtResource("10_freestyle")]
 
@@ -57,3 +53,7 @@ script = ExtResource("15_ride")
 [node name="AtmosphereDirector" type="Node3D" parent="."]
 unique_name_in_owner = true
 script = ExtResource("16_atmosphere")
+
+[node name="RaceServices" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("18_services")

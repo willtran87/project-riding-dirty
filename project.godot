@@ -1,14 +1,23 @@
 ; Engine configuration file.
-; Edit through the Godot editor where possible.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
 [application]
 
 config/name="Riding Dirty"
-config/description="A stylized arcade-physics dirt-bike time trial."
+config/description="A full-featured arcade-physics dirt-bike racing tour."
+config/version="0.3.8-racecraft-v28"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
+boot_splash/bg_color=Color(0.0627, 0.0706, 0.0588, 1)
+boot_splash/show_image=false
+config/icon="res://assets/branding/riding_dirty_mark.svg"
 
 [autoload]
 
@@ -25,23 +34,17 @@ window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="canvas_items"
 
-[audio]
-
-general/default_playback_type.web=1
-
-[physics]
-
-common/physics_ticks_per_second=60
-3d/default_gravity=19.6
-
 [layer_names]
 
 3d_physics/layer_1="Player"
 3d_physics/layer_2="World"
 
+[physics]
+
+3d/default_gravity=19.6
+
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-textures/default_filters/use_nearest_mipmap_filter=false
 environment/defaults/default_clear_color=Color(0.075, 0.105, 0.14, 1)

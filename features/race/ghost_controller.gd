@@ -3,9 +3,13 @@ class_name GhostController
 ## Records transforms at 10 Hz, persists the best run, and interpolates a collision-free ghost.
 
 const SAMPLE_INTERVAL: float = 0.1
+const PLAYER_GRID_PROGRESS_METERS: float = 2.0
+const RIVAL_START_LEAD_METERS: float = 4.5
+const RIVAL_RIDE_HEIGHT_METERS: float = 0.75
 
 var target: Node3D
 var best_time_usec: int = -1
+var persistence_enabled: bool = true
 
 var _ghost_root: Node3D
 var _recording: Array[Dictionary] = []
@@ -18,6 +22,7 @@ var _record_slot: StringName = &"quarry"
 var _rival_root: Node3D
 var _rival_curve: Curve3D
 var _rival_target_seconds: float = 0.0
+var _rival_source_points := PackedVector3Array()
 
 
 func _ready() -> void:
@@ -65,7 +70,8 @@ func finish_run(time_usec: int, is_new_best: bool) -> void:
 	if is_new_best and _recording.size() >= 2:
 		best_time_usec = time_usec
 		_best_frames = _recording.duplicate(true)
-		_save_best_run()
+		if persistence_enabled:
+			_save_best_run()
 
 
 func cancel_run() -> void:
@@ -75,18 +81,54 @@ func cancel_run() -> void:
 	_elapsed = 0.0
 
 
-func configure_rival(points: Array[Vector3], target_usec: int) -> void:
+func configure_rival(
+	points: Array[Vector3],
+	target_usec: int,
+	laps: int = 1,
+	closed_route: bool = false,
+	enabled: bool = true
+) -> void:
 	_rival_curve = null
+	_rival_source_points = PackedVector3Array(points)
 	_rival_target_seconds = maxf(float(target_usec) / 1_000_000.0, 0.0)
 	_rival_root.visible = false
-	if points.size() < 2 or target_usec <= 0:
+	if not enabled or points.size() < 2 or target_usec <= 0:
 		return
+	var playback_points: Array[Vector3] = points.duplicate()
+	if closed_route and laps > 1:
+		for _lap: int in range(1, laps):
+			if playback_points[-1].distance_to(points[0]) > 0.05:
+				playback_points.append(points[0])
+			for point_index: int in range(1, points.size()):
+				playback_points.append(points[point_index])
 	_rival_curve = Curve3D.new()
 	_rival_curve.bake_interval = 1.6
-	for point: Vector3 in points:
-		var rider_point := point
-		rider_point.y = 1.4
+	# Rook is non-physical, so allowing its translucent footprint to start behind
+	# the grid makes it visibly sweep through the player's bike at GO. Start it a
+	# full bike-length gap ahead of the player and discard the already-covered
+	# route points. That preserves a forward-only playback curve with no launch
+	# strafe or backtracking.
+	var packed_points := PackedVector3Array(playback_points)
+	var opening_direction := CourseSpline.tangent_at(packed_points, 1)
+	var opening_normal := Basis.looking_at(opening_direction, Vector3.UP).y
+	var rival_start_progress := PLAYER_GRID_PROGRESS_METERS + RIVAL_START_LEAD_METERS
+	var rival_start := playback_points[0] + opening_direction * rival_start_progress
+	_rival_curve.add_point(rival_start + opening_normal * RIVAL_RIDE_HEIGHT_METERS)
+	var route_progress := 0.0
+	for index: int in range(1, playback_points.size()):
+		route_progress += playback_points[index - 1].distance_to(playback_points[index])
+		if route_progress <= rival_start_progress:
+			continue
+		var previous := playback_points[maxi(index - 1, 0)]
+		var following := playback_points[mini(index + 1, playback_points.size() - 1)]
+		var direction := (following - previous).normalized()
+		var trail_normal := Basis.looking_at(direction, Vector3.UP).y
+		var rider_point := playback_points[index] + trail_normal * RIVAL_RIDE_HEIGHT_METERS
 		_rival_curve.add_point(rider_point)
+
+
+func get_rival_source_points() -> PackedVector3Array:
+	return _rival_source_points.duplicate()
 
 
 func is_rival_configured() -> bool:
