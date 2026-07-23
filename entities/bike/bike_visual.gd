@@ -176,7 +176,14 @@ func burst_landing_dust(
 
 
 func burst_boost() -> void:
-	_boost_burst.restart()
+	if _boost_burst != null:
+		_boost_burst.restart()
+	elif pack_variant and _roost != null:
+		# Pack bikes retain the two-emitter Web budget. A sharp roost restart,
+		# followed by the sustained attack pose below, makes their spend readable
+		# without allocating two more GPU systems to every opponent.
+		_roost.restart()
+		_roost.emitting = true
 
 
 func reset_terrain_feedback() -> void:
@@ -295,7 +302,8 @@ func update_pack_pose(
 	suspension_activity: float = 0.0,
 	surface: StringName = &"PACKED",
 	landing_event: bool = false,
-	landing_quality: float = 1.0
+	landing_quality: float = 1.0,
+	boosting: bool = false
 ) -> void:
 	# Pack bikes use the exact player silhouette and articulated rider. Their
 	# feedback emitters are deliberately smaller than the player's and omit the
@@ -315,8 +323,12 @@ func update_pack_pose(
 	_update_suspension_geometry(-0.39 + fork_chatter, -0.39 + rear_chatter)
 	_rider_root.position.y = 0.15 + (fork_chatter + rear_chatter) * 0.32
 	_rider_root.rotation.z = lerpf(_rider_root.rotation.z, -corner_lean * 0.16, 1.0 - exp(-8.0 * safe_delta))
-	_rider_torso_root.rotation.x = lerpf(_rider_torso_root.rotation.x, -0.13, 1.0 - exp(-8.0 * safe_delta))
-	_update_rider_limbs(steer, 0.08, false)
+	_rider_torso_root.rotation.x = lerpf(
+		_rider_torso_root.rotation.x,
+		-0.25 if boosting else -0.13,
+		1.0 - exp(-8.0 * safe_delta)
+	)
+	_update_rider_limbs(steer, 0.08, boosting)
 	if _dust == null:
 		return
 	if surface != _current_surface:
@@ -325,10 +337,16 @@ func update_pack_pose(
 	var rear_point := global_position + global_transform.basis.z.normalized() * 0.88 - Vector3.UP * 0.31
 	_set_dirt_emitter_transform(rear_point, Vector3.UP, rear_forward)
 	var dust_amount := clampf(speed_mps / 22.0, 0.0, 0.9)
-	var roost_intensity := clampf(dust_amount * 0.72 + absf(steer) * 0.38, 0.0, 1.0)
+	var roost_intensity := clampf(
+		dust_amount * 0.72 + absf(steer) * 0.38 + (0.28 if boosting else 0.0),
+		0.0,
+		1.0
+	)
 	_update_dirt_intensity(dust_amount, roost_intensity, surface)
 	_dust.emitting = grounded and speed_mps > 4.0
-	_roost.emitting = grounded and speed_mps > 8.0 and (absf(steer) > 0.12 or roost_intensity > 0.52)
+	_roost.emitting = grounded and speed_mps > 8.0 and (
+		boosting or absf(steer) > 0.12 or roost_intensity > 0.52
+	)
 	if not pack_variant:
 		_clods.emitting = grounded and speed_mps > 9.0 and surface in [&"MUD", &"LOOSE_DIRT"] and roost_intensity > 0.62
 	if landing_event:

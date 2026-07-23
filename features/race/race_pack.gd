@@ -39,6 +39,18 @@ const DEFENSE_SENSOR_LENGTH := 12.0
 const DEFENSE_MAX_LANE_MOVE := 1.35
 const CLOSE_ATTACK_MAX_MPS := 1.15
 const AI_DRAFT_MAX_MPS := 1.15
+# Opponents earn the same bounded resource the player spends: clean racecraft
+# fills Flow, and a deliberate tactical decision converts 35 points into a
+# short acceleration event. This is rider-owned pace, not gap-director speed.
+const OPPONENT_FLOW_CAPACITY := 100.0
+const OPPONENT_FLOW_BOOST_COST := 35.0
+const OPPONENT_FLOW_BOOST_DURATION := 1.15
+const OPPONENT_FLOW_BOOST_COOLDOWN := 2.35
+const OPPONENT_FLOW_BOOST_MAX_MPS := 2.30
+const OPPONENT_FLOW_DRAFT_GAIN_PER_SECOND := 1.60
+const OPPONENT_FLOW_CLEAN_GAIN_PER_SECOND := 0.75
+const OPPONENT_FLOW_MASTERED_GAIN_PER_SECOND := 1.35
+const OPPONENT_FLOW_CLEAN_LANDING_GAIN := 8.0
 const PLAYER_ROOST_COOLDOWN_SECONDS := 0.90
 const PLAYER_ROOST_MAX_DRIVE_COST := 0.025
 const RACECRAFT_MAX_HALF_WIDTH := 8.4
@@ -355,6 +367,11 @@ func reset_grid() -> void:
 		state[&"close_attack_mps"] = 0.0
 		state[&"close_attack_active"] = false
 		state[&"draft_strength"] = 0.0
+		state[&"flow"] = 0.0
+		state[&"flow_boost_time"] = 0.0
+		state[&"flow_boost_cooldown"] = 0.0
+		state[&"flow_boost_mps"] = 0.0
+		state[&"flow_boost_active"] = false
 		state[&"roost_pressure"] = 0.0
 		state[&"roost_cooldown"] = 0.0
 		state[&"roost_drive_multiplier"] = 1.0
@@ -637,6 +654,11 @@ func get_chaos_snapshot() -> Dictionary:
 		&"close_attack_peak_mps": float(_chaos_metrics.get(&"close_attack_peak_mps", 0.0)),
 		&"ai_draft_seconds": float(_chaos_metrics.get(&"ai_draft_seconds", 0.0)),
 		&"ai_draft_peak": float(_chaos_metrics.get(&"ai_draft_peak", 0.0)),
+		&"ai_flow_gain_total": float(_chaos_metrics.get(&"ai_flow_gain_total", 0.0)),
+		&"ai_flow_peak": float(_chaos_metrics.get(&"ai_flow_peak", 0.0)),
+		&"ai_flow_boost_activations": int(_chaos_metrics.get(&"ai_flow_boost_activations", 0)),
+		&"ai_flow_boost_seconds": float(_chaos_metrics.get(&"ai_flow_boost_seconds", 0.0)),
+		&"ai_flow_boost_peak_mps": float(_chaos_metrics.get(&"ai_flow_boost_peak_mps", 0.0)),
 		&"player_draft_seconds": float(_chaos_metrics.get(&"player_draft_seconds", 0.0)),
 		&"player_draft_peak": float(_chaos_metrics.get(&"player_draft_peak", 0.0)),
 		&"player_roost_pressure_peak": float(_chaos_metrics.get(&"player_roost_pressure_peak", 0.0)),
@@ -1025,6 +1047,9 @@ func get_racer_snapshots() -> Array[Dictionary]:
 			&"speed_bias_mps": float(state.get(&"speed_bias", 0.0)),
 			&"close_attack_mps": float(state.get(&"close_attack_mps", 0.0)),
 			&"draft_strength": float(state.get(&"draft_strength", 0.0)),
+			&"flow": float(state.get(&"flow", 0.0)),
+			&"flow_boost_active": bool(state.get(&"flow_boost_active", false)),
+			&"flow_boost_mps": float(state.get(&"flow_boost_mps", 0.0)),
 			&"roost_pressure": float(state.get(&"roost_pressure", 0.0)),
 			&"roost_drive_multiplier": float(state.get(&"roost_drive_multiplier", 1.0)),
 			&"late_pressure_mps": float(state.get(&"late_pressure_mps", 0.0)),
@@ -1411,16 +1436,18 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 	state[&"late_pressure_mps"] = late_pressure_mps
 	state[&"close_attack_mps"] = close_attack_mps
 	_record_pressure_metrics(state, late_pressure_mps, close_attack_mps, delta)
+	var section_speed_factor := _section_speed_factor(state)
+	state[&"section_speed_factor"] = section_speed_factor
+	_record_section_consequences(state, section_speed_factor, delta)
+	var flow_boost_mps := _update_opponent_flow(index, state, progress_gap, player_speed, delta)
 	var dynamic_base_speed := (
 		float(state[&"base_speed"])
 		+ float(state[&"speed_bias"])
 		+ late_pressure_mps
 		+ close_attack_mps
+		+ flow_boost_mps
 	)
 	var target_speed := _target_speed_for_gap(dynamic_base_speed, player_speed, progress_gap, state)
-	var section_speed_factor := _section_speed_factor(state)
-	state[&"section_speed_factor"] = section_speed_factor
-	_record_section_consequences(state, section_speed_factor, delta)
 	target_speed *= section_speed_factor
 	target_speed *= clampf(float(state.get(&"roost_drive_multiplier", 1.0)), 1.0 - PLAYER_ROOST_MAX_DRIVE_COST, 1.0)
 	target_speed *= float(state.get(&"mistake_factor", 1.0))
@@ -1441,7 +1468,7 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 	var acceleration := (
 		LAUNCH_ACCELERATION * float(state.get(&"launch_acceleration_scale", 1.0))
 		if _race_elapsed < LAUNCH_LANE_LOCK_SECONDS
-		else 4.1
+		else 5.4 if flow_boost_mps > 0.02 else 4.1
 	)
 	match int(state[&"mode"]):
 		RiderMode.WOBBLE:
@@ -2299,6 +2326,152 @@ func _record_pressure_metrics(
 		)
 
 
+func _update_opponent_flow(
+	index: int,
+	state: Dictionary,
+	progress_gap: float,
+	player_speed: float,
+	delta: float
+) -> float:
+	var cooldown := maxf(float(state.get(&"flow_boost_cooldown", 0.0)) - delta, 0.0)
+	var boost_time := maxf(float(state.get(&"flow_boost_time", 0.0)) - delta, 0.0)
+	state[&"flow_boost_cooldown"] = cooldown
+	state[&"flow_boost_time"] = boost_time
+
+	if boost_time <= 0.0:
+		var flow_gain := (
+			clampf(float(state.get(&"draft_strength", 0.0)), 0.0, 1.0)
+			* OPPONENT_FLOW_DRAFT_GAIN_PER_SECOND
+		)
+		match StringName(state.get(&"skill_line_outcome", &"NONE")):
+			&"MASTERED":
+				flow_gain += OPPONENT_FLOW_MASTERED_GAIN_PER_SECOND
+			&"CLEAN":
+				flow_gain += OPPONENT_FLOW_CLEAN_GAIN_PER_SECOND
+		if float(state.get(&"line_factor", 1.0)) > 1.001:
+			flow_gain += 0.20
+		var gain_scale := (
+			0.68 if _player_difficulty_mode == &"RELAXED"
+			else 1.18 if _player_difficulty_mode == &"EXPERT"
+			else 1.0
+		)
+		_grant_opponent_flow(state, flow_gain * gain_scale * delta)
+		if _should_activate_opponent_flow_boost(state, progress_gap, player_speed):
+			_activate_opponent_flow_boost(index, state)
+			boost_time = float(state.get(&"flow_boost_time", 0.0))
+
+	var boost_mps := 0.0
+	if boost_time > 0.0 and int(state.get(&"mode", RiderMode.RIDING)) == RiderMode.RIDING:
+		var elapsed := OPPONENT_FLOW_BOOST_DURATION - boost_time + minf(delta, 0.12)
+		var envelope := (
+			smoothstep(0.0, 0.16, elapsed)
+			* smoothstep(0.0, 0.24, boost_time)
+		)
+		var output_scale := (
+			0.72 if _player_difficulty_mode == &"RELAXED"
+			else 1.10 if _player_difficulty_mode == &"EXPERT"
+			else 1.0
+		)
+		boost_mps = OPPONENT_FLOW_BOOST_MAX_MPS * output_scale * envelope
+		_chaos_metrics[&"ai_flow_boost_seconds"] = float(
+			_chaos_metrics.get(&"ai_flow_boost_seconds", 0.0)
+		) + delta
+		_chaos_metrics[&"ai_flow_boost_peak_mps"] = maxf(
+			float(_chaos_metrics.get(&"ai_flow_boost_peak_mps", 0.0)),
+			boost_mps
+		)
+	state[&"flow_boost_active"] = boost_mps > 0.02
+	state[&"flow_boost_mps"] = boost_mps
+	return boost_mps
+
+
+func _grant_opponent_flow(state: Dictionary, amount: float) -> void:
+	var bounded_amount := maxf(amount, 0.0)
+	if bounded_amount <= 0.0 or _session_config.event_id == &"ACADEMY":
+		return
+	var previous := clampf(float(state.get(&"flow", 0.0)), 0.0, OPPONENT_FLOW_CAPACITY)
+	var next := clampf(previous + bounded_amount, 0.0, OPPONENT_FLOW_CAPACITY)
+	var accepted := next - previous
+	state[&"flow"] = next
+	if accepted <= 0.0:
+		return
+	_chaos_metrics[&"ai_flow_gain_total"] = float(
+		_chaos_metrics.get(&"ai_flow_gain_total", 0.0)
+	) + accepted
+	_chaos_metrics[&"ai_flow_peak"] = maxf(
+		float(_chaos_metrics.get(&"ai_flow_peak", 0.0)),
+		next
+	)
+
+
+func _should_activate_opponent_flow_boost(
+	state: Dictionary,
+	progress_gap: float,
+	player_speed: float
+) -> bool:
+	if (
+		_session_config.event_id == &"ACADEMY"
+		or _launch_tactics_blend() < 1.0
+		or int(state.get(&"mode", RiderMode.RIDING)) != RiderMode.RIDING
+		or not bool(state.get(&"surface_supported", true))
+		or float(state.get(&"flow_boost_cooldown", 0.0)) > 0.0
+		or float(state.get(&"flow", 0.0)) < OPPONENT_FLOW_BOOST_COST
+	):
+		return false
+	var jump_plan := StringName(state.get(&"jump_plan", &"ROLL"))
+	if jump_plan in [&"SAFE_JUMP", &"SEND"]:
+		return false
+
+	var tactical_score := 0.0
+	var draft_strength := clampf(float(state.get(&"draft_strength", 0.0)), 0.0, 1.0)
+	tactical_score = maxf(tactical_score, draft_strength * 0.82)
+	tactical_score = maxf(
+		tactical_score,
+		smoothstep(0.18, 0.92, float(state.get(&"close_attack_mps", 0.0)))
+	)
+	match StringName(state.get(&"traffic_plan_kind", &"")):
+		&"PASS":
+			tactical_score = maxf(tactical_score, 0.86)
+		&"DEFEND":
+			tactical_score = maxf(tactical_score, 0.78)
+	if is_instance_valid(_player) or simulation_has_player:
+		if progress_gap < -1.5:
+			tactical_score = maxf(tactical_score, lerpf(0.62, 1.0, smoothstep(1.5, 28.0, -progress_gap)))
+		elif (
+			progress_gap > 0.5
+			and progress_gap < 12.0
+			and player_speed > float(state.get(&"speed", 0.0)) + 0.45
+		):
+			tactical_score = maxf(tactical_score, 0.80)
+	var late_pressure := clampf(
+		float(state.get(&"late_pressure_mps", 0.0)) / LATE_RACE_PRESSURE_MAX_MPS,
+		0.0,
+		1.0
+	)
+	tactical_score = maxf(tactical_score, late_pressure * 0.74)
+	var threshold := (
+		0.86 if _player_difficulty_mode == &"RELAXED"
+		else 0.50 if _player_difficulty_mode == &"EXPERT"
+		else 0.64
+	)
+	return tactical_score >= threshold
+
+
+func _activate_opponent_flow_boost(index: int, state: Dictionary) -> void:
+	state[&"flow"] = maxf(
+		float(state.get(&"flow", 0.0)) - OPPONENT_FLOW_BOOST_COST,
+		0.0
+	)
+	state[&"flow_boost_time"] = OPPONENT_FLOW_BOOST_DURATION
+	state[&"flow_boost_cooldown"] = OPPONENT_FLOW_BOOST_DURATION + OPPONENT_FLOW_BOOST_COOLDOWN
+	_increment_metric(&"ai_flow_boost_activations")
+	if not presentation_enabled or index < 0 or index >= _riders.size():
+		return
+	var visual := state.get(&"visual") as Node3D
+	if is_instance_valid(visual) and visual.has_method(&"burst_boost"):
+		visual.call(&"burst_boost")
+
+
 func _state_total_progress(state: Dictionary) -> float:
 	return clampf(
 		float(int(state.get(&"laps_completed", 0))) * _track_length + float(state.get(&"progress", 0.0)),
@@ -2687,7 +2860,8 @@ func _update_rider(index: int, delta: float) -> void:
 		absf(float(state[&"surface_vertical_speed"])) / SURFACE_MAX_FALL_SPEED,
 		_session_config.surface_modifier,
 		bool(state.get(&"landing_event", false)),
-		float(state.get(&"landing_quality", 1.0))
+		float(state.get(&"landing_quality", 1.0)),
+		bool(state.get(&"flow_boost_active", false))
 	)
 	state[&"landing_event"] = false
 	_riders[index] = state
@@ -3013,6 +3187,11 @@ func _follow_ride_surface(state: Dictionary, support_y: float, delta: float, rid
 			var landing_quality := clampf(1.18 - impact_speed / 12.5 + confidence * 0.16, 0.0, 1.0)
 			state[&"landing_quality"] = landing_quality
 			state[&"landing_event"] = true
+			if landing_quality >= 0.58:
+				_grant_opponent_flow(
+					state,
+					OPPONENT_FLOW_CLEAN_LANDING_GAIN * smoothstep(0.58, 0.92, landing_quality)
+				)
 			if landing_quality < 0.38:
 				state[&"speed"] = maxf(float(state.get(&"speed", 0.0)) * lerpf(0.68, 0.88, landing_quality / 0.38), 3.0)
 				_enter_wobble(state, 4.0 + impact_speed * 0.4, -1.0 if rider_index % 2 == 0 else 1.0)
@@ -3140,6 +3319,11 @@ func _reset_chaos_metrics() -> void:
 		&"close_attack_peak_mps": 0.0,
 		&"ai_draft_seconds": 0.0,
 		&"ai_draft_peak": 0.0,
+		&"ai_flow_gain_total": 0.0,
+		&"ai_flow_peak": 0.0,
+		&"ai_flow_boost_activations": 0,
+		&"ai_flow_boost_seconds": 0.0,
+		&"ai_flow_boost_peak_mps": 0.0,
 		&"player_draft_seconds": 0.0,
 		&"player_draft_peak": 0.0,
 		&"player_roost_pressure_peak": 0.0,

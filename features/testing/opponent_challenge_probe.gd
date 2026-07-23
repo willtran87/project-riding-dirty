@@ -364,6 +364,11 @@ func _simulate_session(
 		&"mistakes": int(chaos.get(&"mistakes", 0)),
 		&"crashes": int(chaos.get(&"crashes", 0)),
 		&"recoveries": int(chaos.get(&"recoveries", 0)),
+		&"ai_flow_gain_total": float(chaos.get(&"ai_flow_gain_total", 0.0)),
+		&"ai_flow_peak": float(chaos.get(&"ai_flow_peak", 0.0)),
+		&"ai_flow_boost_activations": int(chaos.get(&"ai_flow_boost_activations", 0)),
+		&"ai_flow_boost_seconds": float(chaos.get(&"ai_flow_boost_seconds", 0.0)),
+		&"ai_flow_boost_peak_mps": float(chaos.get(&"ai_flow_boost_peak_mps", 0.0)),
 		&"player_difficulty_mode": StringName(tension.get(&"player_difficulty_mode", &"LOCKED")),
 		&"opponent_build_match_scale": float(tension.get(&"opponent_build_match_scale", 0.0)),
 		&"field_chase_adjustment_mps": float(tension.get(&"field_chase_adjustment_mps", 0.0)),
@@ -393,6 +398,11 @@ func _invalid_result(message: String) -> Dictionary:
 		&"mistakes": 0,
 		&"crashes": 0,
 		&"recoveries": 0,
+		&"ai_flow_gain_total": 0.0,
+		&"ai_flow_peak": 0.0,
+		&"ai_flow_boost_activations": 0,
+		&"ai_flow_boost_seconds": 0.0,
+		&"ai_flow_boost_peak_mps": 0.0,
 		&"player_difficulty_mode": &"LOCKED",
 		&"opponent_build_match_scale": 0.0,
 	}
@@ -484,6 +494,14 @@ func _validate_event_separation(event_id: StringName, tiers: Dictionary) -> void
 		and int(standard.get(&"difficulty", -1)) < int(expert.get(&"difficulty", -1)),
 		"%s difficulty tiers are not strictly ordered" % event_id
 	)
+	var relaxed_boosts := int(relaxed.get(&"ai_flow_boost_activations", -1))
+	var standard_boosts := int(standard.get(&"ai_flow_boost_activations", -1))
+	var expert_boosts := int(expert.get(&"ai_flow_boost_activations", -1))
+	_check(
+		relaxed_boosts < standard_boosts and standard_boosts < expert_boosts,
+		"%s Flow-boost use did not scale progressively by difficulty (%d/%d/%d)"
+		% [event_id, relaxed_boosts, standard_boosts, expert_boosts]
+	)
 	for metric: StringName in [&"leader_seconds", &"median_seconds", &"tail_seconds"]:
 		_validate_adjacent_gap(event_id, &"RELAXED_STANDARD", metric, relaxed, standard)
 		_validate_adjacent_gap(event_id, &"STANDARD_EXPERT", metric, standard, expert)
@@ -514,6 +532,7 @@ func _validate_deterministic_replay(reference: Dictionary, replay: Dictionary) -
 		&"finish_usecs", &"finished_statuses", &"unique_finish_buckets",
 		&"lane_changes", &"mistakes", &"crashes", &"difficulty",
 		&"player_difficulty_mode", &"opponent_build_match_scale",
+		&"ai_flow_gain_total", &"ai_flow_boost_activations", &"ai_flow_boost_seconds",
 	]:
 		var matches: bool = reference.get(key) == replay.get(key)
 		deterministic = deterministic and matches
@@ -658,6 +677,11 @@ func _validate_flow_surge_pressure(
 	var player_finish_usec := roundi(float(sample.get(&"player_reference_seconds", 0.0)) * 1_000_000.0)
 	var place := _player_place_from_opponent_finishes(sample.get(&"finish_usecs", []), player_finish_usec)
 	var chase_adjustment := float(sample.get(&"field_chase_adjustment_mps", 0.0))
+	var flow_gain := float(sample.get(&"ai_flow_gain_total", 0.0))
+	var flow_peak := float(sample.get(&"ai_flow_peak", 0.0))
+	var boost_activations := int(sample.get(&"ai_flow_boost_activations", 0))
+	var boost_seconds := float(sample.get(&"ai_flow_boost_seconds", 0.0))
+	var boost_peak_mps := float(sample.get(&"ai_flow_boost_peak_mps", 0.0))
 	var valid_place := place >= minimum_place and place <= maximum_place
 	_check(
 		is_equal_approx(float(sample.get(&"player_benchmark_ratio", 0.0)), benchmark_ratio),
@@ -668,16 +692,37 @@ func _validate_flow_surge_pressure(
 		"Flow-pressure field chase reserve %.2f m/s was below 0.80 m/s" % chase_adjustment
 	)
 	_check(
+		flow_gain >= 35.0 and flow_peak >= 35.0,
+		"Flow-pressure opponents did not earn a spendable Flow reserve (gain=%.1f peak=%.1f)"
+		% [flow_gain, flow_peak]
+	)
+	_check(
+		boost_activations >= 1 and boost_seconds >= 0.50,
+		"Flow-pressure opponents did not convert Flow into a sustained boost (uses=%d seconds=%.2f)"
+		% [boost_activations, boost_seconds]
+	)
+	_check(
+		boost_peak_mps >= 1.50 and boost_peak_mps <= 2.55,
+		"Flow-pressure opponent boost peak %.2f m/s was outside [1.50, 2.55]"
+		% boost_peak_mps
+	)
+	_check(
 		valid_place,
 		"a sustained Flow benchmark at %.3fx gold placed P%d outside P%d-P%d"
 		% [benchmark_ratio, place, minimum_place, maximum_place]
 	)
 	print(
-		"OPPONENT CHALLENGE FLOW PRESSURE: tier=%s player=%.3fx/P%d chase=%.2fm/s leader=%.2f median=%.2f passed=%s"
+		"OPPONENT CHALLENGE FLOW PRESSURE: tier=%s player=%.3fx/P%d chase=%.2fm/s flow=%.1f peak=%.1f boosts=%d/%.2fs/%.2fmps leader=%.2f median=%.2f passed=%s"
 		% [
 			label, benchmark_ratio, place, chase_adjustment,
+			flow_gain, flow_peak, boost_activations, boost_seconds, boost_peak_mps,
 			float(sample.get(&"leader_seconds", INF)), float(sample.get(&"median_seconds", INF)),
-			str(valid_place and chase_adjustment >= 0.80),
+			str(
+				valid_place and chase_adjustment >= 0.80
+				and flow_gain >= 35.0 and flow_peak >= 35.0
+				and boost_activations >= 1 and boost_seconds >= 0.50
+				and boost_peak_mps >= 1.50 and boost_peak_mps <= 2.55
+			),
 		]
 	)
 
@@ -788,7 +833,7 @@ func _print_sample(event_id: StringName, mode: StringName, sample: Dictionary) -
 		return
 	var gold := maxf(float(sample.get(&"gold_seconds", 0.0)), 0.001)
 	print(
-		"OPPONENT CHALLENGE SAMPLE: event=%s mode=%s class=%s traffic=%s finish=%d/%d leader=%.2f(%.3fx) median=%.2f(%.3fx) tail=%.2f spread=%.2f buckets=%d lanes=%d mistakes=%d"
+		"OPPONENT CHALLENGE SAMPLE: event=%s mode=%s class=%s traffic=%s finish=%d/%d leader=%.2f(%.3fx) median=%.2f(%.3fx) tail=%.2f spread=%.2f buckets=%d lanes=%d mistakes=%d flow=%.1f boosts=%d"
 		% [
 			event_id, mode, str(sample.get(&"bike_class", &"")), str(sample.get(&"resolve_traffic", false)),
 			int(sample.get(&"finished", 0)), int(sample.get(&"expected", 0)),
@@ -797,6 +842,8 @@ func _print_sample(event_id: StringName, mode: StringName, sample: Dictionary) -
 			float(sample.get(&"tail_seconds", INF)), float(sample.get(&"field_spread_seconds", 0.0)),
 			int(sample.get(&"unique_finish_buckets", 0)), int(sample.get(&"lane_changes", 0)),
 			int(sample.get(&"mistakes", 0)),
+			float(sample.get(&"ai_flow_gain_total", 0.0)),
+			int(sample.get(&"ai_flow_boost_activations", 0)),
 		]
 	)
 
