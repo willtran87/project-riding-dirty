@@ -35,6 +35,106 @@ func _run() -> void:
 		"live camera changes have no clear visual confirmation"
 	)
 
+	var full_hud := hud.get_hud_customization_snapshot()
+	var top_band_rect := full_hud.get(&"top_band_rect", Rect2()) as Rect2
+	var standings_rect := full_hud.get(&"standings_rect", Rect2()) as Rect2
+	_check(
+		StringName(full_hud.get(&"detail", &"")) == &"FULL"
+		and bool(full_hud.get(&"live_visible", false))
+		and bool(full_hud.get(&"focused_visible", false))
+		and bool(full_hud.get(&"full_visible", false)),
+		"HUD does not begin in the complete presentation mode"
+	)
+	_check(
+		top_band_rect.size.x >= 1279.0
+		and top_band_rect.size.y <= 86.1
+		and standings_rect.size.x <= 286.1
+		and standings_rect.size.y <= 224.1,
+		"HUD detail layers stretched or shifted anchored presentation controls"
+	)
+	hud.apply_accessibility({
+		&"text_scale": 1.0,
+		&"hud_detail": &"FOCUSED",
+		&"hud_scale": 0.85,
+	})
+	var focused_hud := hud.get_hud_customization_snapshot()
+	_check(
+		bool(focused_hud.get(&"live_visible", false))
+		and bool(focused_hud.get(&"focused_visible", false))
+		and not bool(focused_hud.get(&"full_visible", true))
+		and bool(focused_hud.get(&"timer_visible", false))
+		and bool(focused_hud.get(&"speed_visible", false))
+		and not bool(focused_hud.get(&"standings_visible", true)),
+		"Focused HUD did not retain core telemetry while removing full-detail clutter"
+	)
+	_check(
+		(focused_hud.get(&"live_scale", Vector2.ONE) as Vector2).is_equal_approx(Vector2(0.85, 0.85)),
+		"Independent HUD sizing did not resize the live presentation"
+	)
+	hud.apply_accessibility({&"hud_detail": &"MINIMAL", &"hud_scale": 0.75})
+	var minimal_hud := hud.get_hud_customization_snapshot()
+	_check(
+		bool(minimal_hud.get(&"live_visible", false))
+		and not bool(minimal_hud.get(&"focused_visible", true))
+		and not bool(minimal_hud.get(&"full_visible", true))
+		and bool(minimal_hud.get(&"timer_visible", false))
+		and bool(minimal_hud.get(&"speed_visible", false)),
+		"Minimal HUD removed core race telemetry or retained secondary layers"
+	)
+	hud.apply_accessibility({&"hud_detail": &"OFF", &"hud_scale": 1.0})
+	var hidden_hud := hud.get_hud_customization_snapshot()
+	_check(
+		not bool(hidden_hud.get(&"live_visible", true))
+		and not bool(hidden_hud.get(&"timer_visible", true))
+		and not bool(hidden_hud.get(&"speed_visible", true)),
+		"Off mode did not disable the live HUD"
+	)
+	EventBus.game_paused.emit(true)
+	await get_tree().process_frame
+	var paused_label := hud.get("_paused_label") as Label
+	_check(
+		paused_label != null and paused_label.is_visible_in_tree(),
+		"Disabling the live HUD also removed the pause safety overlay"
+	)
+	EventBus.game_paused.emit(false)
+	var results_panel := hud.get("_results_panel") as PanelContainer
+	results_panel.visible = true
+	_check(
+		bool(hud.get_hud_customization_snapshot().get(&"results_visible", false)),
+		"Disabling the live HUD also removed official results"
+	)
+	results_panel.visible = false
+	EventBus.activity_prepared.emit(&"FREESTYLE")
+	await get_tree().process_frame
+	hud.apply_accessibility({&"hud_detail": &"MINIMAL", &"hud_scale": 1.0})
+	var freestyle_hud := hud.get_hud_customization_snapshot()
+	_check(
+		StringName(freestyle_hud.get(&"activity", &"")) == &"FREESTYLE"
+		and bool(freestyle_hud.get(&"timer_visible", false))
+		and not bool(freestyle_hud.get(&"course_map_visible", true)),
+		"Minimal Freestyle HUD lost its timer or restored race-only navigation"
+	)
+	EventBus.activity_prepared.emit(&"DISCOVERY")
+	await get_tree().process_frame
+	var discovery_hud := hud.get_hud_customization_snapshot()
+	_check(
+		StringName(discovery_hud.get(&"activity", &"")) == &"DISCOVERY"
+		and bool(discovery_hud.get(&"timer_visible", false))
+		and bool(discovery_hud.get(&"compass_visible", false)),
+		"Minimal Discovery HUD removed its essential timer or compass"
+	)
+	EventBus.activity_prepared.emit(&"ACADEMY")
+	await get_tree().process_frame
+	var academy_hud := hud.get_hud_customization_snapshot()
+	_check(
+		StringName(academy_hud.get(&"activity", &"")) == &"ACADEMY"
+		and bool(academy_hud.get(&"academy_visible", false)),
+		"Minimal Academy HUD removed its teaching objectives"
+	)
+	EventBus.activity_prepared.emit(&"CIRCUIT")
+	await get_tree().process_frame
+	hud.apply_accessibility({&"hud_detail": &"FULL", &"hud_scale": 1.0})
+
 	var initial_hint := hud.get_control_hint_state()
 	var panel_size: Vector2 = initial_hint.get(&"panel_size", Vector2.ZERO)
 	_check(bool(initial_hint.get(&"visible", false)), "control hints are unavailable during staging")
@@ -153,7 +253,7 @@ func _run() -> void:
 	_check(str(achievement_state.get(&"text", "")).contains("Win a classified race"), "achievement feedback has no goal context")
 
 	print(
-		"PRESENTATION CONTRACT: camera=%.1f-%.1f cruise_headroom=%.1f hint_size=%s race_hold=%.2fs pause_context=%s flow_denied=%s passed=%s"
+		"PRESENTATION CONTRACT: camera=%.1f-%.1f cruise_headroom=%.1f hint_size=%s race_hold=%.2fs pause_context=%s hud=%s/%s/%s/%s flow_denied=%s passed=%s"
 		% [
 			camera.base_fov,
 			camera.maximum_fov,
@@ -161,6 +261,10 @@ func _run() -> void:
 			str(panel_size),
 			float(race_hint.get(&"hold_seconds", 0.0)),
 			str(bool(paused_hint.get(&"pinned", false)) and not bool(resumed_hint.get(&"pinned", true))),
+			String(full_hud.get(&"detail", &"")),
+			String(focused_hud.get(&"detail", &"")),
+			String(minimal_hud.get(&"detail", &"")),
+			String(hidden_hud.get(&"detail", &"")),
 			str(bool(denial_feedback.get(&"active", false)) and camera_after_success > camera_after_denial),
 			str(_passed),
 		]

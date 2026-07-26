@@ -1546,6 +1546,8 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 		&"ACCESS":
 			items.assign([
 				_value_item("TEXT SCALE", &"interface", &"text_scale", &"PERCENT", 0.05, 1.0),
+				_enum_item("HUD DETAIL", &"interface", &"hud_detail", SettingsStore.HUD_DETAIL_MODES),
+				_value_item("HUD SIZE", &"interface", &"hud_scale", &"PERCENT", 0.05, 1.0),
 				_value_item("REDUCED MOTION", &"interface", &"reduced_motion", &"BOOL", 1.0, false),
 				_value_item("HIGH CONTRAST HUD", &"interface", &"high_contrast", &"BOOL", 1.0, false),
 				_enum_item("COLOR-SAFE MODE", &"interface", &"color_safe_mode", SettingsStore.COLOR_SAFE_MODES),

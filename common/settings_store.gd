@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 8
+const SETTINGS_VERSION: int = 9
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -17,6 +17,7 @@ const CAMERA_MODES: Array[String] = ["CHASE", "CLOSE_CHASE", "HELMET", "FIRST_PE
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
 const TOUCH_CONTROL_MODES: Array[String] = ["AUTO", "ON", "OFF"]
 const TOUCH_HANDEDNESS_MODES: Array[String] = ["RIGHT", "LEFT"]
+const HUD_DETAIL_MODES: Array[String] = ["FULL", "FOCUSED", "MINIMAL", "OFF"]
 
 const DEFAULTS: Dictionary = {
 	"controls": {
@@ -61,6 +62,8 @@ const DEFAULTS: Dictionary = {
 	},
 	"interface": {
 		"text_scale": 1.0,
+		"hud_detail": "FULL",
+		"hud_scale": 1.0,
 		"reduced_motion": false,
 		"high_contrast": false,
 		"color_safe_mode": "OFF",
@@ -524,6 +527,7 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var interface := raw.get("interface", {}) as Dictionary if raw.get("interface", {}) is Dictionary else {}
 	var color_mode := str(interface.get("color_safe_mode", "OFF")).to_upper()
 	var unit_mode := str(interface.get("units", "IMPERIAL")).to_upper()
+	var hud_detail := str(interface.get("hud_detail", "FULL")).to_upper()
 	var race_difficulty := str(gameplay.get("race_difficulty", "STANDARD")).to_upper()
 	var transmission_mode := str(gameplay.get("transmission_mode", "AUTOMATIC")).to_upper()
 	var camera_mode := str(camera.get("mode", "CHASE")).to_upper()
@@ -574,6 +578,8 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 		},
 		"interface": {
 			"text_scale": clampf(float(interface.get("text_scale", 1.0)), 0.8, 1.75),
+			"hud_detail": hud_detail if hud_detail in HUD_DETAIL_MODES else "FULL",
+			"hud_scale": clampf(float(interface.get("hud_scale", 1.0)), 0.75, 1.0),
 			# Version-1 settings files predate this option. Missing values remain
 			# opt-in so existing riders keep the original presentation by default.
 			"reduced_motion": bool(interface.get("reduced_motion", false)),

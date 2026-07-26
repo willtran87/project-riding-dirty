@@ -191,6 +191,29 @@ class WebDeliveryTests(unittest.TestCase):
 
 
 class WebReleaseBuilderTests(unittest.TestCase):
+    def test_existing_content_addressed_asset_is_reused_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "index.wasm"
+            destination = root / "index.0123456789ab.wasm"
+            payload = b"stable-runtime"
+            source.write_bytes(payload)
+            destination.write_bytes(payload)
+            expected_sha = hashlib.sha256(payload).hexdigest()
+
+            with mock.patch.object(
+                build_web_release.shutil,
+                "copy2",
+                side_effect=AssertionError("identical immutable asset was overwritten"),
+            ):
+                build_web_release.copy_content_addressed_asset(
+                    source,
+                    destination,
+                    expected_sha,
+                )
+
+            self.assertEqual(destination.read_bytes(), payload)
+
     def test_interrupted_stamp_recovers_one_complete_hashed_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             game_root = Path(temporary_directory)

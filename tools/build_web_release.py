@@ -68,6 +68,24 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def copy_content_addressed_asset(source: Path, destination: Path, expected_sha: str) -> None:
+    """Install an immutable asset without rewriting an identical live bundle.
+
+    Browsers and local preview servers can retain a Windows handle to the
+    current WASM runtime. A content-addressed destination with the expected
+    digest is already complete and immutable, so reusing it is both safer and
+    avoids a needless locked-file overwrite.
+    """
+    if destination.is_file():
+        if digest(destination) != expected_sha:
+            raise RuntimeError(
+                f"Content-address collision for {destination.name}: "
+                "the existing asset does not match its expected digest"
+            )
+        return
+    shutil.copy2(source, destination)
+
+
 def runtime_bundle_digest(wasm_sha: str, worklet_shas: dict[str, str]) -> str:
     descriptor = json.dumps(
         {"wasm": wasm_sha, **worklet_shas},
@@ -208,10 +226,14 @@ def content_address_assets(html: str) -> tuple[str, dict[str, object]]:
     }
 
     if fresh_export:
-        shutil.copy2(wasm_source, GAME_ROOT / wasm_name)
-        shutil.copy2(pck_source, GAME_ROOT / pck_name)
+        copy_content_addressed_asset(wasm_source, GAME_ROOT / wasm_name, wasm_sha)
+        copy_content_addressed_asset(pck_source, GAME_ROOT / pck_name, pck_sha)
         for key, source in worklet_sources.items():
-            shutil.copy2(source, GAME_ROOT / worklet_names[key])
+            copy_content_addressed_asset(
+                source,
+                GAME_ROOT / worklet_names[key],
+                worklet_shas[key],
+            )
 
     config_match = CONFIG_PATTERN.search(html)
     if not config_match:

@@ -26,6 +26,11 @@ func _run() -> void:
 		legacy_default_off,
 		"Existing settings without the field did not default Reduced Motion to off"
 	)
+	_check(
+		StringName(legacy_store.get_value(&"interface", &"hud_detail", &"")) == &"FULL"
+		and is_equal_approx(float(legacy_store.get_value(&"interface", &"hud_scale", 0.0)), 1.0),
+		"Existing settings did not migrate to the complete 100% HUD"
+	)
 	_check(bool(legacy_load.get(&"migrated", false)), "Legacy settings were not migrated to the verified format")
 	_check(bool(legacy_load.get(&"repaired", false)), "Legacy migration did not rewrite the primary slot")
 	_check(FileAccess.file_exists(TEST_PATH + SettingsStore.BACKUP_SUFFIX), "Legacy migration did not retain a rotating backup")
@@ -53,8 +58,23 @@ func _run() -> void:
 	service.call(&"_refresh_settings_text")
 	var access_items: Array = service.get("_settings_items") as Array
 	var reduced_motion_index := _find_setting_index(access_items, &"reduced_motion")
-	_check(access_items.size() == 6, "Accessibility page does not include the complete six-row option set")
+	var hud_detail_index := _find_setting_index(access_items, &"hud_detail")
+	var hud_scale_index := _find_setting_index(access_items, &"hud_scale")
+	_check(access_items.size() == 8, "Accessibility page does not include the complete eight-row option set")
+	_check(
+		hud_detail_index == 1 and hud_scale_index == 2,
+		"HUD detail and size are not presented directly after global text scale"
+	)
 	_check(reduced_motion_index >= 0, "Reduced Motion is missing from the Accessibility page")
+	service.set("_settings_index", hud_detail_index)
+	service.call(&"_adjust_setting", 1)
+	service.set("_settings_index", hud_scale_index)
+	service.call(&"_adjust_setting", -1)
+	_check(
+		StringName(service.settings.get_value(&"interface", &"hud_detail", &"")) == &"FOCUSED"
+		and is_equal_approx(float(service.settings.get_value(&"interface", &"hud_scale", 0.0)), 0.95),
+		"Accessibility UI did not adjust HUD detail and size independently"
+	)
 
 	var camera_node := camera.get_node("Camera3D") as Camera3D
 	camera.apply_landing_kick(1.0)
@@ -108,6 +128,11 @@ func _run() -> void:
 	var persisted := SettingsStore.new(TEST_PATH)
 	_check(bool(persisted.load_from_disk().get(&"ok", false)), "Reduced Motion setting did not persist")
 	_check(bool(persisted.get_value(&"interface", &"reduced_motion", false)), "Persisted Reduced Motion value was not restored")
+	_check(
+		StringName(persisted.get_value(&"interface", &"hud_detail", &"")) == &"FOCUSED"
+		and is_equal_approx(float(persisted.get_value(&"interface", &"hud_scale", 0.0)), 0.95),
+		"Persisted HUD preferences were not restored"
+	)
 
 	service.set("_settings_index", reduced_motion_index)
 	service.call(&"_refresh_settings_text")
@@ -184,7 +209,10 @@ func _write_legacy_settings_file() -> void:
 	var absolute := ProjectSettings.globalize_path(TEST_PATH)
 	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
 	var legacy_values := SettingsStore.DEFAULTS.duplicate(true)
-	(legacy_values["interface"] as Dictionary).erase("reduced_motion")
+	var legacy_interface := legacy_values["interface"] as Dictionary
+	legacy_interface.erase("reduced_motion")
+	legacy_interface.erase("hud_detail")
+	legacy_interface.erase("hud_scale")
 	var file := FileAccess.open(TEST_PATH, FileAccess.WRITE)
 	if file == null:
 		_failures.append("Could not create legacy settings fixture")

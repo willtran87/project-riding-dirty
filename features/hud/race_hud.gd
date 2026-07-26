@@ -103,10 +103,15 @@ var _session_format: StringName = &"SPRINT"
 var _session_weather: StringName = &"CLEAR"
 var _race_source: Object
 var _hud_root: Control
+var _live_hud_root: Control
+var _focused_hud_layer: Control
+var _full_hud_layer: Control
 var _unit_mode: StringName = &"IMPERIAL"
 var _high_contrast: bool = false
 var _color_safe_mode: StringName = &"OFF"
 var _text_scale: float = 1.0
+var _hud_detail: StringName = &"FULL"
+var _hud_scale: float = 1.0
 var _control_hint_hold_time: float = 0.0
 var _control_hint_opacity: float = 1.0
 var _control_hint_pinned: bool = false
@@ -936,7 +941,12 @@ func apply_accessibility(interface: Dictionary) -> void:
 	_high_contrast = bool(interface.get("high_contrast", false))
 	_color_safe_mode = StringName(str(interface.get("color_safe_mode", "OFF")).to_upper())
 	_text_scale = clampf(float(interface.get("text_scale", 1.0)), 0.8, 1.75)
+	_hud_detail = StringName(str(interface.get("hud_detail", "FULL")).to_upper())
+	if _hud_detail not in [&"FULL", &"FOCUSED", &"MINIMAL", &"OFF"]:
+		_hud_detail = &"FULL"
+	_hud_scale = clampf(float(interface.get("hud_scale", 1.0)), 0.75, 1.0)
 	_apply_text_scale(_hud_root, _text_scale)
+	_apply_hud_preferences()
 	_queue_academy_layout_refresh()
 	_queue_results_layout_refresh()
 	if _speed_units_label != null:
@@ -948,6 +958,47 @@ func apply_accessibility(interface: Dictionary) -> void:
 	_refresh_accessible_flag_color()
 	if _results_panel != null and _results_panel.visible:
 		_queue_results_selection_visibility()
+
+
+func get_hud_customization_snapshot() -> Dictionary:
+	var top_band := (
+		_live_hud_root.find_child("TopBand", true, false) as Control
+		if _live_hud_root != null else null
+	)
+	return {
+		&"activity": _activity,
+		&"detail": _hud_detail,
+		&"scale": _hud_scale,
+		&"live_visible": _live_hud_root != null and _live_hud_root.visible,
+		&"focused_visible": _focused_hud_layer != null and _focused_hud_layer.visible,
+		&"full_visible": _full_hud_layer != null and _full_hud_layer.visible,
+		&"timer_visible": _timer_label != null and _timer_label.is_visible_in_tree(),
+		&"speed_visible": _speed_label != null and _speed_label.is_visible_in_tree(),
+		&"academy_visible": _academy_panel != null and _academy_panel.is_visible_in_tree(),
+		&"standings_visible": _standings_panel != null and _standings_panel.is_visible_in_tree(),
+		&"course_map_visible": _course_map != null and _course_map.is_visible_in_tree(),
+		&"compass_visible": _compass_label != null and _compass_label.is_visible_in_tree(),
+		&"results_visible": _results_panel != null and _results_panel.is_visible_in_tree(),
+		&"live_scale": _live_hud_root.scale if _live_hud_root != null else Vector2.ONE,
+		&"top_band_rect": top_band.get_global_rect() if top_band != null else Rect2(),
+		&"standings_rect": _standings_panel.get_global_rect() if _standings_panel != null else Rect2(),
+	}
+
+
+func _apply_hud_preferences() -> void:
+	if _live_hud_root == null:
+		return
+	_live_hud_root.visible = _hud_detail != &"OFF"
+	_focused_hud_layer.visible = _hud_detail in [&"FULL", &"FOCUSED"]
+	_full_hud_layer.visible = _hud_detail == &"FULL"
+	_refresh_live_hud_transform()
+
+
+func _refresh_live_hud_transform() -> void:
+	if _live_hud_root == null:
+		return
+	_live_hud_root.pivot_offset = _live_hud_root.size * 0.5
+	_live_hud_root.scale = Vector2.ONE * _hud_scale
 
 
 func _apply_text_scale(node: Node, text_scale: float) -> void:
@@ -1325,38 +1376,50 @@ func update_discovery(elapsed_usec: int, current: int, total: int, compass_angle
 
 
 func _build_hud() -> void:
+	var master := Control.new()
+	_hud_root = master
+	master.name = "HudRoot"
+	master.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	master.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(master)
+	master.resized.connect(_queue_academy_layout_refresh)
+	master.resized.connect(_queue_results_layout_refresh)
+
 	var root := Control.new()
-	_hud_root = root
-	root.name = "HudRoot"
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_live_hud_root = root
+	root.name = "LiveHud"
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(root)
-	root.resized.connect(_queue_academy_layout_refresh)
-	root.resized.connect(_queue_results_layout_refresh)
+	master.add_child(root)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.resized.connect(_refresh_live_hud_transform)
+	_focused_hud_layer = _make_hud_detail_layer(root, "FocusedHud")
+	_full_hud_layer = _make_hud_detail_layer(root, "FullHud")
 
 	var top_band := ColorRect.new()
+	top_band.name = "TopBand"
 	top_band.color = Color(0.02, 0.025, 0.03, 0.7)
 	top_band.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	top_band.offset_bottom = 86.0
 	top_band.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(top_band)
+	_focused_hud_layer.add_child(top_band)
 
 	var accent := ColorRect.new()
+	accent.name = "TopAccent"
 	accent.color = AMBER
 	accent.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	accent.offset_top = 82.0
 	accent.offset_bottom = 86.0
 	accent.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(accent)
+	_focused_hud_layer.add_child(accent)
 
-	_title_label = _make_label(root, "RIDING DIRTY  //  %s" % _build_id().to_upper(), 22, CREAM)
+	_title_label = _make_label(_full_hud_layer, "RIDING DIRTY  //  %s" % _build_id().to_upper(), 22, CREAM)
 	_anchor_rect(_title_label, Vector2.ZERO, Rect2(28.0, 23.0, 560.0, 44.0))
 
 	_timer_label = _make_label(root, "00:00.000", 46, CREAM)
 	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_timer_label, Vector2(0.5, 0.0), Rect2(-180.0, 10.0, 360.0, 64.0))
 
-	_best_label = _make_label(root, "BEST  --:--.---", 18, Color("a8b4bd"))
+	_best_label = _make_label(_focused_hud_layer, "BEST  --:--.---", 18, Color("a8b4bd"))
 	_best_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_best_label, Vector2(1.0, 0.0), Rect2(-350.0, 18.0, 320.0, 28.0))
 
@@ -1379,7 +1442,7 @@ func _build_hud() -> void:
 	_gear_label.name = "TransmissionLabel"
 	_gear_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_gear_label, Vector2.ONE, Rect2(-220.0, -137.0, 180.0, 26.0))
-	_assist_label = _make_label(root, "ASSIST SPORT  //  5 / 5", 12, Color("9dadb6"))
+	_assist_label = _make_label(_full_hud_layer, "ASSIST SPORT  //  5 / 5", 12, Color("9dadb6"))
 	_assist_label.name = "AssistStatusLabel"
 	_assist_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_assist_label, Vector2.ONE, Rect2(-220.0, -83.0, 180.0, 22.0))
@@ -1420,7 +1483,7 @@ func _build_hud() -> void:
 	_flow_bar.add_theme_stylebox_override(&"fill", flow_fill)
 	root.add_child(_flow_bar)
 
-	_racecraft_label = _make_label(root, "", 14, CREAM)
+	_racecraft_label = _make_label(_focused_hud_layer, "", 14, CREAM)
 	_racecraft_label.name = "RacecraftStatusLabel"
 	_racecraft_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_racecraft_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -1432,8 +1495,8 @@ func _build_hud() -> void:
 	_controls_panel.color = Color(0.035, 0.045, 0.055, 0.72)
 	_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
 	_controls_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(_controls_panel)
-	_controls_label = _make_label(root, "", 14, Color("c7d0d5"))
+	_full_hud_layer.add_child(_controls_panel)
+	_controls_label = _make_label(_full_hud_layer, "", 14, Color("c7d0d5"))
 	_controls_label.name = "ControlHintsLabel"
 	_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
 	_controls_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1465,25 +1528,25 @@ func _build_hud() -> void:
 	_reward_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_reward_label, Vector2(1.0, 0.0), Rect2(-410.0, 105.0, 380.0, 42.0))
 
-	_contract_label = _make_label(root, "", 17, CREAM)
+	_contract_label = _make_label(_full_hud_layer, "", 17, CREAM)
 	_anchor_rect(_contract_label, Vector2.ZERO, Rect2(28.0, 100.0, 720.0, 32.0))
-	_modifier_label = _make_label(root, "", 15, Color("a8b4bd"))
+	_modifier_label = _make_label(_full_hud_layer, "", 15, Color("a8b4bd"))
 	_modifier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_modifier_label, Vector2(1.0, 0.0), Rect2(-680.0, 148.0, 650.0, 30.0))
-	_line_label = _make_label(root, "", 31, AMBER)
+	_line_label = _make_label(_focused_hud_layer, "", 31, AMBER)
 	_line_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_line_label, Vector2(0.5, 1.0), Rect2(-360.0, -276.0, 720.0, 42.0))
-	_line_score_label = _make_label(root, "", 17, CREAM)
+	_line_score_label = _make_label(_focused_hud_layer, "", 17, CREAM)
 	_line_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_line_score_label, Vector2(0.5, 1.0), Rect2(-360.0, -236.0, 720.0, 30.0))
-	_breakdown_label = _make_label(root, "", 19, CYAN)
+	_breakdown_label = _make_label(_focused_hud_layer, "", 19, CYAN)
 	_breakdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_breakdown_label, Vector2(0.5, 0.5), Rect2(-520.0, 214.0, 1040.0, 38.0))
 
 	_course_map = CourseMapControl.new()
 	_course_map.name = "CourseMiniMap"
 	_anchor_rect(_course_map, Vector2(1.0, 0.0), Rect2(-252.0, 192.0, 222.0, 174.0))
-	root.add_child(_course_map)
+	_focused_hud_layer.add_child(_course_map)
 	_field_label = _make_label(root, "FIELD 12  //  CLUB RACE", 16, CREAM)
 	_field_label.name = "FieldStatus"
 	_field_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -1506,11 +1569,11 @@ func _build_hud() -> void:
 	_anchor_rect(_integrity_label, Vector2(0.5, 0.0), Rect2(-330.0, 154.0, 660.0, 36.0))
 	_integrity_label.visible = false
 
-	_build_live_standings(root)
+	_build_live_standings(_full_hud_layer)
 	_build_academy_panel(root)
-	_build_results_panel(root)
+	_build_results_panel(master)
 
-	_paused_label = _make_label(root, "", 48, CREAM)
+	_paused_label = _make_label(master, "", 48, CREAM)
 	_paused_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_paused_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_paused_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -1521,6 +1584,17 @@ func _build_hud() -> void:
 	_highlight_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_highlight_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_child(_highlight_overlay)
+
+	_apply_hud_preferences()
+
+
+func _make_hud_detail_layer(parent: Control, layer_name: String) -> Control:
+	var layer := Control.new()
+	layer.name = layer_name
+	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(layer)
+	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return layer
 
 
 func _build_live_standings(root: Control) -> void:
