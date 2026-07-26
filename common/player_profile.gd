@@ -10,7 +10,7 @@ signal achievement_unlocked(achievement_id: StringName)
 const SAVE_PATH: String = "user://rider_profile.cfg"
 const WEB_SAVE_KEY: String = "rider_profile_v1"
 const ATOMIC_CONFIG_STORE := preload("res://common/atomic_config_store.gd")
-const PROFILE_SCHEMA_VERSION: int = 6
+const PROFILE_SCHEMA_VERSION: int = 7
 const COURSE_LAYOUT_VERSION: int = 4
 const MAX_CASH: int = 999_999
 const MAX_LOG_ENTRIES: int = 30
@@ -45,6 +45,7 @@ const BIKE_TUNE_SCRIPT := preload("res://features/career/racing_bike_tune.gd")
 const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.gd")
 const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_catalog.gd")
 const ACTIVITY_RUN_IDENTITY_SCRIPT := preload("res://common/activity_run_identity.gd")
+const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const DEFAULT_SETTINGS_REFERENCE: String = "user://settings/riding_dirty_settings.json"
 const ACHIEVEMENT_ORDER: Array[StringName] = [
 	&"FIRST_FINISH", &"FIRST_WIN", &"PODIUM_REGULAR", &"HOLESHOT_HERO",
@@ -57,7 +58,7 @@ const ACHIEVEMENT_DEFINITIONS: Dictionary = {
 	&"HOLESHOT_HERO": {&"title": "Holeshot Hero", &"description": "Take five holeshots.", &"source": &"STAT", &"key": &"holeshots", &"target": 5},
 	&"CENTURY_LAPS": {&"title": "Century Rider", &"description": "Complete one hundred race laps.", &"source": &"STAT", &"key": &"laps_completed", &"target": 100},
 	&"PASS_MASTER": {&"title": "Pass Master", &"description": "Complete one hundred player overtakes.", &"source": &"STAT", &"key": &"overtakes", &"target": 100},
-	&"ACADEMY_GRADUATE": {&"title": "Academy Graduate", &"description": "Pass every Riding Academy lesson.", &"source": &"ACADEMY", &"target": 8},
+	&"ACADEMY_GRADUATE": {&"title": "Academy Graduate", &"description": "Pass every Riding Academy lesson.", &"source": &"ACADEMY", &"target": 9},
 	&"DIRT_TOUR_CHAMPION": {&"title": "Dirt Tour Champion", &"description": "Win a complete Dirt Tour season.", &"source": &"UNLOCK", &"target": 1},
 }
 
@@ -79,6 +80,7 @@ var contract_completions: int = 0
 var style_tokens: int = 0
 var completed_contracts: Array[String] = []
 var assist_mode: StringName = &"SPORT"
+var assist_configuration: Dictionary = RIDING_ASSIST_CONFIG.preset(&"SPORT")
 var unlocked_feats: Array[String] = []
 var legacy_pine_unlock: bool = false
 var first_run_onboarding_complete: bool = false
@@ -349,15 +351,58 @@ func unlock_feat(feat_id: String) -> bool:
 
 
 func cycle_assist_mode() -> StringName:
+	var next_mode: StringName
 	match assist_mode:
 		&"ASSISTED":
-			assist_mode = &"SPORT"
+			next_mode = &"SPORT"
 		&"SPORT":
-			assist_mode = &"PRO"
+			next_mode = &"PRO"
 		_:
-			assist_mode = &"ASSISTED"
-	_emit_and_save()
+			next_mode = &"ASSISTED"
+	set_assist_preset(next_mode)
 	return assist_mode
+
+
+func set_assist_preset(mode: StringName) -> bool:
+	if mode not in RIDING_ASSIST_CONFIG.PRESET_ORDER:
+		return false
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	assist_mode = mode
+	assist_configuration = RIDING_ASSIST_CONFIG.preset(mode)
+	return _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration)
+
+
+func set_assist_value(channel: StringName, value: float) -> bool:
+	if channel not in RIDING_ASSIST_CONFIG.CHANNELS or value < 0.0 or value > 1.0:
+		return false
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	var next_configuration := RIDING_ASSIST_CONFIG.sanitize(assist_configuration, assist_mode)
+	next_configuration[channel] = snappedf(value, 0.05)
+	assist_configuration = RIDING_ASSIST_CONFIG.sanitize(next_configuration)
+	assist_mode = RIDING_ASSIST_CONFIG.matching_preset(assist_configuration)
+	return _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration)
+
+
+func get_assist_configuration() -> Dictionary:
+	return RIDING_ASSIST_CONFIG.sanitize(assist_configuration, assist_mode)
+
+
+func get_assist_value(channel: StringName) -> float:
+	if channel not in RIDING_ASSIST_CONFIG.CHANNELS:
+		return 0.0
+	return float(get_assist_configuration().get(channel, 0.0))
+
+
+func get_assist_signature() -> String:
+	return RIDING_ASSIST_CONFIG.signature(assist_mode, assist_configuration)
+
+
+func get_assist_summary() -> String:
+	return RIDING_ASSIST_CONFIG.compact_summary(assist_mode, assist_configuration)
 
 
 func get_profile_id() -> String:
@@ -1372,6 +1417,7 @@ func reset_profile_for_testing() -> void:
 	style_tokens = 0
 	completed_contracts.clear()
 	assist_mode = &"SPORT"
+	assist_configuration = RIDING_ASSIST_CONFIG.preset(&"SPORT")
 	unlocked_feats.clear()
 	legacy_pine_unlock = false
 	first_run_onboarding_complete = false
@@ -1916,6 +1962,7 @@ func _profile_to_dictionary() -> Dictionary:
 		"style_tokens": style_tokens,
 		"completed_contracts": completed_contracts.duplicate(),
 		"assist_mode": String(assist_mode),
+		"assist_configuration": _json_safe_copy(assist_configuration),
 		"unlocked_feats": unlocked_feats.duplicate(),
 		"profile_schema_version": PROFILE_SCHEMA_VERSION,
 		"profile_id": profile_id,
@@ -1964,8 +2011,19 @@ func _apply_profile_dictionary(profile_data: Dictionary) -> void:
 	style_tokens = maxi(int(profile_data.get("style_tokens", 0)), 0)
 	completed_contracts.clear()
 	assist_mode = StringName(str(profile_data.get("assist_mode", "SPORT")).to_upper())
-	if assist_mode not in [&"ASSISTED", &"SPORT", &"PRO"]:
+	if assist_mode not in [&"ASSISTED", &"SPORT", &"PRO", &"CUSTOM"]:
 		assist_mode = &"SPORT"
+	var loaded_assist_configuration: Variant = profile_data.get("assist_configuration", null)
+	if loaded_assist_configuration is Dictionary:
+		assist_configuration = RIDING_ASSIST_CONFIG.sanitize(loaded_assist_configuration, assist_mode)
+		if assist_mode != &"CUSTOM":
+			var matched_preset := RIDING_ASSIST_CONFIG.matching_preset(assist_configuration)
+			if matched_preset != assist_mode:
+				assist_mode = &"CUSTOM"
+	else:
+		# Schema-6 and earlier profiles used one broad strength. Preserve their
+		# selected feel by expanding that legacy mode into all five channels.
+		assist_configuration = RIDING_ASSIST_CONFIG.preset(assist_mode)
 	unlocked_feats.clear()
 	var loaded_feats: Variant = profile_data.get("unlocked_feats", [])
 	if loaded_feats is Array or loaded_feats is PackedStringArray:

@@ -7,6 +7,7 @@ signal results_dismissed
 signal hud_action_requested(action: StringName)
 
 const CourseMapControl = preload("res://features/hud/course_minimap.gd")
+const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
 
 const CREAM := Color("f7e5b2")
 const AMBER := Color("ffb52d")
@@ -27,6 +28,8 @@ var _best_label: Label
 var _checkpoint_label: Label
 var _speed_label: Label
 var _speed_units_label: Label
+var _gear_label: Label
+var _assist_label: Label
 var _speed_bar: ProgressBar
 var _flow_label: Label
 var _flow_bar: ProgressBar
@@ -110,6 +113,7 @@ var _control_hint_pinned: bool = false
 var _academy_lesson: Dictionary = {}
 var _academy_presentation: Dictionary = {}
 var _academy_live_metrics: Dictionary = {}
+var _academy_transmission_snapshot: Dictionary = {}
 var _last_academy_evaluation: Dictionary = {}
 var _last_result: Dictionary = {}
 var _last_leaderboard_result: Dictionary = {}
@@ -119,6 +123,12 @@ var _replay_hid_results: bool = false
 var _gate_launch_feedback_time: float = 0.0
 var _last_gate_launch_result_attempt: int = -1
 var _racecraft_snapshot: Dictionary = {}
+var _transmission_snapshot: Dictionary = {
+	&"mode": &"AUTOMATIC",
+	&"gear": 1,
+	&"shift_active": false,
+}
+var _assist_snapshot: Dictionary = {}
 var _flow_denied_feedback_time: float = 0.0
 var _last_flow_denied_feedback: Dictionary = {}
 var _completion_message_prefix: String = ""
@@ -163,6 +173,12 @@ func initialize(
 	authoritative_route: PackedVector3Array = PackedVector3Array()
 ) -> void:
 	_course_map.set(&"player", player_bike)
+	if player_bike != null and player_bike.has_signal(&"transmission_changed"):
+		var callback := Callable(self, &"update_transmission")
+		if not player_bike.is_connected(&"transmission_changed", callback):
+			player_bike.connect(&"transmission_changed", callback)
+	if player_bike != null and player_bike.has_method(&"get_transmission_snapshot"):
+		update_transmission(player_bike.call(&"get_transmission_snapshot") as Dictionary)
 	configure_track(initial_track_id, authoritative_route)
 
 
@@ -476,6 +492,7 @@ func configure_academy_lesson(lesson: Dictionary) -> void:
 		if presentation_value is Dictionary else {}
 	)
 	_academy_live_metrics.clear()
+	_academy_transmission_snapshot.clear()
 	_apply_activity_presentation_scope()
 	_refresh_academy_panel()
 
@@ -552,6 +569,7 @@ func get_academy_presentation_snapshot() -> Dictionary:
 		&"content_fits": _academy_content_fits(),
 		&"line_fit": _academy_line_fit_snapshot(),
 		&"live_metrics": _academy_live_metrics.duplicate(true),
+		&"transmission": _academy_transmission_snapshot.duplicate(true),
 		&"evaluation": _last_academy_evaluation.duplicate(true),
 		&"results_title": _results_title.text if _results_title != null else "",
 		&"results_summary": _results_summary.text if _results_summary != null else "",
@@ -867,6 +885,47 @@ func update_telemetry(speed_mph: float, _throttle: float, grounded: bool) -> voi
 	_speed_label.modulate = AMBER if grounded else CYAN
 
 
+func update_transmission(snapshot: Dictionary) -> void:
+	_transmission_snapshot = snapshot.duplicate(true)
+	if _gear_label == null:
+		return
+	var mode := StringName(snapshot.get(&"mode", &"AUTOMATIC"))
+	var gear := clampi(int(snapshot.get(&"gear", 1)), 1, 5)
+	_gear_label.text = "%s  //  G%d" % ["MANUAL" if mode == &"MANUAL" else "AUTO", gear]
+	_gear_label.modulate = CYAN if bool(snapshot.get(&"shift_active", false)) else CREAM
+	if bool(snapshot.get(&"shift_active", false)):
+		var shift_tween := create_tween()
+		shift_tween.tween_property(_gear_label, ^"modulate", CREAM, 0.22)
+	_refresh_binding_prompts(InputRouter.input_mode)
+
+
+func configure_assists(
+	mode: StringName,
+	configuration: Dictionary,
+	equalized: bool = false
+) -> void:
+	_assist_snapshot = configuration.duplicate(true)
+	_assist_snapshot[&"mode"] = mode
+	_assist_snapshot[&"equalized"] = equalized
+	if _assist_label == null:
+		return
+	var active_count := preload("res://common/riding_assist_config.gd").active_count(configuration)
+	_assist_label.text = "%sASSIST %s  //  %d / 5" % [
+		"EQUALIZED  //  " if equalized else "",
+		String(mode),
+		active_count,
+	]
+	_assist_label.modulate = CYAN if equalized else Color("9dadb6")
+
+
+func get_assist_presentation_snapshot() -> Dictionary:
+	return {
+		&"configuration": _assist_snapshot.duplicate(true),
+		&"text": _assist_label.text if _assist_label != null else "",
+		&"visible": _assist_label != null and _assist_label.visible,
+	}
+
+
 func apply_accessibility(interface: Dictionary) -> void:
 	## Applies presentation-only settings without changing race simulation or
 	## leaderboard eligibility. Base font sizes are cached so repeated changes do
@@ -1173,6 +1232,15 @@ func show_breakdown(summary: String) -> void:
 	_breakdown_label.text = summary
 
 
+func show_camera_view(label: String) -> void:
+	## Camera changes are available in every riding activity, including solo modes
+	## that intentionally suppress competitive race-moment presentation.
+	_message_label.text = "CAMERA  //  %s" % label.to_upper()
+	_message_label.modulate = CYAN
+	_message_time = 1.75
+	_pulse_highlight()
+
+
 func show_feat(title: String) -> void:
 	_queue_reward("FEAT UNLOCKED  //  %s  //  +1 STYLE TOKEN" % title, 4.0, CYAN)
 
@@ -1282,13 +1350,21 @@ func _build_hud() -> void:
 	_anchor_rect(_speed_label, Vector2.ONE, Rect2(-230.0, -202.0, 155.0, 84.0))
 	_speed_units_label = _make_label(root, "MPH", 18, CREAM)
 	_anchor_rect(_speed_units_label, Vector2.ONE, Rect2(-74.0, -163.0, 50.0, 32.0))
+	_gear_label = _make_label(root, "AUTO  //  G1", 16, CREAM)
+	_gear_label.name = "TransmissionLabel"
+	_gear_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_anchor_rect(_gear_label, Vector2.ONE, Rect2(-220.0, -137.0, 180.0, 26.0))
+	_assist_label = _make_label(root, "ASSIST SPORT  //  5 / 5", 12, Color("9dadb6"))
+	_assist_label.name = "AssistStatusLabel"
+	_assist_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_anchor_rect(_assist_label, Vector2.ONE, Rect2(-220.0, -83.0, 180.0, 22.0))
 
 	_speed_bar = ProgressBar.new()
 	_speed_bar.min_value = 0.0
 	_speed_bar.max_value = 82.0
 	_speed_bar.value = 0.0
 	_speed_bar.show_percentage = false
-	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-220.0, -108.0, 180.0, 12.0))
+	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-220.0, -105.0, 180.0, 12.0))
 	var bar_background := StyleBoxFlat.new()
 	bar_background.bg_color = Color("263039")
 	bar_background.corner_radius_top_left = 5
@@ -1683,9 +1759,12 @@ func _refresh_academy_panel() -> void:
 	_academy_title_label.text = "ACADEMY  //  %s  //  %s" % [category, lesson_name]
 	_academy_description_label.text = str(_academy_lesson.get(&"description", "Complete the marked objectives."))
 	var coach_template := str(_academy_lesson.get(&"coach_template", "FOLLOW THE LIT GATES AND COMPLETE BOTH OBJECTIVES."))
-	_academy_coach_label.text = "COACH  //  %s" % _resolve_academy_coach_template(
+	var coach_text := _resolve_academy_coach_template(
 		coach_template, InputRouter.input_mode
 	)
+	if StringName(_academy_lesson.get(&"lesson_id", &"")) == &"MANUAL_SHIFTING":
+		coach_text += "\nLIVE  //  %s" % _academy_transmission_coach_text(InputRouter.input_mode)
+	_academy_coach_label.text = "COACH  //  %s" % coach_text
 	_academy_coach_label.visible = true
 	var objectives := _academy_lesson.get(&"objectives", []) as Array
 	for index: int in _academy_objective_labels.size():
@@ -1708,6 +1787,8 @@ func _resolve_academy_coach_template(template: String, mode: StringName) -> Stri
 	output = output.replace("{TECHNIQUE}", _academy_action_label(InputRouter.RACECRAFT, mode))
 	output = output.replace("{RESET}", _academy_action_label(InputRouter.RESET_BIKE, mode))
 	output = output.replace("{LEAN_FORWARD}", _academy_action_label(InputRouter.LEAN_FORWARD, mode))
+	output = output.replace("{SHIFT_UP}", _academy_action_label(InputRouter.SHIFT_UP, mode))
+	output = output.replace("{SHIFT_DOWN}", _academy_action_label(InputRouter.SHIFT_DOWN, mode))
 	output = output.replace("{LEAN_STEER}", _academy_lean_steer_label(mode))
 	output = output.replace("{STEER}", _academy_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode))
 	output = output.replace("{LEAN}", _academy_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode))
@@ -1725,7 +1806,30 @@ func _academy_action_label(action: StringName, mode: StringName) -> String:
 		InputRouter.RACECRAFT: return "TECHNIQUE"
 		InputRouter.RESET_BIKE: return "RESET"
 		InputRouter.LEAN_FORWARD: return "STEER / LEAN UP"
+		InputRouter.SHIFT_UP: return "SHIFT UP"
+		InputRouter.SHIFT_DOWN: return "SHIFT DOWN"
 	return "CONTROL"
+
+
+func _academy_transmission_coach_text(mode: StringName) -> String:
+	if _academy_transmission_snapshot.is_empty():
+		return "MANUAL READY  //  BUILD SPEED, THEN WATCH RPM"
+	var gear := clampi(int(_academy_transmission_snapshot.get(&"gear", 1)), 1, 5)
+	var rpm_percent := roundi(
+		clampf(float(_academy_transmission_snapshot.get(&"rpm", 0.0)), 0.0, 1.10) * 100.0
+	)
+	var state := StringName(
+		ACADEMY_TRANSMISSION_TRACKER_SCRIPT.get_coach_state(_academy_transmission_snapshot)
+	)
+	var action_text := "HOLD GEAR"
+	match state:
+		&"SHIFT_UP", &"REDLINE":
+			action_text = "%s NOW" % _academy_action_label(InputRouter.SHIFT_UP, mode)
+		&"SHIFT_DOWN":
+			action_text = "%s FOR DRIVE" % _academy_action_label(InputRouter.SHIFT_DOWN, mode)
+		&"MANUAL_REQUIRED":
+			action_text = "MANUAL PRACTICE CONFIGURING"
+	return "G%d  //  RPM %03d%%  //  %s" % [gear, rpm_percent, action_text]
 
 
 func _academy_pair_label(
@@ -1761,7 +1865,12 @@ func _refresh_academy_layout() -> void:
 	# The container's assigned size reflects the previous panel height. Feeding it
 	# back here prevents the panel from shrinking after accessibility text is reduced.
 	var content_height := _academy_stack.get_combined_minimum_size().y
-	var maximum_height := maxf(_hud_root.size.y - 190.0 - 126.0, 180.0)
+	var viewport_height := get_viewport().get_visible_rect().size.y
+	var visible_height := minf(
+		_hud_root.size.y,
+		viewport_height if viewport_height > 0.0 else _hud_root.size.y
+	)
+	var maximum_height := maxf(visible_height - 190.0 - 126.0, 180.0)
 	var panel_height := clampf(content_height + 20.0, 180.0, maximum_height)
 	_anchor_rect(_academy_panel, Vector2.ZERO, Rect2(28.0, 190.0, 390.0, panel_height))
 
@@ -1926,6 +2035,15 @@ func _update_academy_live_metrics(snapshot: Dictionary) -> void:
 		}
 		for raw_kind: Variant in counter_metrics.keys():
 			_academy_live_metrics[counter_metrics[raw_kind]] = float(counters.get(raw_kind, 0))
+	var academy_metrics_value: Variant = snapshot.get(&"academy_metrics", {})
+	if academy_metrics_value is Dictionary:
+		for raw_metric: Variant in (academy_metrics_value as Dictionary).keys():
+			_academy_live_metrics[raw_metric] = float(
+				(academy_metrics_value as Dictionary).get(raw_metric, 0.0)
+			)
+	var transmission_value: Variant = snapshot.get(&"transmission", {})
+	if transmission_value is Dictionary:
+		_academy_transmission_snapshot = (transmission_value as Dictionary).duplicate(true)
 	_refresh_academy_panel()
 
 
@@ -2850,6 +2968,19 @@ func _refresh_binding_prompts(mode: StringName) -> void:
 		_controls_label.add_theme_font_size_override(&"font_size", 14)
 		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
 		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
+	if StringName(_transmission_snapshot.get(&"mode", &"AUTOMATIC")) == &"MANUAL":
+		if mode == InputRouter.INPUT_MODE_TOUCH:
+			_controls_label.text += "\nSHIFT DOWN / UP BUTTONS CONTROL THE MANUAL GEARBOX"
+			_controls_label.add_theme_font_size_override(&"font_size", 18)
+			_anchor_rect(_controls_panel, Vector2(0.5, 0.0), Rect2(-390.0, 196.0, 780.0, 104.0))
+			_anchor_rect(_controls_label, Vector2(0.5, 0.0), Rect2(-372.0, 202.0, 744.0, 92.0))
+		else:
+			_controls_label.text += "\n%s SHIFT DOWN   %s SHIFT UP" % [
+				InputRouter.get_action_label(InputRouter.SHIFT_DOWN, mode, 2),
+				InputRouter.get_action_label(InputRouter.SHIFT_UP, mode, 2),
+			]
+			_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -124.0, 620.0, 90.0))
+			_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -118.0, 592.0, 78.0))
 	_paused_label.text = "PAUSED\n%s  RESUME\n%s  SETTINGS" % [
 		_active_action_label(InputRouter.PAUSE),
 		_active_action_label(InputRouter.OPEN_SETTINGS),
@@ -2933,6 +3064,7 @@ func _on_activity_prepared(activity: StringName) -> void:
 		_academy_lesson.clear()
 		_academy_presentation.clear()
 		_academy_live_metrics.clear()
+		_academy_transmission_snapshot.clear()
 		_apply_activity_presentation_scope()
 		_refresh_academy_panel()
 	if activity == &"ACADEMY":

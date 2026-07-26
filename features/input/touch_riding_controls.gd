@@ -41,6 +41,9 @@ const ACTION_LEAN_BACK: StringName = &"lean_back"
 const ACTION_PRELOAD: StringName = &"preload"
 const ACTION_FLOW: StringName = &"flow_boost"
 const ACTION_RACECRAFT: StringName = &"racecraft_technique"
+const ACTION_SHIFT_DOWN: StringName = &"shift_down"
+const ACTION_SHIFT_UP: StringName = &"shift_up"
+const ACTION_CYCLE_CAMERA: StringName = &"cycle_camera"
 const ACTION_RESET: StringName = &"reset_bike"
 const ACTION_PAUSE: StringName = &"pause_game"
 const ACTION_OPEN_GARAGE: StringName = &"open_garage"
@@ -71,8 +74,8 @@ const MUTED := Color("8b989f")
 const WARNING := Color("ff806b")
 
 const RIDE_BUTTON_ORDER: Array[StringName] = [
-	&"pause", &"reset", &"garage", &"flow", &"racecraft",
-	&"preload", &"brake", &"throttle",
+	&"pause", &"reset", &"garage", &"camera", &"flow", &"racecraft",
+	&"shift_down", &"shift_up", &"preload", &"brake", &"throttle",
 ]
 const GARAGE_BUTTON_ORDER: Array[StringName] = [
 	&"event_previous", &"event_next", &"setup_left", &"setup_right", &"confirm",
@@ -90,6 +93,7 @@ var _runtime_touch_seen: bool = false
 var _user_scale: float = 1.0
 var _opacity: float = 0.82
 var _handedness: StringName = HANDEDNESS_RIGHT
+var _manual_transmission: bool = false
 
 var _viewport_size := Vector2.ZERO
 var _safe_rect := Rect2()
@@ -198,6 +202,7 @@ func configure_touch_controls(values: Dictionary) -> void:
 		_handedness
 	)
 	_handedness = _normalize_handedness(handedness_value)
+	_manual_transmission = str(values.get("transmission_mode", "AUTOMATIC")).to_upper() == "MANUAL"
 	if _has_any_setting(values, ["touchscreen_override", "touch_override"]):
 		set_touchscreen_override(int(_first_setting(
 			values, ["touchscreen_override", "touch_override"], _touchscreen_override
@@ -279,6 +284,7 @@ func get_touch_layout_snapshot() -> Dictionary:
 		&"controls_visible": _controls_visible,
 		&"rotate_prompt_visible": _rotate_prompt_visible,
 		&"handedness": _handedness,
+		&"manual_transmission": _manual_transmission,
 		&"authored_scale": _authored_scale,
 		&"user_scale": _user_scale,
 		&"opacity": _opacity,
@@ -312,7 +318,8 @@ func _ensure_semantic_actions() -> void:
 	var actions: Array[StringName] = [
 		ACTION_THROTTLE, ACTION_BRAKE, ACTION_STEER_LEFT, ACTION_STEER_RIGHT,
 		ACTION_LEAN_FORWARD, ACTION_LEAN_BACK, ACTION_PRELOAD, ACTION_FLOW,
-		ACTION_RACECRAFT, ACTION_RESET, ACTION_PAUSE, ACTION_OPEN_GARAGE,
+		ACTION_RACECRAFT, ACTION_SHIFT_DOWN, ACTION_SHIFT_UP,
+		ACTION_CYCLE_CAMERA, ACTION_RESET, ACTION_PAUSE, ACTION_OPEN_GARAGE,
 		ACTION_EVENT_PREVIOUS, ACTION_EVENT_NEXT, ACTION_GARAGE_LEFT,
 		ACTION_GARAGE_RIGHT, ACTION_CONFIRM, ACTION_WORKSHOP,
 		ACTION_OPEN_SETTINGS, ACTION_REPAIR, ACTION_TOGGLE_ASSIST,
@@ -408,6 +415,9 @@ func _rebuild_control_specs() -> void:
 	_add_control(&"preload", ACTION_PRELOAD, "PRELOAD", CREAM)
 	_add_control(&"flow", ACTION_FLOW, "FLOW", CYAN)
 	_add_control(&"racecraft", ACTION_RACECRAFT, "TECHNIQUE", AMBER)
+	_add_control(&"shift_down", ACTION_SHIFT_DOWN, "SHIFT\nDOWN", CREAM)
+	_add_control(&"shift_up", ACTION_SHIFT_UP, "SHIFT\nUP", AMBER)
+	_add_control(&"camera", ACTION_CYCLE_CAMERA, "CAMERA", CYAN)
 	_add_control(&"reset", ACTION_RESET, "RESET", CREAM)
 	_add_control(&"pause", ACTION_PAUSE, "PAUSE", CREAM)
 	_add_control(&"garage", ACTION_OPEN_GARAGE, "GARAGE", CREAM)
@@ -481,6 +491,25 @@ func _layout_ride_controls() -> void:
 		Vector2(reset_rect.position.x - gap - target, utility_y),
 		Vector2.ONE * target
 	)
+	var camera_rect := Rect2(
+		Vector2(garage_rect.position.x - gap - target, utility_y),
+		Vector2.ONE * target
+	)
+	var shift_size := Vector2(target * 1.04, target)
+	var shift_down_rect := Rect2(
+		Vector2(
+			_layout_rect.get_center().x - shift_size.x * 0.5,
+			bottom - shift_size.y
+		),
+		shift_size
+	)
+	var shift_up_rect := Rect2(
+		Vector2(
+			shift_down_rect.position.x,
+			shift_down_rect.position.y - gap - shift_size.y
+		),
+		shift_size
+	)
 
 	_joystick_zone = Rect2(
 		Vector2(_layout_rect.position.x, _layout_rect.position.y + _layout_rect.size.y * 0.34),
@@ -508,6 +537,9 @@ func _layout_ride_controls() -> void:
 		&"preload": preload_rect,
 		&"flow": flow_rect,
 		&"racecraft": racecraft_rect,
+		&"shift_down": shift_down_rect,
+		&"shift_up": shift_up_rect,
+		&"camera": camera_rect,
 		&"reset": reset_rect,
 		&"pause": pause_rect,
 		&"garage": garage_rect,
@@ -598,7 +630,16 @@ func _update_presentation(rebuild_visibility: bool) -> void:
 		var in_context := false
 		match _context:
 			CONTEXT_RIDE:
-				in_context = control_id == CONTROL_JOYSTICK or control_id in RIDE_BUTTON_ORDER
+				in_context = (
+					control_id == CONTROL_JOYSTICK
+					or (
+						control_id in RIDE_BUTTON_ORDER
+						and (
+							_manual_transmission
+							or control_id not in [&"shift_down", &"shift_up"]
+						)
+					)
+				)
 			CONTEXT_GARAGE:
 				in_context = control_id in GARAGE_BUTTON_ORDER
 			CONTEXT_RESULTS:

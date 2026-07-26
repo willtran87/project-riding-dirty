@@ -18,8 +18,9 @@ const GEOMETRY_EPSILON := 1.0
 
 const RIDE_TARGETS: Array[StringName] = [
 	&"joystick", &"throttle", &"brake", &"preload", &"flow", &"racecraft",
-	&"reset", &"pause", &"garage",
+	&"reset", &"pause", &"garage", &"camera",
 ]
+const MANUAL_SHIFT_TARGETS: Array[StringName] = [&"shift_down", &"shift_up"]
 const MIRRORED_RIDE_TARGETS: Array[StringName] = [
 	&"joystick", &"throttle", &"brake", &"preload", &"flow", &"racecraft",
 ]
@@ -33,7 +34,8 @@ const RESULTS_TARGETS: Array[StringName] = [
 const ALL_ACTIONS: Array[StringName] = [
 	&"throttle", &"brake", &"steer_left", &"steer_right",
 	&"lean_forward", &"lean_back", &"preload", &"flow_boost",
-	&"racecraft_technique", &"reset_bike", &"pause_game", &"open_garage",
+	&"racecraft_technique", &"shift_down", &"shift_up",
+	&"cycle_camera", &"reset_bike", &"pause_game", &"open_garage",
 	&"event_previous", &"event_next", &"garage_left", &"garage_right",
 	&"confirm_selection", &"open_workshop", &"open_settings", &"repair_bike",
 	&"toggle_assist", &"restart_run", &"toggle_replay", &"continue_weekend",
@@ -42,6 +44,7 @@ const RIDE_SYSTEM_ACTIONS: Dictionary = {
 	&"reset": &"reset_bike",
 	&"pause": &"pause_game",
 	&"garage": &"open_garage",
+	&"camera": &"cycle_camera",
 }
 const GARAGE_ACTIONS: Dictionary = {
 	&"event_previous": &"event_previous",
@@ -126,6 +129,7 @@ func _run() -> void:
 	_probe_analog_joystick()
 	_probe_simultaneous_riding_inputs()
 	_probe_riding_system_actions()
+	await _probe_manual_transmission()
 	await _probe_deactivation_and_modes()
 	await _probe_handedness_mirroring()
 	await _probe_compact_landscape()
@@ -136,7 +140,7 @@ func _run() -> void:
 	var passed := _failures.is_empty()
 	if passed:
 		print(
-			"TOUCH RIDING CONTROLS PROBE: PASS  //  ride=9 garage=10 minimum=112px "
+			"TOUCH RIDING CONTROLS PROBE: PASS  //  ride=10 garage=10 minimum=112px "
 			+ "results=4 multitouch=true analog=true modes=3 handedness=2 portrait=true"
 		)
 	else:
@@ -158,6 +162,7 @@ func _probe_landscape_layout() -> void:
 	_check(bool(snapshot.get(&"controls_visible", false)), "landscape RIDE controls are visible")
 	_check(not bool(snapshot.get(&"rotate_prompt_visible", true)), "landscape does not show the rotate prompt")
 	_check_target_group(snapshot, RIDE_TARGETS, true, "landscape RIDE")
+	_check_target_group(snapshot, MANUAL_SHIFT_TARGETS, false, "automatic transmission hides manual shifts")
 	_check_target_group(snapshot, GARAGE_TARGETS, false, "landscape RIDE hides Garage")
 	_check_layout_geometry(snapshot, RIDE_TARGETS, "full landscape RIDE")
 	for control_id: StringName in RIDE_SYSTEM_ACTIONS:
@@ -256,6 +261,20 @@ func _probe_riding_system_actions() -> void:
 	var snapshot := _snapshot()
 	for control_id: StringName in RIDE_SYSTEM_ACTIONS:
 		_probe_semantic_button(snapshot, control_id, RIDE_SYSTEM_ACTIONS[control_id], 30 + RIDE_SYSTEM_ACTIONS.keys().find(control_id), "RIDE")
+
+
+func _probe_manual_transmission() -> void:
+	_release_everything()
+	_configure(&"AUTO", &"RIGHT", &"MANUAL")
+	await _settle_layout()
+	var snapshot := _snapshot()
+	_check(bool(snapshot.get(&"manual_transmission", false)), "manual transmission is authoritative in touch snapshot")
+	_check_target_group(snapshot, MANUAL_SHIFT_TARGETS, true, "manual transmission shift controls")
+	_check_layout_geometry(snapshot, MANUAL_SHIFT_TARGETS, "manual transmission shifts")
+	_probe_semantic_button(snapshot, &"shift_down", &"shift_down", 34, "RIDE manual")
+	_probe_semantic_button(snapshot, &"shift_up", &"shift_up", 35, "RIDE manual")
+	_configure(&"AUTO", &"RIGHT", &"AUTOMATIC")
+	await _settle_layout()
 
 
 func _probe_deactivation_and_modes() -> void:
@@ -521,12 +540,17 @@ func _snapshot() -> Dictionary:
 	return _controls.call(&"get_touch_layout_snapshot") as Dictionary
 
 
-func _configure(mode: StringName, handedness: StringName) -> void:
+func _configure(
+	mode: StringName,
+	handedness: StringName,
+	transmission_mode: StringName = &"AUTOMATIC"
+) -> void:
 	_controls.call(&"configure_touch_controls", {
 		"touch_controls": String(mode),
 		"touch_control_scale": 1.0,
 		"touch_control_opacity": 0.72,
 		"touch_handedness": String(handedness),
+		"transmission_mode": String(transmission_mode),
 	})
 
 

@@ -20,6 +20,9 @@ const LEAN_BACK: StringName = &"lean_back"
 const PRELOAD: StringName = &"preload"
 const FLOW_BOOST: StringName = &"flow_boost"
 const RACECRAFT: StringName = &"racecraft_technique"
+const SHIFT_DOWN: StringName = &"shift_down"
+const SHIFT_UP: StringName = &"shift_up"
+const CYCLE_CAMERA: StringName = &"cycle_camera"
 const RESET_BIKE: StringName = &"reset_bike"
 const RESTART_RUN: StringName = &"restart_run"
 const PAUSE: StringName = &"pause_game"
@@ -75,6 +78,9 @@ const ACTION_CONTEXTS: Dictionary = {
 	PRELOAD: [CONTEXT_RIDE],
 	FLOW_BOOST: [CONTEXT_RIDE],
 	RACECRAFT: [CONTEXT_RIDE],
+	SHIFT_DOWN: [CONTEXT_RIDE],
+	SHIFT_UP: [CONTEXT_RIDE],
+	CYCLE_CAMERA: [CONTEXT_RIDE],
 	RESET_BIKE: [CONTEXT_RIDE],
 	RESTART_RUN: [CONTEXT_RIDE, CONTEXT_RESULTS, CONTEXT_REPLAY],
 	PAUSE: [CONTEXT_GLOBAL],
@@ -483,6 +489,14 @@ func is_racecraft_pressed() -> bool:
 	return Input.is_action_pressed(RACECRAFT)
 
 
+func is_shift_down_just_pressed() -> bool:
+	return Input.is_action_just_pressed(SHIFT_DOWN)
+
+
+func is_shift_up_just_pressed() -> bool:
+	return Input.is_action_just_pressed(SHIFT_UP)
+
+
 func _register_actions() -> void:
 	_add_key(THROTTLE, KEY_W)
 	_add_axis(THROTTLE, JOY_AXIS_TRIGGER_RIGHT, 1.0)
@@ -505,6 +519,12 @@ func _register_actions() -> void:
 	_add_button(FLOW_BOOST, JOY_BUTTON_LEFT_SHOULDER)
 	_add_key(RACECRAFT, KEY_C)
 	_add_button(RACECRAFT, JOY_BUTTON_RIGHT_SHOULDER)
+	_add_key(SHIFT_DOWN, KEY_Q)
+	_add_button(SHIFT_DOWN, JOY_BUTTON_DPAD_DOWN)
+	_add_key(SHIFT_UP, KEY_E)
+	_add_button(SHIFT_UP, JOY_BUTTON_DPAD_UP)
+	_add_key(CYCLE_CAMERA, KEY_B)
+	_add_button(CYCLE_CAMERA, JOY_BUTTON_RIGHT_STICK)
 	_add_key(RESET_BIKE, KEY_R)
 	_add_button(RESET_BIKE, JOY_BUTTON_Y)
 	_add_key(RESTART_RUN, KEY_ENTER)

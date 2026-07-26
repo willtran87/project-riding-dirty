@@ -9,6 +9,7 @@ const GATE_LAUNCH_SCRIPT := preload("res://features/race/race_gate_launch.gd")
 const REPUTATION_POLICY_SCRIPT := preload("res://features/race/race_reputation_policy.gd")
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
 const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
+const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
 const AIRTIME_REWARD_CAP := 600
 
 signal time_updated(elapsed_usec: int, best_usec: int, checkpoint: int, total: int)
@@ -89,6 +90,7 @@ var _academy_landing_error_total: float = 0.0
 var _academy_landing_samples: int = 0
 var _academy_clean_checkpoints: int = 0
 var _academy_racecraft_metrics: Dictionary = {}
+var _academy_transmission_tracker: RefCounted = ACADEMY_TRANSMISSION_TRACKER_SCRIPT.new()
 var _race_airtime_seconds: float = 0.0
 var _race_clean_airtime_seconds: float = 0.0
 var _active_session_surface: StringName = &"PACKED"
@@ -121,7 +123,7 @@ func _physics_process(delta: float) -> void:
 				_start_race()
 		State.RACING:
 			_elapsed_usec = _run_clock.advance(delta)
-			_update_academy_metrics()
+			_update_academy_metrics(delta)
 			_update_integrity(delta)
 			_race_pack.set_player_race_state(_laps_completed, -1, _player_penalty_usec, &"RUNNING")
 			time_updated.emit(_elapsed_usec, ghost.best_time_usec, _expected_checkpoint, _checkpoint_data.size())
@@ -550,6 +552,8 @@ func get_session_snapshot() -> Dictionary:
 		&"player_metrics": _player_race_metrics.get_snapshot(),
 		&"gate_launch": get_gate_launch_snapshot(),
 		&"racecraft": bike.get_racecraft_snapshot() if bike != null else {},
+		&"transmission": bike.get_transmission_snapshot() if bike != null else {},
+		&"academy_metrics": _academy_live_metrics_snapshot(),
 	}
 
 
@@ -1143,7 +1147,14 @@ func _build_competitive_signature() -> String:
 		"laps": _session_config.laps,
 		"bike_class": competitive_rules.get(&"competitive_bike_class", _session_config.bike_class),
 		"difficulty": competitive_rules.get(&"competitive_difficulty", _session_config.difficulty),
-		"assist_mode": competitive_rules.get(&"competitive_assist_mode", Profile.assist_mode),
+		"assist_mode": competitive_rules.get(
+			&"competitive_assist_mode",
+			Profile.get_assist_signature() if Profile.has_method(&"get_assist_signature") else Profile.assist_mode
+		),
+		"transmission_mode": (
+			StringName(bike.get_transmission_snapshot().get(&"mode", &"AUTOMATIC"))
+			if bike != null else &"AUTOMATIC"
+		),
 		"setup_id": competitive_rules.get(&"competitive_setup_id", Profile.current_setup),
 		"tune_signature": build_signature,
 		"weather": _session_config.weather,
@@ -1223,9 +1234,10 @@ func _reset_academy_metrics() -> void:
 		&"rail_spends": 0,
 		&"brace_saves": 0,
 	}
+	_academy_transmission_tracker.call(&"reset")
 
 
-func _update_academy_metrics() -> void:
+func _update_academy_metrics(delta: float) -> void:
 	if bike == null:
 		return
 	var elapsed_seconds := float(_elapsed_usec) / 1_000_000.0
@@ -1233,6 +1245,10 @@ func _update_academy_metrics() -> void:
 		_academy_launch_speed = maxf(_academy_launch_speed, bike.get_speed_mps())
 	if _academy_reaction_seconds < 0.0 and bike.get_speed_mps() >= 0.8:
 		_academy_reaction_seconds = elapsed_seconds
+	if StringName(_session_config.rules.get(&"academy_lesson_id", &"")) == &"MANUAL_SHIFTING":
+		_academy_transmission_tracker.call(
+			&"sample", delta, bike.get_transmission_snapshot()
+		)
 
 
 func _on_academy_bike_landed(intensity: float) -> void:
@@ -1316,7 +1332,16 @@ func _get_academy_metrics(result: RaceResult) -> Dictionary:
 	}
 	for raw_key: Variant in _academy_racecraft_metrics.keys():
 		metrics[raw_key] = _academy_racecraft_metrics[raw_key]
+	var transmission_metrics := _academy_transmission_tracker.call(&"get_metrics") as Dictionary
+	for raw_key: Variant in transmission_metrics.keys():
+		metrics[raw_key] = transmission_metrics[raw_key]
 	return metrics
+
+
+func _academy_live_metrics_snapshot() -> Dictionary:
+	if StringName(_session_config.rules.get(&"academy_lesson_id", &"")) != &"MANUAL_SHIFTING":
+		return {}
+	return (_academy_transmission_tracker.call(&"get_metrics") as Dictionary).duplicate(true)
 
 
 func _surface_for_lap(lap: int) -> StringName:

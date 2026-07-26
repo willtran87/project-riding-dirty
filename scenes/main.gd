@@ -126,6 +126,7 @@ func _ready() -> void:
 		initial_surface_root
 	)
 	_race_services.initialize(_race, _bike, _camera, _hud)
+	_race_services.set_riding_camera_active(false)
 	_race_services.leaderboard_updated.connect(_hud.update_leaderboard_result)
 	_race_services.replay_available.connect(_hud.update_replay_available)
 	_race_services.replay_state_changed.connect(_hud.update_replay_state)
@@ -183,6 +184,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_hud.visible = false
 		_touch_results_visible = false
 		_camera.set_composition_offset_right(GARAGE_COMPOSITION_OFFSET_METERS)
+		_race_services.set_riding_camera_active(false)
 		_camera.snap_to_target()
 		_garage.update_competition_context(_current_activity, _ghost.best_time_usec, _active_competition_id())
 		_garage.show_garage()
@@ -248,6 +250,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	_refresh_touch_context()
 	_stop_all_activities()
 	_camera.set_composition_offset_right(0.0)
+	_race_services.set_riding_camera_active(true)
 	# Garage actions can advance or roll over a season while this scene remains
 	# alive; resolve the newly persisted services before deriving session rules.
 	_refresh_career_services()
@@ -280,6 +283,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 		if Profile.has_method(&"get_active_bike_setup_snapshot"):
 			active_build = Profile.call(&"get_active_bike_setup_snapshot") as Dictionary
 		apply_career_opponent_build_match(session, active_build, setup)
+	_apply_session_transmission_rule(session)
 	var authoritative_route := get_authoritative_route(track_id)
 	var authoritative_surface_root := _get_track_builder(track_id)
 	# RaceController owns route preparation internally, so it still receives the
@@ -299,10 +303,12 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	Profile.set_current_setup(setup)
 	var effective_setup := setup
 	var effective_assist := Profile.assist_mode
+	var effective_assist_configuration := Profile.get_assist_configuration()
 	var equalized_challenge := session != null and RaceEventCatalog.is_challenge_event(activity)
 	if equalized_challenge:
 		effective_setup = StringName(session.rules.get(&"competitive_setup_id", &"BALANCED"))
 		effective_assist = &"PRO" if StringName(session.rules.get(&"competitive_assist_mode", &"STANDARD")) == &"LIMITED" else &"SPORT"
+		effective_assist_configuration = preload("res://common/riding_assist_config.gd").preset(effective_assist)
 	_bike.apply_setup(effective_setup)
 	if equalized_challenge:
 		_bike.apply_equalized_race_class(session.bike_class)
@@ -315,7 +321,9 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	_bike.apply_cosmetic_tier(Profile.get_cosmetic_tier())
 	if Profile.has_method(&"get_rider_cosmetics"):
 		_bike.apply_rider_cosmetics(Profile.call(&"get_rider_cosmetics") as Dictionary)
-	_bike.apply_assist_mode(effective_assist)
+	_bike.apply_assist_configuration(effective_assist_configuration, effective_assist)
+	if _hud.has_method(&"configure_assists"):
+		_hud.call(&"configure_assists", effective_assist, effective_assist_configuration, equalized_challenge)
 	phase_begin_usec = _finish_profiled_activity_phase(&"bike_setup", phase_begin_usec, profile_activity)
 	match activity:
 		&"FREESTYLE":
@@ -429,6 +437,7 @@ func _restart_academy_progression() -> void:
 	if session == null:
 		return
 	session.bike_class = Profile.selected_bike_class
+	_apply_session_transmission_rule(session)
 	_ensure_track_loaded(session.track_id)
 	var authoritative_route := get_authoritative_route(session.track_id)
 	var authoritative_surface_root := _get_track_builder(session.track_id)
@@ -443,9 +452,27 @@ func _restart_academy_progression() -> void:
 func _stop_all_activities() -> void:
 	if is_instance_valid(_race_services):
 		_race_services.stop_transient_presentation()
+		_race_services.clear_activity_transmission_override()
 	_race.enter_waiting()
 	_freestyle.enter_waiting()
 	_discovery.enter_waiting()
+
+
+func _apply_session_transmission_rule(session: RaceSessionConfig) -> void:
+	if not is_instance_valid(_race_services):
+		return
+	var forced_mode := (
+		StringName(session.rules.get(&"forced_transmission_mode", &""))
+		if session != null else &""
+	)
+	if forced_mode in [&"AUTOMATIC", &"MANUAL"]:
+		_race_services.set_activity_transmission_override(forced_mode, true)
+	else:
+		# Lock the rider's preference at activity composition so Settings cannot
+		# mutate physics after the competitive signature and replay identity bind.
+		_race_services.set_activity_transmission_override(
+			_race_services.get_preferred_transmission_mode(), false
+		)
 
 
 func _get_requested_test_activity() -> StringName:

@@ -6,6 +6,8 @@ const RECOVERY_TIPPED: StringName = &"AUTO_TIPPED"
 const RECOVERY_WORLD_FALL: StringName = &"AUTO_WORLD_FALL"
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
+const BIKE_TRANSMISSION_SCRIPT := preload("res://entities/bike/bike_transmission.gd")
+const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const GATE_LAUNCH_MIN_MULTIPLIER := 0.94
 const GATE_LAUNCH_MAX_MULTIPLIER := 1.08
 const GATE_LAUNCH_DEFAULT_DURATION := 0.90
@@ -83,6 +85,7 @@ signal pack_contacted(intensity: float)
 signal respawned()
 signal racecraft_state_changed(snapshot: Dictionary)
 signal racecraft_event(kind: StringName, payload: Dictionary)
+signal transmission_changed(snapshot: Dictionary)
 ## Emitted before an automatic recovery. A race controller can synchronously
 ## respawn the bike at its authoritative legal rejoin; otherwise the bike falls
 ## back to its locally sampled safe transform.
@@ -240,6 +243,12 @@ var _flow_gain_multiplier: float = 1.0
 var _preload_buffer_time: float = 0.0
 var _ground_coyote_time: float = 0.0
 var _assist_strength: float = 0.45
+var _assist_mode: StringName = &"SPORT"
+var _steering_assist: float = 0.45
+var _braking_assist: float = 0.45
+var _landing_assist: float = 0.45
+var _traction_assist: float = 0.45
+var _balance_assist: float = 0.45
 var _front_contact := WheelContact.new()
 var _rear_contact := WheelContact.new()
 var _legacy_surface: StringName = &"PACKED"
@@ -302,6 +311,7 @@ var _racecraft_state_time: float = 0.0
 var _last_throttle: float = 0.0
 var _last_brake: float = 0.0
 var _last_lean: float = 0.0
+var _transmission: BikeTransmission = BIKE_TRANSMISSION_SCRIPT.new()
 var _barrier_envelope_probes: Array[ShapeCast3D] = []
 var _barrier_envelope_contact_count: int = 0
 
@@ -322,6 +332,8 @@ func _ready() -> void:
 	])
 	_landing_query.collision_mask = collision_mask
 	_landing_query.exclude = [get_rid()]
+	_transmission.shifted.connect(_on_transmission_shifted)
+	_transmission.state_changed.connect(_on_transmission_state_changed)
 
 
 func _physics_process(delta: float) -> void:
@@ -359,6 +371,15 @@ func _physics_process(delta: float) -> void:
 	_grounded = _front_contact.colliding or _rear_contact.colliding
 	_ground_coyote_time = 0.12 if _grounded else maxf(_ground_coyote_time - delta, 0.0)
 	_update_active_surface()
+	_transmission.update(
+		delta,
+		get_speed_mps(),
+		throttle,
+		_grounded,
+		(controls_enabled or accepts_gate_input) and InputRouter.is_shift_up_just_pressed(),
+		(controls_enabled or accepts_gate_input) and InputRouter.is_shift_down_just_pressed(),
+		maximum_speed_mps
+	)
 	_handle_flow_boost(delta, brake, raw_steer)
 	_handle_racecraft_technique(throttle, brake, raw_steer)
 
@@ -611,11 +632,30 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	center_of_mass = _base_center_of_mass
 	_visual.call(&"reset_terrain_feedback")
 	_engine_audio.call(&"reset_surface_feedback")
+	_transmission.reset()
 	respawned.emit()
 
 
 func get_speed_mps() -> float:
 	return Vector3(linear_velocity.x, 0.0, linear_velocity.z).length()
+
+
+func configure_transmission(requested_mode: Variant) -> void:
+	if not _transmission.configure_mode(requested_mode):
+		transmission_changed.emit(_transmission.get_snapshot())
+
+
+func get_transmission_snapshot() -> Dictionary:
+	return _transmission.get_snapshot()
+
+
+func _on_transmission_shifted(_from_gear: int, _to_gear: int, _mode: StringName) -> void:
+	if controls_enabled:
+		_play_haptic(0.08, 0.22, 0.055)
+
+
+func _on_transmission_state_changed(snapshot: Dictionary) -> void:
+	transmission_changed.emit(snapshot)
 
 
 func get_barrier_envelope_contact_count() -> int:
@@ -1063,13 +1103,41 @@ func apply_rider_cosmetics(cosmetics: Dictionary) -> void:
 
 
 func apply_assist_mode(mode: StringName) -> void:
-	match mode:
-		&"ASSISTED":
-			_assist_strength = 0.78
-		&"PRO":
-			_assist_strength = 0.12
-		_:
-			_assist_strength = 0.45
+	apply_assist_configuration(RIDING_ASSIST_CONFIG.preset(mode), mode)
+
+
+func apply_assist_configuration(configuration: Dictionary, mode: StringName = &"CUSTOM") -> void:
+	var normalized := RIDING_ASSIST_CONFIG.sanitize(configuration, mode)
+	_assist_mode = mode if mode in [&"ASSISTED", &"SPORT", &"PRO", &"CUSTOM"] else &"CUSTOM"
+	_steering_assist = float(normalized[&"steering"])
+	_braking_assist = float(normalized[&"braking"])
+	_landing_assist = float(normalized[&"landing"])
+	_traction_assist = float(normalized[&"traction"])
+	_balance_assist = float(normalized[&"balance"])
+	_assist_strength = (
+		_steering_assist
+		+ _braking_assist
+		+ _landing_assist
+		+ _traction_assist
+		+ _balance_assist
+	) / 5.0
+
+
+func get_assist_snapshot() -> Dictionary:
+	return {
+		&"mode": _assist_mode,
+		&"steering": _steering_assist,
+		&"braking": _braking_assist,
+		&"landing": _landing_assist,
+		&"traction": _traction_assist,
+		&"balance": _balance_assist,
+		&"average": _assist_strength,
+		&"steering_yaw_scale": lerpf(0.86, 1.12, _steering_assist),
+		&"brake_release_max": _braking_assist * 0.32,
+		&"landing_alignment_scale": lerpf(0.28, 1.88, _landing_assist),
+		&"traction_cut_max": _traction_assist * 0.34,
+		&"balance_scale": lerpf(0.9, 1.12, _balance_assist),
+	}
 
 
 func set_surface(surface: StringName) -> void:
@@ -1248,7 +1316,11 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 			if _front_contact.colliding and uphill_component > 0.0:
 				hill_support = rad_to_deg(uphill_component) / 90.0 * hill_assist_force
 				rear_longitudinal_request += throttle * (
-				engine_force * _run_engine_multiplier * _gate_launch_drive_multiplier + hill_support
+				engine_force
+				* _run_engine_multiplier
+				* _gate_launch_drive_multiplier
+				* _transmission.get_drive_multiplier()
+				+ hill_support
 			)
 			var roost_cost := RACECRAFT_RULES.roost_drive_cost_fraction(
 				float(_pack_racecraft_context.get(&"roost_pressure", 0.0)),
@@ -1257,6 +1329,14 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 			rear_longitudinal_request *= 1.0 - roost_cost
 			var draft_strength := clampf(float(_pack_racecraft_context.get(&"draft_strength", 0.0)), 0.0, 1.0)
 			rear_longitudinal_request += throttle * draft_assist_force * draft_strength
+			# Traction support only trims excess wheel demand from the previous
+			# physical contact sample. It never adds acceleration or affects Flow.
+			var traction_cut := (
+				smoothstep(0.42, 0.95, _rear_contact.slip)
+				* _traction_assist
+				* 0.34
+			)
+			rear_longitudinal_request *= 1.0 - traction_cut
 	if is_boosting() and _rear_contact.colliding:
 		var boost_falloff := clampf(_boost_time / 0.22, 0.15, 1.0)
 		rear_longitudinal_request += flow_boost_force * boost_falloff
@@ -1265,8 +1345,16 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 	if brake > 0.0:
 		var forward_speed := maxf(_front_contact.longitudinal_speed, _rear_contact.longitudinal_speed)
 		if forward_speed > 0.8:
-			front_longitudinal_request = -brake_force * brake * front_brake_bias
-			rear_longitudinal_request -= brake_force * brake * (1.0 - front_brake_bias)
+			# Braking support is a bounded anti-lock pressure release. It responds
+			# to real contact slip and preserves the configured brake bias.
+			var front_release := smoothstep(0.48, 0.94, _front_contact.slip) * _braking_assist * 0.32
+			var rear_release := smoothstep(0.52, 0.96, _rear_contact.slip) * _braking_assist * 0.24
+			front_longitudinal_request = (
+				-brake_force * brake * front_brake_bias * (1.0 - front_release)
+			)
+			rear_longitudinal_request -= (
+				brake_force * brake * (1.0 - front_brake_bias) * (1.0 - rear_release)
+			)
 		elif _rear_contact.longitudinal_speed > -3.5:
 			rear_longitudinal_request -= reverse_force * brake
 	elif throttle <= 0.01:
@@ -1298,7 +1386,11 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 		rear_longitudinal_grip_scale,
 		rear_lateral_grip_scale * rail_grip * berm_grip * rut_grip * slide_rear_grip
 	)
-	var stability_scale := 0.36 if _slide_active else (1.24 if _active_flow_mode == RACECRAFT_RULES.FLOW_RAIL else 1.0)
+	var steering_support := lerpf(0.88, 1.14, _steering_assist)
+	var stability_scale := (
+		0.36 if _slide_active
+		else (1.24 if _active_flow_mode == RACECRAFT_RULES.FLOW_RAIL else steering_support)
+	)
 	_apply_chassis_lateral_stability(ground_up, _target_ground_yaw_rate, stability_scale)
 
 	var planar_velocity := Vector3(linear_velocity.x, 0.0, linear_velocity.z)
@@ -1325,7 +1417,12 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 		-yaw_rate_torque_limit,
 		yaw_rate_torque_limit
 	)
-	apply_torque(ground_up * yaw_rate_torque * steer_authority)
+	apply_torque(
+		ground_up
+		* yaw_rate_torque
+		* steer_authority
+		* lerpf(0.86, 1.12, _steering_assist)
+	)
 
 	var rider_right := (-global_transform.basis.z).slide(ground_up).normalized().cross(ground_up).normalized()
 	if rider_right.length_squared() > 0.5:
@@ -1657,7 +1754,10 @@ func _update_visual_and_audio(
 		_active_surface,
 		_terrain_roughness,
 		get_rear_slip(),
-		_suspension_activity
+		_suspension_activity,
+		_transmission.current_gear,
+		_transmission.normalized_rpm,
+		_transmission.shift_cut_remaining
 	)
 
 
@@ -2176,7 +2276,7 @@ func _apply_balance(steer: float) -> void:
 	# A rider retains roll control when bumps or a jump face unload one wheel.
 	# The old 35% scale is what let Pine's opening rhythm tip the chassis over.
 	var contact_scale := 1.0 if contact_count >= 2 else 0.86
-	var assist_scale := lerpf(0.9, 1.12, _assist_strength)
+	var assist_scale := lerpf(0.9, 1.12, _balance_assist)
 	var roll_error := correction_axis.dot(forward)
 	var roll_velocity := angular_velocity.dot(forward)
 	var roll_torque := roll_error * upright_strength * assist_scale - roll_velocity * upright_damping
@@ -2291,6 +2391,10 @@ func _apply_landing_alignment(steer: float) -> void:
 	var pitch_command := clampf(absf(_weight_shift) / 0.7, 0.0, 1.0)
 	var command_override := clampf(absf(steer) * 0.72 + pitch_command * 0.78, 0.0, 1.0)
 	_landing_alignment_weight = descent_ratio * proximity_ratio * (1.0 - command_override * 0.9)
+	_landing_alignment_weight = minf(
+		_landing_alignment_weight * lerpf(0.28, 1.88, _landing_assist),
+		1.0
+	)
 	if _active_flow_mode == RACECRAFT_RULES.FLOW_COMPOSE or _compose_landing_charge > 0.15:
 		_landing_alignment_weight = minf(_landing_alignment_weight * 1.42 + 0.08, 1.0)
 	if _landing_alignment_weight <= 0.001:

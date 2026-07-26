@@ -72,6 +72,9 @@ var _audio_enabled: bool = false
 var _virtual_rpm: float = 0.12
 var _gear: int = 1
 var _shift_cut: float = 0.0
+var _authoritative_transmission: bool = false
+var _authoritative_rpm: float = 0.12
+var _authoritative_shift_seconds: float = 0.0
 var _current_surface_key: StringName = &""
 var _base_volume_db: float = -10.0
 var _last_engine_volume_db: float = -10.0
@@ -126,15 +129,23 @@ func _process(delta: float) -> void:
 		_assign_engine_bus()
 	_capture_external_volume()
 	_update_class_timbre(delta)
-	_update_virtual_gear()
-	_shift_cut = maxf(_shift_cut - delta * 5.5, 0.0)
-	var target_rpm := clampf(
-		_speed_mps * float(GEAR_RATIOS[_gear - 1]) / 12.0 + _throttle * 0.22,
-		0.1,
-		1.0
-	)
-	if not _grounded:
-		target_rpm = minf(target_rpm + _throttle * 0.16, 1.0)
+	var target_rpm := _authoritative_rpm
+	if _authoritative_transmission:
+		_shift_cut = clampf(
+			_authoritative_shift_seconds / BikeTransmission.SHIFT_DURATION_SECONDS,
+			0.0,
+			1.0
+		)
+	else:
+		_update_virtual_gear()
+		_shift_cut = maxf(_shift_cut - delta * 5.5, 0.0)
+		target_rpm = clampf(
+			_speed_mps * float(GEAR_RATIOS[_gear - 1]) / 12.0 + _throttle * 0.22,
+			0.1,
+			1.0
+		)
+		if not _grounded:
+			target_rpm = minf(target_rpm + _throttle * 0.16, 1.0)
 	_virtual_rpm = lerpf(_virtual_rpm, target_rpm, 1.0 - exp(-_class_rpm_response_hz * delta))
 
 	var frequency := (52.0 + _virtual_rpm * 148.0 * _class_rpm_span + _throttle * 18.0) * _class_pitch_bias
@@ -309,7 +320,10 @@ func set_engine_state(
 	surface: StringName = &"PACKED",
 	roughness: float = 0.35,
 	rear_slip: float = 0.0,
-	suspension_activity: float = 0.0
+	suspension_activity: float = 0.0,
+	gear: int = 0,
+	normalized_rpm: float = -1.0,
+	shift_seconds_remaining: float = 0.0
 ) -> void:
 	_speed_mps = speed_mps
 	_throttle = throttle
@@ -318,6 +332,11 @@ func set_engine_state(
 	_roughness = roughness
 	_rear_slip = rear_slip
 	_suspension_activity = suspension_activity
+	_authoritative_transmission = gear > 0 and normalized_rpm >= 0.0
+	if _authoritative_transmission:
+		_gear = clampi(gear, 1, GEAR_RATIOS.size())
+		_authoritative_rpm = clampf(normalized_rpm, 0.1, 1.1)
+		_authoritative_shift_seconds = maxf(shift_seconds_remaining, 0.0)
 
 
 func reset_surface_feedback() -> void:
@@ -328,6 +347,9 @@ func reset_surface_feedback() -> void:
 	_virtual_rpm = 0.12
 	_gear = 1
 	_shift_cut = 0.0
+	_authoritative_transmission = false
+	_authoritative_rpm = 0.12
+	_authoritative_shift_seconds = 0.0
 	if _surface_layer != null:
 		_surface_layer.volume_db = SILENCE_DB
 

@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 4
+const SETTINGS_VERSION: int = 6
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -11,6 +11,8 @@ const BACKUP_TEMP_SUFFIX: String = ".bak.tmp"
 const COLOR_SAFE_MODES: Array[String] = ["OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"]
 const UNIT_MODES: Array[String] = ["IMPERIAL", "METRIC"]
 const RACE_DIFFICULTY_MODES: Array[String] = ["RELAXED", "STANDARD", "EXPERT"]
+const TRANSMISSION_MODES: Array[String] = ["AUTOMATIC", "MANUAL"]
+const CAMERA_MODES: Array[String] = ["CHASE", "CLOSE_CHASE", "HELMET", "FIRST_PERSON", "HANDLEBAR"]
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
 const TOUCH_CONTROL_MODES: Array[String] = ["AUTO", "ON", "OFF"]
 const TOUCH_HANDEDNESS_MODES: Array[String] = ["RIGHT", "LEFT"]
@@ -28,11 +30,16 @@ const DEFAULTS: Dictionary = {
 		"touch_handedness": "RIGHT",
 	},
 	"camera": {
+		"mode": "CHASE",
+		"distance_scale": 1.0,
+		"height_scale": 1.0,
+		"stiffness_scale": 1.0,
 		"fov_degrees": 78.0,
 		"shake_intensity": 0.75,
 	},
 	"gameplay": {
 		"race_difficulty": "STANDARD",
+		"transmission_mode": "AUTOMATIC",
 	},
 	"graphics": {
 		"visual_quality": "BALANCED",
@@ -513,6 +520,8 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var color_mode := str(interface.get("color_safe_mode", "OFF")).to_upper()
 	var unit_mode := str(interface.get("units", "IMPERIAL")).to_upper()
 	var race_difficulty := str(gameplay.get("race_difficulty", "STANDARD")).to_upper()
+	var transmission_mode := str(gameplay.get("transmission_mode", "AUTOMATIC")).to_upper()
+	var camera_mode := str(camera.get("mode", "CHASE")).to_upper()
 	var visual_quality := str(graphics.get("visual_quality", "BALANCED")).to_upper()
 	var touch_controls := str(controls.get("touch_controls", "AUTO")).to_upper()
 	var touch_handedness := str(controls.get("touch_handedness", "RIGHT")).to_upper()
@@ -529,11 +538,16 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"touch_handedness": touch_handedness if touch_handedness in TOUCH_HANDEDNESS_MODES else "RIGHT",
 		},
 		"camera": {
+			"mode": camera_mode if camera_mode in CAMERA_MODES else "CHASE",
+			"distance_scale": clampf(float(camera.get("distance_scale", 1.0)), 0.75, 1.35),
+			"height_scale": clampf(float(camera.get("height_scale", 1.0)), 0.75, 1.25),
+			"stiffness_scale": clampf(float(camera.get("stiffness_scale", 1.0)), 0.60, 1.50),
 			"fov_degrees": clampf(float(camera.get("fov_degrees", 78.0)), 55.0, 110.0),
 			"shake_intensity": clampf(float(camera.get("shake_intensity", 0.75)), 0.0, 1.0),
 		},
 		"gameplay": {
 			"race_difficulty": race_difficulty if race_difficulty in RACE_DIFFICULTY_MODES else "STANDARD",
+			"transmission_mode": transmission_mode if transmission_mode in TRANSMISSION_MODES else "AUTOMATIC",
 		},
 		"graphics": {
 			"visual_quality": visual_quality if visual_quality in VISUAL_QUALITY_MODES else "BALANCED",

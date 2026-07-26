@@ -485,6 +485,18 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 	var target_usec := 86_000_000 * lap_count
 	var lesson_objectives := (lesson.get(&"objectives", []) as Array).duplicate(true)
 	var lesson_presentation := (lesson.get(&"presentation", {}) as Dictionary).duplicate(true)
+	var forced_transmission := StringName(lesson.get(&"forced_transmission_mode", &""))
+	var lesson_rules := {
+		&"academy": true,
+		&"academy_lesson_id": lesson_id,
+		&"academy_display_name": str(lesson.get(&"display_name", "RIDE LESSON")),
+		&"academy_category": StringName(lesson.get(&"category", &"FOUNDATIONS")),
+		&"academy_description": str(lesson.get(&"description", "Complete the marked riding lesson.")),
+		&"academy_objectives": lesson_objectives,
+		&"academy_presentation": lesson_presentation,
+	}
+	if forced_transmission in [&"AUTOMATIC", &"MANUAL"]:
+		lesson_rules[&"forced_transmission_mode"] = forced_transmission
 	return {
 		&"event_id": &"ACADEMY",
 		&"track_id": CourseCatalog.MESA_MX_ID,
@@ -503,15 +515,7 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 		# time. A safe rejoin remains visible in the objective but adds no
 		# competitive time penalty.
 		&"reset_penalty_usec": 0,
-		&"rules": {
-			&"academy": true,
-			&"academy_lesson_id": lesson_id,
-			&"academy_display_name": str(lesson.get(&"display_name", "RIDE LESSON")),
-			&"academy_category": StringName(lesson.get(&"category", &"FOUNDATIONS")),
-			&"academy_description": str(lesson.get(&"description", "Complete the marked riding lesson.")),
-			&"academy_objectives": lesson_objectives,
-			&"academy_presentation": lesson_presentation,
-		},
+		&"rules": lesson_rules,
 		&"medal_times_usec": {
 			&"gold": target_usec,
 			&"silver": roundi(float(target_usec) * 1.28),

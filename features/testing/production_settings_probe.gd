@@ -5,7 +5,9 @@ const TEST_PATH := "user://tests/production_settings_probe.json"
 
 const EXPECTED_ACTIONS: Array[StringName] = [
 	&"throttle", &"brake", &"steer_left", &"steer_right", &"lean_forward", &"lean_back",
-	&"preload", &"flow_boost", &"racecraft_technique", &"reset_bike", &"restart_run", &"open_garage", &"pause_game",
+	&"preload", &"flow_boost", &"racecraft_technique", &"shift_down", &"shift_up",
+	&"cycle_camera",
+	&"reset_bike", &"restart_run", &"open_garage", &"pause_game",
 	&"open_settings", &"toggle_replay", &"toggle_photo_mode", &"spectator_next",
 	&"garage_left", &"garage_right", &"confirm_selection", &"open_workshop", &"continue_weekend",
 	&"event_previous", &"event_next", &"repair_bike", &"toggle_assist",
@@ -25,6 +27,9 @@ const EXPECTED_CONTEXTS: Dictionary = {
 	&"preload": [&"RIDE"],
 	&"flow_boost": [&"RIDE"],
 	&"racecraft_technique": [&"RIDE"],
+	&"shift_down": [&"RIDE"],
+	&"shift_up": [&"RIDE"],
+	&"cycle_camera": [&"RIDE"],
 	&"reset_bike": [&"RIDE"],
 	&"restart_run": [&"RIDE", &"RESULTS", &"REPLAY"],
 	&"open_garage": [&"RIDE", &"RESULTS", &"REPLAY", &"WORKSHOP"],
@@ -74,6 +79,9 @@ const EXPECTED_DEFAULT_BINDINGS: Dictionary = {
 	&"preload": [[&"KEY", KEY_SPACE], [&"BUTTON", JOY_BUTTON_A]],
 	&"flow_boost": [[&"KEY", KEY_SHIFT], [&"BUTTON", JOY_BUTTON_LEFT_SHOULDER]],
 	&"racecraft_technique": [[&"KEY", KEY_C], [&"BUTTON", JOY_BUTTON_RIGHT_SHOULDER]],
+	&"shift_down": [[&"KEY", KEY_Q], [&"BUTTON", JOY_BUTTON_DPAD_DOWN]],
+	&"shift_up": [[&"KEY", KEY_E], [&"BUTTON", JOY_BUTTON_DPAD_UP]],
+	&"cycle_camera": [[&"KEY", KEY_B], [&"BUTTON", JOY_BUTTON_RIGHT_STICK]],
 	&"reset_bike": [[&"KEY", KEY_R], [&"BUTTON", JOY_BUTTON_Y]],
 	&"restart_run": [[&"KEY", KEY_ENTER], [&"BUTTON", JOY_BUTTON_X]],
 	&"open_garage": [[&"KEY", KEY_G], [&"BUTTON", JOY_BUTTON_B]],
@@ -123,6 +131,9 @@ func _ready() -> void:
 
 func _run() -> void:
 	_cleanup_test_file()
+	var profile_snapshot := Profile._profile_to_dictionary()
+	var prior_profile_persistence := Profile.persistence_enabled
+	Profile.persistence_enabled = false
 	_input_map_snapshot = _snapshot_input_map(EXPECTED_ACTIONS)
 	var service := RaceServices.new()
 	service.settings = SettingsStore.new(TEST_PATH)
@@ -170,11 +181,15 @@ func _run() -> void:
 	_check(ride_items.size() >= 7, "ride page is missing deadzones or feedback controls")
 	_check(ride_items[0].get(&"key", &"") == &"steering_deadzone", "steering deadzone is not player-facing")
 	var difficulty_index := -1
+	var transmission_index := -1
 	for index: int in ride_items.size():
-		if StringName((ride_items[index] as Dictionary).get(&"key", &"")) == &"race_difficulty":
+		var ride_key := StringName((ride_items[index] as Dictionary).get(&"key", &""))
+		if ride_key == &"race_difficulty":
 			difficulty_index = index
-			break
+		elif ride_key == &"transmission_mode":
+			transmission_index = index
 	_check(difficulty_index >= 0, "ride page is missing race difficulty")
+	_check(transmission_index >= 0, "ride page is missing automatic/manual transmission")
 	if difficulty_index >= 0:
 		var active_race := RaceController.new()
 		active_race.state = RaceController.State.RACING
@@ -187,6 +202,62 @@ func _run() -> void:
 		)
 		service.race = null
 		active_race.free()
+	if transmission_index >= 0:
+		service.set("_settings_index", transmission_index)
+		service.call(&"_adjust_setting", 1)
+		_check(
+			StringName(service.settings.get_value(&"gameplay", &"transmission_mode", &"")) == &"MANUAL",
+			"transmission setting did not switch from automatic to manual"
+		)
+		var transmission_race := RaceController.new()
+		transmission_race.state = RaceController.State.RACING
+		service.race = transmission_race
+		service.set_activity_transmission_override(&"MANUAL", false)
+		service.call(&"_adjust_setting", -1)
+		_check(
+			StringName(service.settings.get_value(&"gameplay", &"transmission_mode", &"")) == &"AUTOMATIC"
+				and service.get_effective_transmission_mode() == &"MANUAL"
+				and String(service.get("_settings_message")).contains("APPLIES NEXT EVENT"),
+			"mid-race transmission preference did not preserve the signed run configuration"
+		)
+		service.clear_activity_transmission_override()
+		_check(
+			service.get_effective_transmission_mode() == &"AUTOMATIC",
+			"next-event transmission preference was not restored after the run"
+		)
+		service.set_activity_transmission_override(&"MANUAL", true)
+		service.call(&"_adjust_setting", 1)
+		service.call(&"_adjust_setting", -1)
+		_check(
+			service.get_effective_transmission_mode() == &"MANUAL"
+				and String(service.get("_settings_message")).contains("LESSON STAYS MANUAL"),
+			"manual Academy override was not disclosed or retained"
+		)
+		service.clear_activity_transmission_override()
+		service.call(&"_adjust_setting", 1)
+		service.race = null
+		transmission_race.free()
+
+	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"ASSISTS"))
+	service.call(&"_refresh_settings_text")
+	var assist_items: Array = service.get("_settings_items") as Array
+	var expected_assist_keys: Array[StringName] = [
+		&"preset", &"steering", &"braking", &"landing", &"traction", &"balance",
+	]
+	_check(assist_items.size() == expected_assist_keys.size(), "Assists page must expose one preset plus five channels")
+	for index: int in mini(assist_items.size(), expected_assist_keys.size()):
+		_check(
+			StringName((assist_items[index] as Dictionary).get(&"key", &"")) == expected_assist_keys[index],
+			"Assist setting order is dishonest at row %d" % index
+		)
+	Profile.set_assist_preset(&"SPORT")
+	service.set("_settings_index", 1)
+	service.call(&"_adjust_setting", 1)
+	_check(
+		Profile.assist_mode == &"CUSTOM"
+		and is_equal_approx(Profile.get_assist_value(&"steering"), 0.50),
+		"Steering assist did not become an independent 5% Custom adjustment"
+	)
 
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"INPUT"))
 	service.call(&"_refresh_settings_text")
@@ -207,7 +278,7 @@ func _run() -> void:
 	for item: Dictionary in input_items:
 		if StringName(item.get(&"kind", &"")) == &"BINDING":
 			binding_count += 1
-	_check(binding_count == 44, "Input page must expose the exact 44-action semantic inventory")
+	_check(binding_count == 47, "Input page must expose the exact 47-action semantic inventory")
 	var replay_events := InputMap.action_get_events(InputRouter.TOGGLE_REPLAY)
 	_check(_has_gamepad_button(replay_events, JOY_BUTTON_A), "default replay action has no contextual gamepad binding")
 	_check(
@@ -220,6 +291,10 @@ func _run() -> void:
 	_check(service.settings.save_to_disk(), "exact default binding inventory did not save atomically")
 	var persisted_defaults := SettingsStore.new(TEST_PATH)
 	_check(bool(persisted_defaults.load_from_disk().get("ok", false)), "exact default binding inventory did not reload")
+	_check(
+		StringName(persisted_defaults.get_value(&"gameplay", &"transmission_mode", &"")) == &"MANUAL",
+		"manual transmission preference did not persist"
+	)
 	_assert_persisted_default_bindings(persisted_defaults)
 	var default_saved_bindings := (
 		service.settings.values.get("bindings", {}) as Dictionary
@@ -428,6 +503,8 @@ func _run() -> void:
 	if InputRouter.bindings_changed.is_connected(_on_bindings_changed):
 		InputRouter.bindings_changed.disconnect(_on_bindings_changed)
 	_restore_input_map(_input_map_snapshot)
+	Profile._apply_profile_dictionary(profile_snapshot)
+	Profile.persistence_enabled = prior_profile_persistence
 	_check(
 		_input_map_matches_snapshot(_input_map_snapshot),
 		"probe teardown did not restore the complete pre-test InputMap atomically"
@@ -441,15 +518,15 @@ func _run() -> void:
 
 
 func _assert_exact_action_contract() -> void:
-	_check(EXPECTED_ACTIONS.size() == 44, "probe authority must enumerate exactly 44 actions")
+	_check(EXPECTED_ACTIONS.size() == 47, "probe authority must enumerate exactly 47 actions")
 	_check(
 		_name_arrays_equal(RaceServices.REBINDABLE_ACTIONS, EXPECTED_ACTIONS),
-		"RaceServices remappable action inventory or order drifted from the exact 44-action contract"
+		"RaceServices remappable action inventory or order drifted from the exact 47-action contract"
 	)
 	var unique_actions: Dictionary = {}
 	for action: StringName in EXPECTED_ACTIONS:
 		unique_actions[String(action)] = true
-	_check(unique_actions.size() == 44, "44-action semantic inventory contains duplicate names")
+	_check(unique_actions.size() == 47, "47-action semantic inventory contains duplicate names")
 	_check(
 		_sorted_dictionary_keys(InputRouter.ACTION_CONTEXTS) == _sorted_name_strings(EXPECTED_ACTIONS),
 		"context registry keys do not exactly match the remappable action inventory"
@@ -553,7 +630,7 @@ func _assert_persisted_default_bindings(store: SettingsStore) -> void:
 	var persisted_bindings := store.values.get("bindings", {}) as Dictionary
 	_check(
 		_sorted_dictionary_keys(persisted_bindings) == _sorted_name_strings(EXPECTED_ACTIONS),
-		"persisted binding inventory is not the exact 44-action contract"
+		"persisted binding inventory is not the exact 47-action contract"
 	)
 	for action: StringName in EXPECTED_ACTIONS:
 		var expected: Array = EXPECTED_DEFAULT_BINDINGS.get(action, []) as Array

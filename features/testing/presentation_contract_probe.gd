@@ -28,12 +28,63 @@ func _run() -> void:
 	camera.set_composition_offset_right(8.0)
 	_check(is_equal_approx(camera.get_composition_offset_right(), 4.0), "camera composition offset is not safety-clamped")
 	camera.set_composition_offset_right(0.0)
+	hud.show_camera_view("FIRST PERSON")
+	var camera_feedback_label := hud.get("_message_label") as Label
+	_check(
+		camera_feedback_label != null and camera_feedback_label.text == "CAMERA  //  FIRST PERSON",
+		"live camera changes have no clear visual confirmation"
+	)
 
 	var initial_hint := hud.get_control_hint_state()
 	var panel_size: Vector2 = initial_hint.get(&"panel_size", Vector2.ZERO)
 	_check(bool(initial_hint.get(&"visible", false)), "control hints are unavailable during staging")
 	_check(float(initial_hint.get(&"opacity", 0.0)) >= 0.99, "staged control hints do not begin legibly")
 	_check(panel_size.x <= 620.1 and panel_size.y <= 70.1, "control hints regained the oversized gameplay footprint")
+	var transmission_label := hud.find_child("TransmissionLabel", true, false) as Label
+	_check(
+		transmission_label != null and transmission_label.text == "AUTO  //  G1",
+		"HUD does not begin with a readable automatic first-gear state"
+	)
+	hud.update_transmission({
+		&"mode": &"MANUAL",
+		&"gear": 3,
+		&"shift_active": true,
+	})
+	var manual_hint := hud.get_control_hint_state()
+	_check(
+		transmission_label != null and transmission_label.text == "MANUAL  //  G3",
+		"HUD does not project the authoritative manual gear"
+	)
+	_check(
+		str(manual_hint.get(&"text", "")).contains("Q SHIFT DOWN")
+		and str(manual_hint.get(&"text", "")).contains("E SHIFT UP"),
+		"manual mode does not teach its current shift bindings"
+	)
+	_check(
+		(manual_hint.get(&"panel_size", Vector2.ZERO) as Vector2).y <= 90.1,
+		"manual shift teaching expanded beyond the compact HUD envelope"
+	)
+	hud.update_transmission({&"mode": &"AUTOMATIC", &"gear": 1, &"shift_active": false})
+	hud.configure_assists(
+		&"CUSTOM",
+		{&"steering": 0.70, &"braking": 0.35, &"landing": 0.20, &"traction": 0.45, &"balance": 0.60},
+		false
+	)
+	var assist_presentation := hud.get_assist_presentation_snapshot()
+	_check(
+		str(assist_presentation.get(&"text", "")).contains("ASSIST CUSTOM")
+		and str(assist_presentation.get(&"text", "")).contains("5 / 5"),
+		"HUD does not communicate the active individual-assist configuration"
+	)
+	hud.configure_assists(
+		&"PRO",
+		{&"steering": 0.12, &"braking": 0.12, &"landing": 0.12, &"traction": 0.12, &"balance": 0.12},
+		true
+	)
+	_check(
+		str(hud.get_assist_presentation_snapshot().get(&"text", "")).contains("EQUALIZED"),
+		"HUD does not disclose challenge-equalized assists"
+	)
 
 	EventBus.race_started.emit()
 	await get_tree().process_frame

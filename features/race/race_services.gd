@@ -10,9 +10,11 @@ signal photo_mode_changed(active: bool)
 signal settings_changed(values: Dictionary)
 signal settings_visibility_changed(open: bool)
 signal spectator_changed(label: String)
+signal camera_view_changed(mode: StringName, label: String)
 
 const BIKE_VISUAL_SCRIPT = preload("res://entities/bike/bike_visual.gd")
-const SETTINGS_PAGE_IDS: Array[StringName] = [&"AUDIO", &"RIDE", &"CAMERA", &"ACCESS", &"INPUT"]
+const SETTINGS_PAGE_IDS: Array[StringName] = [&"AUDIO", &"RIDE", &"ASSISTS", &"CAMERA", &"ACCESS", &"INPUT"]
+const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const VISUAL_QUALITY_PRESETS: Dictionary = {
 	&"PERFORMANCE": {&"render_scale": 0.75, &"msaa_3d": Viewport.MSAA_DISABLED},
 	&"BALANCED": {&"render_scale": 0.90, &"msaa_3d": Viewport.MSAA_2X},
@@ -39,7 +41,9 @@ const QUALITY_BASE_SHADOW_DISTANCE_META: StringName = &"rd_quality_base_shadow_d
 const QUALITY_BASE_SHADOW_MODE_META: StringName = &"rd_quality_base_shadow_mode"
 const REBINDABLE_ACTIONS: Array[StringName] = [
 	&"throttle", &"brake", &"steer_left", &"steer_right", &"lean_forward", &"lean_back",
-	&"preload", &"flow_boost", &"racecraft_technique", &"reset_bike", &"restart_run", &"open_garage", &"pause_game",
+	&"preload", &"flow_boost", &"racecraft_technique", &"shift_down", &"shift_up",
+	&"cycle_camera",
+	&"reset_bike", &"restart_run", &"open_garage", &"pause_game",
 	&"open_settings", &"toggle_replay", &"toggle_photo_mode", &"spectator_next",
 	&"garage_left", &"garage_right", &"confirm_selection", &"open_workshop", &"continue_weekend",
 	&"event_previous", &"event_next", &"repair_bike", &"toggle_assist",
@@ -99,6 +103,9 @@ var _settings_visibility_request: int = 0
 var _visual_quality_snapshot: Dictionary = {}
 var _hud_input_suspended := false
 var _saved_hud_unhandled_input := true
+var _riding_camera_active := true
+var _activity_transmission_override: StringName = &""
+var _activity_transmission_forced: bool = false
 
 
 func _ready() -> void:
@@ -173,6 +180,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _settings_open:
 		_handle_settings_input(event)
 		return
+	if event.is_action_pressed(InputRouter.CYCLE_CAMERA) and not event.is_echo():
+		if cycle_camera_view():
+			get_viewport().set_input_as_handled()
+		return
 	if (
 		event.is_action_pressed(InputRouter.TOGGLE_PHOTO_MODE)
 		and not event.is_echo()
@@ -238,6 +249,55 @@ func get_competitive_snapshot() -> Dictionary:
 	}
 
 
+func get_preferred_transmission_mode() -> StringName:
+	return (
+		&"MANUAL"
+		if str(settings.get_value(&"gameplay", &"transmission_mode", "AUTOMATIC")).to_upper() == "MANUAL"
+		else &"AUTOMATIC"
+	)
+
+
+func get_effective_transmission_mode() -> StringName:
+	return (
+		_activity_transmission_override
+		if not _activity_transmission_override.is_empty()
+		else get_preferred_transmission_mode()
+	)
+
+
+func has_activity_transmission_override() -> bool:
+	return not _activity_transmission_override.is_empty()
+
+
+func is_activity_transmission_forced() -> bool:
+	return _activity_transmission_forced and has_activity_transmission_override()
+
+
+func set_activity_transmission_override(requested_mode: Variant, forced: bool = false) -> bool:
+	var normalized := StringName(str(requested_mode).strip_edges().to_upper())
+	if normalized not in [&"AUTOMATIC", &"MANUAL"]:
+		return false
+	_activity_transmission_override = normalized
+	_activity_transmission_forced = forced
+	_apply_effective_transmission()
+	return true
+
+
+func clear_activity_transmission_override() -> void:
+	_activity_transmission_override = &""
+	_activity_transmission_forced = false
+	_apply_effective_transmission()
+
+
+func _apply_effective_transmission() -> void:
+	var effective_mode := get_effective_transmission_mode()
+	if bike != null and bike.has_method(&"configure_transmission"):
+		bike.call(&"configure_transmission", effective_mode)
+	var touch_values := (settings.values.get("controls", {}) as Dictionary).duplicate(true)
+	touch_values["transmission_mode"] = String(effective_mode)
+	get_tree().call_group(&"touch_controls", &"configure_touch_controls", touch_values)
+
+
 func can_start_replay() -> bool:
 	return (
 		race != null
@@ -285,6 +345,50 @@ func is_replay_active() -> bool:
 	return _replay_active
 
 
+func set_riding_camera_active(active: bool) -> void:
+	_riding_camera_active = active
+	if chase_camera == null:
+		return
+	chase_camera.set_view_override(&"" if active else ChaseCamera.VIEW_CHASE)
+
+
+func can_cycle_camera_view() -> bool:
+	return (
+		chase_camera != null
+		and is_instance_valid(bike)
+		and chase_camera.target == bike
+		and _riding_camera_active
+		and not _replay_active
+		and not _photo_mode
+		and race != null
+		and race.state != RaceController.State.RESULTS
+	)
+
+
+func cycle_camera_view() -> bool:
+	if not can_cycle_camera_view():
+		return false
+	var previous_mode := chase_camera.get_view_mode()
+	var next_mode := chase_camera.cycle_view_mode()
+	if not settings.set_value(&"camera", &"mode", next_mode) or not settings.save_to_disk():
+		settings.set_value(&"camera", &"mode", previous_mode)
+		chase_camera.set_view_preferences(
+			previous_mode,
+			float(settings.get_value(&"camera", &"distance_scale", 1.0)),
+			float(settings.get_value(&"camera", &"height_scale", 1.0)),
+			float(settings.get_value(&"camera", &"stiffness_scale", 1.0))
+		)
+		_emit_interface_feedback(&"DENIED", &"CAMERA_VIEW")
+		return false
+	var label := chase_camera.get_view_label()
+	if hud != null and hud.has_method(&"show_camera_view"):
+		hud.call(&"show_camera_view", label)
+	camera_view_changed.emit(next_mode, label)
+	settings_changed.emit(settings.values.duplicate(true))
+	_emit_interface_feedback(&"NAVIGATE", &"CAMERA_VIEW")
+	return true
+
+
 func start_replay() -> bool:
 	if _replay_active:
 		return true
@@ -304,6 +408,7 @@ func start_replay() -> bool:
 		bike.set_controls_enabled(false)
 		bike.visible = false
 	_replay_root.visible = true
+	chase_camera.set_view_override(ChaseCamera.VIEW_CHASE, false)
 	chase_camera.target = _replay_root
 	chase_camera.snap_to_target()
 	_playback.looping = true
@@ -333,6 +438,7 @@ func stop_replay() -> void:
 		bike.set_controls_enabled(_saved_bike_controls_enabled)
 	if chase_camera != null:
 		chase_camera.target = _saved_camera_target if is_instance_valid(_saved_camera_target) else bike
+		chase_camera.set_view_override(&"", false)
 		chase_camera.snap_to_target()
 	_saved_camera_target = null
 	replay_state_changed.emit(false)
@@ -758,6 +864,12 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 		chase_camera.base_fov = float(camera_values.get("fov_degrees", 78.0))
 		chase_camera.maximum_fov = chase_camera.base_fov + 16.0
 		chase_camera.smooth_track_speed_shake = _base_camera_shake * float(camera_values.get("shake_intensity", 0.75))
+		chase_camera.set_view_preferences(
+			camera_values.get("mode", "CHASE"),
+			float(camera_values.get("distance_scale", 1.0)),
+			float(camera_values.get("height_scale", 1.0)),
+			float(camera_values.get("stiffness_scale", 1.0))
+		)
 		chase_camera.set_reduced_motion(bool(interface.get("reduced_motion", false)))
 	var audio := settings.values.get("audio", {}) as Dictionary
 	GameplayAudio.ensure_audio_buses()
@@ -767,13 +879,17 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	_set_bus_volume(&"SFX", float(audio.get("effects_volume", 0.9)))
 	if bike != null and bike.has_method(&"configure_feedback"):
 		bike.call(&"configure_feedback", settings.values.get("feedback", {}) as Dictionary)
+	if bike != null and bike.has_method(&"configure_transmission"):
+		bike.call(&"configure_transmission", get_effective_transmission_mode())
 	if hud != null and hud.has_method(&"apply_accessibility"):
 		hud.call(&"apply_accessibility", interface)
 	get_tree().call_group(
 		&"reduced_motion_consumers", &"set_reduced_motion",
 		bool(interface.get("reduced_motion", false))
 	)
-	get_tree().call_group(&"touch_controls", &"configure_touch_controls", controls)
+	var touch_values := controls.duplicate(true)
+	touch_values["transmission_mode"] = String(get_effective_transmission_mode())
+	get_tree().call_group(&"touch_controls", &"configure_touch_controls", touch_values)
 	if Profile.has_method(&"set_settings_reference"):
 		Profile.call(&"set_settings_reference", SettingsStore.DEFAULT_PATH)
 	if not changed_binding_actions.is_empty():
@@ -1101,6 +1217,31 @@ func _adjust_setting(direction: int) -> void:
 	var key := StringName(item.get(&"key", &""))
 	var value_type := StringName(item.get(&"value_type", &"FLOAT"))
 	var changed := false
+	if section == &"profile_assists":
+		if key == &"preset":
+			var preset_options: Array = item.get(&"options", []) as Array
+			var preset_index := preset_options.find(Profile.assist_mode)
+			changed = (
+				not preset_options.is_empty()
+				and Profile.set_assist_preset(
+					preset_options[wrapi(preset_index + direction, 0, preset_options.size())]
+				)
+			)
+		else:
+			changed = Profile.set_assist_value(
+				key,
+				Profile.get_assist_value(key) + float(item.get(&"step", 0.05)) * direction
+			)
+		if changed:
+			_settings_message = (
+				"%s SAVED  //  APPLIES NEXT EVENT" % str(item.get(&"label", "ASSIST"))
+				if _has_active_race_session()
+				else "%s UPDATED  //  %s" % [
+					str(item.get(&"label", "ASSIST")),
+					Profile.get_assist_summary(),
+				]
+			)
+		return
 	match value_type:
 		&"BOOL":
 			changed = settings.set_value(section, key, not bool(settings.get_value(section, key, false)))
@@ -1117,6 +1258,16 @@ func _adjust_setting(direction: int) -> void:
 			# RaceSessionConfig and its run signature are immutable once the event is
 			# composed. Persist the selection now and state its safe activation point.
 			_settings_message = "RACE DIFFICULTY SAVED  //  APPLIES NEXT EVENT"
+		elif (
+			section == &"gameplay"
+			and key == &"transmission_mode"
+			and has_activity_transmission_override()
+		):
+			_settings_message = (
+				"TRANSMISSION PREFERENCE SAVED  //  LESSON STAYS MANUAL"
+				if is_activity_transmission_forced()
+				else "TRANSMISSION SAVED  //  APPLIES NEXT EVENT"
+			)
 		else:
 			_settings_message = "%s UPDATED" % str(item.get(&"label", "SETTING"))
 		settings.save_to_disk()
@@ -1280,12 +1431,34 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("STEERING SENSITIVITY", &"controls", &"steering_sensitivity", &"DECIMAL", 0.05, 1.0),
 				_value_item("STEERING RESPONSE CURVE", &"controls", &"steering_curve", &"DECIMAL", 0.05, 1.35),
 				_enum_item("RACE DIFFICULTY", &"gameplay", &"race_difficulty", SettingsStore.RACE_DIFFICULTY_MODES),
+				_enum_item("TRANSMISSION", &"gameplay", &"transmission_mode", SettingsStore.TRANSMISSION_MODES),
 				_value_item("HAPTICS", &"feedback", &"haptics_enabled", &"BOOL", 1.0, true),
 				_value_item("HAPTIC STRENGTH", &"feedback", &"haptics_intensity", &"PERCENT", 0.05, 0.8),
+			])
+		&"ASSISTS":
+			items.assign([
+				{
+					&"kind": &"VALUE",
+					&"label": "QUICK PRESET",
+					&"section": &"profile_assists",
+					&"key": &"preset",
+					&"display": &"ENUM",
+					&"value_type": &"ENUM",
+					&"options": RIDING_ASSIST_CONFIG.PRESET_ORDER.duplicate(),
+				},
+				_profile_assist_item(&"steering"),
+				_profile_assist_item(&"braking"),
+				_profile_assist_item(&"landing"),
+				_profile_assist_item(&"traction"),
+				_profile_assist_item(&"balance"),
 			])
 		&"CAMERA":
 			items.assign([
 				_enum_item("VISUAL QUALITY", &"graphics", &"visual_quality", SettingsStore.VISUAL_QUALITY_MODES),
+				_enum_item("RIDING CAMERA", &"camera", &"mode", SettingsStore.CAMERA_MODES),
+				_value_item("CAMERA DISTANCE", &"camera", &"distance_scale", &"PERCENT", 0.05, 1.0),
+				_value_item("CAMERA HEIGHT", &"camera", &"height_scale", &"PERCENT", 0.05, 1.0),
+				_value_item("CAMERA STIFFNESS", &"camera", &"stiffness_scale", &"PERCENT", 0.05, 1.0),
 				_value_item("FIELD OF VIEW", &"camera", &"fov_degrees", &"DEGREES", 2.0, 78.0),
 				_value_item("CAMERA IMPACT + SHAKE", &"camera", &"shake_intensity", &"PERCENT", 0.05, 0.75),
 			])
@@ -1308,7 +1481,10 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 			var names := {
 				&"throttle": "THROTTLE", &"brake": "BRAKE", &"steer_left": "STEER LEFT", &"steer_right": "STEER RIGHT",
 				&"lean_forward": "LEAN FORWARD", &"lean_back": "LEAN BACK", &"preload": "PRELOAD / JUMP",
-				&"flow_boost": "CONTEXT FLOW", &"racecraft_technique": "CLUTCH / DAB / PUMP", &"reset_bike": "RESET BIKE", &"restart_run": "RESTART RUN",
+				&"flow_boost": "CONTEXT FLOW", &"racecraft_technique": "CLUTCH / DAB / PUMP",
+				&"shift_down": "SHIFT DOWN", &"shift_up": "SHIFT UP",
+				&"cycle_camera": "CYCLE RIDING CAMERA",
+				&"reset_bike": "RESET BIKE", &"restart_run": "RESTART RUN",
 				&"open_garage": "RETURN TO GARAGE", &"pause_game": "PAUSE", &"open_settings": "OPEN SETTINGS",
 				&"toggle_replay": "REPLAY", &"toggle_photo_mode": "PHOTO MODE", &"spectator_next": "NEXT SPECTATOR",
 				&"garage_left": "GARAGE SETUP LEFT", &"garage_right": "GARAGE SETUP RIGHT", &"confirm_selection": "MENU CONFIRM",
@@ -1344,13 +1520,32 @@ func _enum_item(label: String, section: StringName, key: StringName, options: Ar
 	return {&"kind": &"VALUE", &"label": label, &"section": section, &"key": key, &"display": &"ENUM", &"value_type": &"ENUM", &"options": options.duplicate()}
 
 
+func _profile_assist_item(channel: StringName) -> Dictionary:
+	return {
+		&"kind": &"VALUE",
+		&"label": RIDING_ASSIST_CONFIG.CHANNEL_LABELS.get(channel, String(channel).to_upper()),
+		&"section": &"profile_assists",
+		&"key": channel,
+		&"display": &"PERCENT",
+		&"value_type": &"FLOAT",
+		&"step": 0.05,
+		&"default": float(RIDING_ASSIST_CONFIG.preset(&"SPORT").get(channel, 0.45)),
+	}
+
+
 func _setting_value_text(item: Dictionary) -> String:
 	var kind := StringName(item.get(&"kind", &"VALUE"))
 	if kind == &"BINDING":
 		return _binding_text(StringName(item.get(&"action", &"")))
 	if kind == &"COMMAND":
 		return InputRouter.get_action_label(InputRouter.CONFIRM, InputRouter.input_mode, 2)
-	var value: Variant = settings.get_value(StringName(item.get(&"section", &"")), StringName(item.get(&"key", &"")), item.get(&"default", null))
+	var section := StringName(item.get(&"section", &""))
+	var key := StringName(item.get(&"key", &""))
+	var value: Variant
+	if section == &"profile_assists":
+		value = Profile.assist_mode if key == &"preset" else Profile.get_assist_value(key)
+	else:
+		value = settings.get_value(section, key, item.get(&"default", null))
 	match StringName(item.get(&"display", &"DECIMAL")):
 		&"BOOL": return "ON" if bool(value) else "OFF"
 		&"PERCENT": return "%d%%" % roundi(float(value) * 100.0)
@@ -1507,6 +1702,17 @@ func _reset_selected_setting() -> void:
 	elif kind == &"VALUE":
 		var section := StringName(item.get(&"section", &""))
 		var key := StringName(item.get(&"key", &""))
+		if section == &"profile_assists":
+			if key == &"preset":
+				Profile.set_assist_preset(&"SPORT")
+			else:
+				Profile.set_assist_value(
+					key,
+					float(RIDING_ASSIST_CONFIG.preset(&"SPORT").get(key, 0.45))
+				)
+			_settings_message = "%s RESTORED" % str(item.get(&"label", "ASSIST"))
+			_emit_interface_feedback(&"CONFIRM", &"SETTINGS_RESET")
+			return
 		var default_section := SettingsStore.DEFAULTS.get(String(section), {}) as Dictionary
 		if default_section.has(String(key)):
 			settings.set_value(section, key, default_section[String(key)])
@@ -1518,6 +1724,7 @@ func _reset_selected_setting() -> void:
 
 func _reset_all_settings() -> void:
 	settings.reset_to_defaults()
+	Profile.set_assist_preset(&"SPORT")
 	for action: StringName in REBINDABLE_ACTIONS:
 		_restore_default_binding(action, false)
 	settings.capture_input_map(REBINDABLE_ACTIONS)

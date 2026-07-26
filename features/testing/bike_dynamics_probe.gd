@@ -162,6 +162,15 @@ func _run() -> void:
 	var sustained_air_pitch: Dictionary = await _measure_sustained_air_forward_case(bike)
 	var sustained_air_pitch_passed := _sustained_air_pitch_is_controlled(sustained_air_pitch)
 	var landing_strength := bike.landing_alignment_strength
+	# Receiver support is now an independent channel. Exercise its maximum
+	# authored setting explicitly instead of inheriting the preceding Pro preset.
+	bike.apply_assist_configuration({
+		&"steering": 0.12,
+		&"braking": 0.12,
+		&"landing": 1.0,
+		&"traction": 0.12,
+		&"balance": 0.12,
+	}, &"CUSTOM")
 	var baseline_receiver: Dictionary = await _measure_receiver_alignment(
 		bike,
 		0.0,
@@ -173,6 +182,7 @@ func _run() -> void:
 		receiver
 	)
 	bike.landing_alignment_strength = landing_strength
+	bike.apply_assist_mode(&"PRO")
 	var receiver_alignment_passed := (
 		bool(baseline_receiver[&"landed"])
 		and bool(assisted_receiver[&"landed"])

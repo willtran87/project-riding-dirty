@@ -154,7 +154,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed(InputRouter.TOGGLE_ASSIST):
 		Profile.cycle_assist_mode()
 		_refresh()
-		_status_label.text = "HANDLING ASSIST  //  %s" % String(Profile.assist_mode)
+		_status_label.text = "HANDLING ASSIST  //  %s" % Profile.get_assist_summary()
 		_status_label.modulate = CYAN
 		_emit_interface_feedback(&"CONFIRM", &"GARAGE_ASSIST")
 		get_viewport().set_input_as_handled()
@@ -977,7 +977,13 @@ func _refresh() -> void:
 	_refresh_weekend_action()
 	var repair_price := Profile.get_repair_price()
 	var condition_text := "READY" if repair_price <= 0 else "%s REPAIR $%d" % [_any_action_label(InputRouter.REPAIR_BIKE), repair_price]
-	_repair_label.text = "BIKE %03d%%  •  %s  •  ASSIST %s  •  STYLE TOKENS %02d" % [Profile.bike_condition, condition_text, String(Profile.assist_mode), Profile.style_tokens]
+	_repair_label.text = "BIKE %03d%%  •  %s  •  ASSIST %s (%d/5)  •  STYLE TOKENS %02d" % [
+		Profile.bike_condition,
+		condition_text,
+		String(Profile.assist_mode),
+		preload("res://common/riding_assist_config.gd").active_count(Profile.get_assist_configuration()),
+		Profile.style_tokens,
+	]
 	_refresh_workshop_summary()
 	if _workshop_open:
 		_refresh_workshop()
@@ -1827,7 +1833,11 @@ func _competition_signature(session: RaceSessionConfig) -> String:
 		"laps": session.laps,
 		"bike_class": rules.get(&"competitive_bike_class", session.bike_class),
 		"difficulty": rules.get(&"competitive_difficulty", session.difficulty),
-		"assist_mode": rules.get(&"competitive_assist_mode", Profile.assist_mode),
+		"assist_mode": rules.get(
+			&"competitive_assist_mode",
+			Profile.get_assist_signature() if Profile.has_method(&"get_assist_signature") else Profile.assist_mode
+		),
+		"transmission_mode": _preferred_transmission_mode(),
 		"setup_id": rules.get(&"competitive_setup_id", Profile.current_setup),
 		"tune_signature": build_signature,
 		"weather": session.weather,
@@ -1835,6 +1845,12 @@ func _competition_signature(session: RaceSessionConfig) -> String:
 		"challenge_id": rules.get(&"challenge_id", ""),
 		"modifiers": rules.get(&"modifiers", []),
 	})
+
+
+func _preferred_transmission_mode() -> StringName:
+	if _competition_source != null and _competition_source.has_method(&"get_preferred_transmission_mode"):
+		return StringName(_competition_source.call(&"get_preferred_transmission_mode"))
+	return &"AUTOMATIC"
 
 
 func _session_challenge_id(session: RaceSessionConfig) -> StringName:

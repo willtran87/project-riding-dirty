@@ -8,6 +8,7 @@ const RIDE_DIRECTOR_SCRIPT := preload("res://features/ride/ride_director.gd")
 const LESSON_ORDER: Array[StringName] = [
 	&"CONTROL_BASICS",
 	&"GATE_DROP",
+	&"MANUAL_SHIFTING",
 	&"BERM_LINES",
 	&"PRELOAD_LANDING",
 	&"RHYTHM_CHOICES",
@@ -18,6 +19,7 @@ const LESSON_ORDER: Array[StringName] = [
 const EXPECTED_COACH_TOKENS: Dictionary = {
 	&"CONTROL_BASICS": ["{THROTTLE}", "{STEER}", "{BRAKE}", "{RESET}"],
 	&"GATE_DROP": ["{THROTTLE}", "{BRAKE}"],
+	&"MANUAL_SHIFTING": ["{SHIFT_UP}", "{SHIFT_DOWN}"],
 	&"BERM_LINES": ["{STEER}", "{BRAKE}", "{THROTTLE}"],
 	&"PRELOAD_LANDING": ["{PRELOAD}", "{LEAN_STEER}", "{TECHNIQUE}"],
 	&"RHYTHM_CHOICES": ["{STEER}", "{TECHNIQUE}", "{LEAN}"],
@@ -28,6 +30,7 @@ const EXPECTED_COACH_TOKENS: Dictionary = {
 const EXPECTED_COACH_ACTIONS: Dictionary = {
 	&"CONTROL_BASICS": [&"throttle", &"steer_left", &"steer_right", &"brake", &"reset_bike"],
 	&"GATE_DROP": [&"throttle", &"brake"],
+	&"MANUAL_SHIFTING": [&"shift_up", &"shift_down"],
 	&"BERM_LINES": [&"steer_left", &"steer_right", &"brake", &"throttle"],
 	&"PRELOAD_LANDING": [&"preload", &"lean_forward", &"lean_back", &"steer_left", &"steer_right", &"racecraft_technique"],
 	&"RHYTHM_CHOICES": [&"steer_left", &"steer_right", &"racecraft_technique", &"lean_forward", &"lean_back"],
@@ -38,6 +41,7 @@ const EXPECTED_COACH_ACTIONS: Dictionary = {
 const EXPECTED_RACECRAFT_FOCUS: Dictionary = {
 	&"CONTROL_BASICS": &"NONE",
 	&"GATE_DROP": &"NONE",
+	&"MANUAL_SHIFTING": &"NONE",
 	&"BERM_LINES": &"CORNERING",
 	&"PRELOAD_LANDING": &"JUMPING",
 	&"RHYTHM_CHOICES": &"FAST_LINE",
@@ -63,7 +67,7 @@ func _run() -> void:
 	await _probe_live_and_result_presentation()
 	RaceEventCatalog.clear_academy_lesson_override()
 	if _failures.is_empty():
-		print("ACADEMY PROGRESSION PRESENTATION PROBE: PASS  //  onboarding=failed+invalid+dnf+pass+skip grades=3 lessons=8 rematch=true garage=true hud_objectives=2 coach=8x3 focus=8 recovery=coached+zero-time ordinary_overlays=true rebind=true scale=1.75")
+		print("ACADEMY PROGRESSION PRESENTATION PROBE: PASS  //  onboarding=failed+invalid+dnf+pass+skip grades=3 lessons=9 rematch=true garage=true hud_objectives=2 coach=9x3 focus=9 recovery=coached+zero-time ordinary_overlays=true rebind=true scale=1.75")
 		get_tree().quit(0)
 		return
 	for failure: String in _failures:
@@ -272,7 +276,7 @@ func _probe_all_lessons_advance() -> void:
 		)
 		if index + 1 < LESSON_ORDER.size():
 			_check_authority(LESSON_ORDER[index + 1], &"NEXT", "%s advancement" % String(lesson_id))
-	_check(Profile.get_completed_academy_lessons().size() == LESSON_ORDER.size(), "the full Academy did not retain all eight passed lessons")
+	_check(Profile.get_completed_academy_lessons().size() == LESSON_ORDER.size(), "the full Academy did not retain all nine passed lessons")
 	_check_authority(&"PASSING_RACECRAFT", &"REPLAY", "all-lessons-complete fallback")
 
 
@@ -295,6 +299,11 @@ func _probe_academy_coach_catalog() -> void:
 		_check(
 			bool(presentation.get(&"show_flow_meter", false)) == (lesson_id == &"AIR_CONTROL"),
 			"%s Flow meter disclosure drifted" % lesson_id
+		)
+		_check(
+			StringName(lesson.get(&"forced_transmission_mode", &""))
+				== (&"MANUAL" if lesson_id == &"MANUAL_SHIFTING" else &""),
+			"%s forced transmission scope drifted" % lesson_id
 		)
 		for hidden_layer: StringName in [&"show_line_feedback", &"show_sponsor_contract", &"show_daily_modifier"]:
 			_check(not bool(presentation.get(hidden_layer, true)), "%s enabled unrelated %s" % [lesson_id, hidden_layer])
@@ -435,6 +444,37 @@ func _probe_live_and_result_presentation() -> void:
 	hud.configure_academy_lesson(catalog.get_lesson(&"AIR_CONTROL"))
 	var air_focus := hud.get_academy_presentation_snapshot()
 	_check(bool(air_focus.get(&"racecraft_visible", false)) and bool(air_focus.get(&"flow_meter_visible", false)), "Air Control omitted its relevant Flow feedback")
+	hud.configure_academy_lesson(catalog.get_lesson(&"MANUAL_SHIFTING"))
+	hud.update_session({
+		&"event_id": &"ACADEMY",
+		&"display_name": "ACADEMY: MANUAL SHIFT RHYTHM",
+		&"phase": &"RACING",
+		&"current_lap": 1,
+		&"total_laps": 1,
+		&"current_checkpoint": 2,
+		&"checkpoint_count": 10,
+		&"transmission": {
+			&"mode": &"MANUAL", &"gear": 2, &"gear_count": 5, &"rpm": 0.86,
+			&"suggested_gear": 3, &"revision": 4, &"last_shift_reason": &"MANUAL_UP",
+		},
+		&"academy_metrics": {&"clean_shifts": 3, &"overrev_seconds": 1.0},
+	})
+	var manual_focus := hud.get_academy_presentation_snapshot()
+	var manual_coach := str(manual_focus.get(&"coach", ""))
+	var manual_objectives := manual_focus.get(&"objectives", PackedStringArray()) as PackedStringArray
+	_check(
+		manual_coach.contains("G2") and manual_coach.contains("RPM 086%")
+			and manual_coach.contains(InputRouter.get_action_label(InputRouter.SHIFT_UP, InputRouter.INPUT_MODE_KEYBOARD_MOUSE, 2)),
+		"Manual Shift Rhythm omitted contextual authoritative gear/RPM coaching"
+	)
+	_check(
+		manual_objectives.size() == 2
+			and manual_objectives[0].contains("LIVE 3")
+			and manual_objectives[0].contains("PASS")
+			and manual_objectives[1].contains("LIVE 1.00s")
+			and manual_objectives[1].contains("PASS"),
+		"Manual Shift Rhythm omitted live clean-shift or over-rev grading"
+	)
 
 	EventBus.activity_prepared.emit(&"CIRCUIT")
 	hud.update_line("CLEAN LANDING", 2, 1.25, 400, 3.5)
@@ -588,6 +628,7 @@ func _check_authority(expected_lesson_id: StringName, expected_mode: StringName,
 	_check(session != null and StringName(session.rules.get(&"academy_lesson_id", &"")) == expected_lesson_id, "%s: launch session lesson diverged" % context)
 	_check(session != null and session.reset_penalty_usec == 0, "%s: Academy recovery retained a competitive time penalty" % context)
 	var expected_presentation := active.get(&"presentation", {}) as Dictionary
+	var expected_transmission := &"MANUAL" if expected_lesson_id == &"MANUAL_SHIFTING" else &""
 	_check(
 		(event.get(&"rules", {}) as Dictionary).get(&"academy_presentation", {}) == expected_presentation,
 		"%s: event presentation scope diverged" % context
@@ -595,6 +636,17 @@ func _check_authority(expected_lesson_id: StringName, expected_mode: StringName,
 	_check(
 		session != null and session.rules.get(&"academy_presentation", {}) == expected_presentation,
 		"%s: launch presentation scope diverged" % context
+	)
+	_check(
+		StringName((event.get(&"rules", {}) as Dictionary).get(&"forced_transmission_mode", &""))
+			== expected_transmission,
+		"%s: event forced transmission diverged" % context
+	)
+	_check(
+		session != null
+			and StringName(session.rules.get(&"forced_transmission_mode", &""))
+				== expected_transmission,
+		"%s: session forced transmission diverged" % context
 	)
 	_check(StringName(garage_snapshot.get(&"active_lesson_id", &"")) == expected_lesson_id, "%s: Garage lesson diverged" % context)
 	_check(StringName(garage_snapshot.get(&"mode", &"")) == expected_mode, "%s: Garage mode was not %s" % [context, String(expected_mode)])
@@ -630,6 +682,10 @@ func _assert_resolved_coach_tokens(lesson: Dictionary, coach: String, mode: Stri
 		expected_labels.append("RESET" if mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.RESET_BIKE, mode, 2))
 	if template.contains("{LEAN_FORWARD}"):
 		expected_labels.append("STEER / LEAN UP" if mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.LEAN_FORWARD, mode, 2))
+	if template.contains("{SHIFT_UP}"):
+		expected_labels.append("SHIFT UP" if mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.SHIFT_UP, mode, 2))
+	if template.contains("{SHIFT_DOWN}"):
+		expected_labels.append("SHIFT DOWN" if mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.SHIFT_DOWN, mode, 2))
 	if template.contains("{LEAN_STEER}"):
 		expected_labels.append(
 			"STEER / LEAN" if mode == InputRouter.INPUT_MODE_TOUCH else "%s + %s" % [

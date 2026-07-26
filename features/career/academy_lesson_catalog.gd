@@ -28,8 +28,21 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 		],
 	},
 	{
+		&"lesson_id": &"MANUAL_SHIFTING", &"display_name": "Manual Shift Rhythm", &"category": &"DRIVETRAIN",
+		&"description": "Practice clean shifts and avoid the redline. Manual is temporary.", &"sort_order": 2,
+		&"presentation": {&"racecraft_focus": &"NONE", &"show_flow_meter": false},
+		&"forced_transmission_mode": &"MANUAL",
+		&"coach_template": "SHIFT: TAP {SHIFT_UP} BEFORE RED; USE {SHIFT_DOWN} IF RPM FALLS. YOUR PREFERENCE RETURNS AFTER THIS LESSON.",
+		&"coach_actions": [&"shift_up", &"shift_down"],
+		&"required_reputation": 0, &"prerequisites": [&"GATE_DROP"], &"rewards": {&"credits": 700, &"reputation": 7},
+		&"objectives": [
+			{&"metric": &"clean_shifts", &"comparison": &"AT_LEAST", &"bronze": 3.0, &"silver": 5.0, &"gold": 7.0},
+			{&"metric": &"overrev_seconds", &"comparison": &"AT_MOST", &"bronze": 4.0, &"silver": 2.0, &"gold": 0.75},
+		],
+	},
+	{
 		&"lesson_id": &"BERM_LINES", &"display_name": "Inside and Outside Berms", &"category": &"CORNERING",
-		&"description": "Capture the physical rut, then rear-brake slide into a supported berm exit.", &"sort_order": 2,
+		&"description": "Capture the physical rut, then rear-brake slide into a supported berm exit.", &"sort_order": 3,
 		&"presentation": {&"racecraft_focus": &"CORNERING", &"show_flow_meter": false},
 		&"coach_template": "RUT: ENTER WITH {STEER} AND HOLD ALIGNMENT 0.6 SEC. SLIDE: ABOVE 6 M/S, HOLD {BRAKE} + {STEER} 0.4 SEC; FEED {THROTTLE} TO CATCH IT.",
 		&"coach_actions": [&"steer_left", &"steer_right", &"brake", &"throttle"],
@@ -41,7 +54,7 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	},
 	{
 		&"lesson_id": &"PRELOAD_LANDING", &"display_name": "Preload and Landing", &"category": &"JUMPING",
-		&"description": "Load the suspension, press technique through compression, and match the receiver.", &"sort_order": 3,
+		&"description": "Load the suspension, press technique through compression, and match the receiver.", &"sort_order": 4,
 		&"presentation": {&"racecraft_focus": &"JUMPING", &"show_flow_meter": false},
 		&"coach_template": "JUMP: HOLD {PRELOAD}, RELEASE ON THE LOADED LIP; MATCH THE RECEIVER WITH {LEAN_STEER}. PUMP: TAP {TECHNIQUE} WITH BOTH WHEELS LOADED.",
 		&"coach_actions": [&"preload", &"lean_forward", &"lean_back", &"steer_left", &"steer_right", &"racecraft_technique"],
@@ -53,7 +66,7 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	},
 	{
 		&"lesson_id": &"RHYTHM_CHOICES", &"display_name": "Rhythm Combinations", &"category": &"JUMPING",
-		&"description": "Read each highlighted inside, rut, or berm fork and commit before entry.", &"sort_order": 4,
+		&"description": "Read each highlighted inside, rut, or berm fork and commit before entry.", &"sort_order": 5,
 		&"presentation": {&"racecraft_focus": &"FAST_LINE", &"show_flow_meter": false},
 		&"coach_template": "FAST LINE: HOLD {STEER} TOWARD RUT / BERM BEFORE ACTIVE. FOR PUMP, TAP {TECHNIQUE} ON TWO-WHEEL COMPRESSION; MATCH LANDINGS WITH {LEAN}.",
 		&"coach_actions": [&"steer_left", &"steer_right", &"racecraft_technique", &"lean_forward", &"lean_back"],
@@ -65,7 +78,7 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	},
 	{
 		&"lesson_id": &"AIR_CONTROL", &"display_name": "Scrub and Air Control", &"category": &"ADVANCED",
-		&"description": "Lean forward to scrub excess height, then spend Context Flow to compose a receiver.", &"sort_order": 5,
+		&"description": "Lean forward to scrub excess height, then spend Context Flow to compose a receiver.", &"sort_order": 6,
 		&"presentation": {&"racecraft_focus": &"AIR_FLOW", &"show_flow_meter": true},
 		&"coach_template": "SCRUB: WHILE RISING, HOLD {LEAN_FORWARD} FOR 0.25 SEC. COMPOSE: BANK 24 FLOW, THEN TAP {FLOW} AIRBORNE NEAR THE RECEIVER.",
 		&"coach_actions": [&"lean_forward", &"flow_boost"],
@@ -77,7 +90,7 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	},
 	{
 		&"lesson_id": &"SAFE_RECOVERY", &"display_name": "Recovery and Rejoin", &"category": &"RACECRAFT",
-		&"description": "Use a low-speed foot dab to catch the bike, then rejoin without contact.", &"sort_order": 6,
+		&"description": "Use a low-speed foot dab to catch the bike, then rejoin without contact.", &"sort_order": 7,
 		&"presentation": {&"racecraft_focus": &"RECOVERY", &"show_flow_meter": false},
 		&"coach_template": "DAB: {BRAKE} BELOW 5 M/S WITH BOTH WHEELS DOWN, THEN TAP {TECHNIQUE}. REJOIN WITH {STEER} + {THROTTLE}; {RESET} ONLY IF STRANDED.",
 		&"coach_actions": [&"brake", &"racecraft_technique", &"steer_left", &"steer_right", &"throttle", &"reset_bike"],
@@ -89,7 +102,7 @@ const DEFAULT_LESSONS: Array[Dictionary] = [
 	},
 	{
 		&"lesson_id": &"PASSING_RACECRAFT", &"display_name": "Passing Racecraft", &"category": &"RACECRAFT",
-		&"description": "Sit in clean air, pull from the roost, and slingshot past without contact.", &"sort_order": 7,
+		&"description": "Sit in clean air, pull from the roost, and slingshot past without contact.", &"sort_order": 8,
 		&"presentation": {&"racecraft_focus": &"PASSING", &"show_flow_meter": false},
 		&"coach_template": "DRAFT: TUCK DIRECTLY BEHIND TO 28%+. SLINGSHOT WITH {STEER} + {THROTTLE} WITHIN ONE SECOND; USE {BRAKE} TO ABORT CONTACT.",
 		&"coach_actions": [&"steer_left", &"steer_right", &"throttle", &"brake"],
@@ -132,6 +145,12 @@ func configure(source: Array[Dictionary]) -> void:
 		lesson[&"coach_template"] = str(lesson.get(&"coach_template", "")).strip_edges().substr(0, 320)
 		lesson[&"coach_actions"] = _unique_string_name_array(lesson.get(&"coach_actions", []), 10)
 		lesson[&"presentation"] = _normalize_presentation(lesson.get(&"presentation", {}))
+		var forced_transmission := StringName(
+			str(lesson.get(&"forced_transmission_mode", "")).strip_edges().to_upper()
+		)
+		lesson[&"forced_transmission_mode"] = (
+			forced_transmission if forced_transmission in [&"AUTOMATIC", &"MANUAL"] else &""
+		)
 		lesson[&"sort_order"] = int(lesson.get(&"sort_order", source_index))
 		lesson[&"required_reputation"] = maxi(int(lesson.get(&"required_reputation", 0)), 0)
 		lesson[&"prerequisites"] = _string_name_array(lesson.get(&"prerequisites", []))

@@ -1,6 +1,6 @@
 extends Node3D
 class_name ChaseCamera
-## Speed-reactive chase camera with smooth position, predictive look-ahead, and landing response.
+## Multi-view riding camera with predictive framing, collision safety, and tactile response.
 
 const REDUCED_SHAKE_SCALE: float = 0.08
 const REDUCED_BANK_SCALE: float = 0.15
@@ -8,6 +8,83 @@ const REDUCED_IMPULSE_SCALE: float = 0.10
 const REDUCED_DYNAMIC_POSITION_SCALE: float = 0.25
 const REDUCED_LOOK_AHEAD_SCALE: float = 0.35
 const REDUCED_SPEED_FOV_DELTA: float = 1.5
+const VIEW_CHASE: StringName = &"CHASE"
+const VIEW_CLOSE_CHASE: StringName = &"CLOSE_CHASE"
+const VIEW_HELMET: StringName = &"HELMET"
+const VIEW_FIRST_PERSON: StringName = &"FIRST_PERSON"
+const VIEW_HANDLEBAR: StringName = &"HANDLEBAR"
+const VIEW_MODES: Array[StringName] = [
+	VIEW_CHASE, VIEW_CLOSE_CHASE, VIEW_HELMET, VIEW_FIRST_PERSON, VIEW_HANDLEBAR,
+]
+const VIEW_PROFILES: Dictionary = {
+	VIEW_CHASE: {
+		&"label": "CHASE",
+		&"distance": 5.0,
+		&"height": 2.05,
+		&"look_height": 1.32,
+		&"base_look_ahead": 0.85,
+		&"speed_look_ahead": 2.25,
+		&"position_response": 1.0,
+		&"rotation_response": 1.0,
+		&"dynamic_scale": 1.0,
+		&"bank_scale": 1.0,
+		&"fov_offset": 0.0,
+	},
+	VIEW_CLOSE_CHASE: {
+		&"label": "CLOSE CHASE",
+		&"distance": 3.35,
+		&"height": 1.72,
+		&"look_height": 1.28,
+		&"base_look_ahead": 1.15,
+		&"speed_look_ahead": 2.55,
+		&"position_response": 1.12,
+		&"rotation_response": 1.08,
+		&"dynamic_scale": 0.82,
+		&"bank_scale": 0.92,
+		&"fov_offset": 1.0,
+	},
+	VIEW_HELMET: {
+		&"label": "HELMET",
+		# The optical point sits just ahead of the opaque procedural visor. Keeping
+		# it inside the helmet mesh would hide the course on Web and low-end GPUs.
+		&"distance": -0.62,
+		&"height": 1.74,
+		&"look_height": 1.68,
+		&"base_look_ahead": 3.0,
+		&"speed_look_ahead": 3.25,
+		&"position_response": 1.65,
+		&"rotation_response": 1.42,
+		&"dynamic_scale": 0.34,
+		&"bank_scale": 0.72,
+		&"fov_offset": 2.0,
+	},
+	VIEW_FIRST_PERSON: {
+		&"label": "FIRST PERSON",
+		&"distance": -0.82,
+		&"height": 1.62,
+		&"look_height": 1.55,
+		&"base_look_ahead": 3.5,
+		&"speed_look_ahead": 3.7,
+		&"position_response": 1.85,
+		&"rotation_response": 1.58,
+		&"dynamic_scale": 0.24,
+		&"bank_scale": 0.58,
+		&"fov_offset": 3.0,
+	},
+	VIEW_HANDLEBAR: {
+		&"label": "HANDLEBAR",
+		&"distance": -0.72,
+		&"height": 1.08,
+		&"look_height": 1.34,
+		&"base_look_ahead": 3.85,
+		&"speed_look_ahead": 4.0,
+		&"position_response": 1.95,
+		&"rotation_response": 1.68,
+		&"dynamic_scale": 0.20,
+		&"bank_scale": 0.82,
+		&"fov_offset": 4.0,
+	},
+}
 
 @export var follow_distance: float = 5.0
 @export var follow_height: float = 2.05
@@ -50,6 +127,11 @@ var _acceleration_punch: float = 0.0
 var _last_shake_strength: float = 0.0
 var _composition_offset_right: float = 0.0
 var _reduced_motion: bool = false
+var _view_mode: StringName = VIEW_CHASE
+var _view_override: StringName = &""
+var _distance_scale: float = 1.0
+var _height_scale: float = 1.0
+var _stiffness_scale: float = 1.0
 
 
 func _ready() -> void:
@@ -111,7 +193,12 @@ func _process(delta: float) -> void:
 	)
 	_previous_planar_speed = planar_speed
 	var desired_position := _obstruction_position if _has_obstruction else _compute_desired_position()
-	var position_speed := position_smoothing * (2.8 if _has_obstruction else 1.0)
+	var position_speed := (
+		position_smoothing
+		* _profile_float(&"position_response", 1.0)
+		* _stiffness_scale
+		* (2.8 if _has_obstruction else 1.0)
+	)
 	var position_weight := 1.0 - exp(-position_speed * delta)
 	global_position = global_position.lerp(desired_position, position_weight)
 
@@ -149,12 +236,20 @@ func _process(delta: float) -> void:
 	)
 	var look_target := _compute_look_target(target_forward, ground_up, speed_ratio)
 	var desired_basis := Basis.looking_at((look_target - global_position).normalized(), Vector3.UP)
-	var rotation_weight := 1.0 - exp(-rotation_smoothing * delta)
+	var rotation_weight := 1.0 - exp(
+		-rotation_smoothing
+		* _profile_float(&"rotation_response", 1.0)
+		* _stiffness_scale
+		* delta
+	)
 	global_transform.basis = global_transform.basis.slerp(desired_basis, rotation_weight)
 	_camera.position = shake
 	var lean_roll := 0.0
 	if bike != null and grounded:
-		var maximum_camera_bank := deg_to_rad(maximum_camera_bank_degrees)
+		var maximum_camera_bank := (
+			deg_to_rad(maximum_camera_bank_degrees)
+			* _profile_float(&"bank_scale", 1.0)
+		)
 		lean_roll = clampf(
 			bike.global_transform.basis.x.normalized().dot(ground_up) * bank_roll_scale,
 			-maximum_camera_bank,
@@ -180,7 +275,7 @@ func snap_to_target() -> void:
 	_contact_kick = 0.0
 	_racecraft_kick = 0.0
 	_camera.position = Vector3.ZERO
-	_camera.fov = base_fov
+	_camera.fov = _effective_base_fov()
 	var forward := _get_terrain_forward(ground_up, velocity)
 	global_position = _compute_desired_position()
 	var speed_ratio := clampf(velocity.slide(Vector3.UP).length() / 32.0, 0.0, 1.0)
@@ -196,6 +291,79 @@ func set_composition_offset_right(meters: float) -> void:
 
 func get_composition_offset_right() -> float:
 	return _composition_offset_right
+
+
+func set_view_preferences(
+	mode: Variant,
+	distance_scale: float = 1.0,
+	height_scale: float = 1.0,
+	stiffness_scale: float = 1.0,
+	snap: bool = true
+) -> void:
+	var normalized_mode := _normalize_view_mode(mode)
+	var next_distance := clampf(distance_scale, 0.75, 1.35)
+	var next_height := clampf(height_scale, 0.75, 1.25)
+	var next_stiffness := clampf(stiffness_scale, 0.60, 1.50)
+	var changed := (
+		normalized_mode != _view_mode
+		or not is_equal_approx(next_distance, _distance_scale)
+		or not is_equal_approx(next_height, _height_scale)
+		or not is_equal_approx(next_stiffness, _stiffness_scale)
+	)
+	_view_mode = normalized_mode
+	_distance_scale = next_distance
+	_height_scale = next_height
+	_stiffness_scale = next_stiffness
+	if changed and snap and is_inside_tree() and target != null:
+		snap_to_target()
+
+
+func set_view_override(mode: Variant = &"", snap: bool = true) -> void:
+	var raw := String(mode).strip_edges().to_upper()
+	var next_override := &"" if raw.is_empty() else _normalize_view_mode(raw)
+	if next_override == _view_override:
+		return
+	_view_override = next_override
+	if snap and is_inside_tree() and target != null:
+		snap_to_target()
+
+
+func cycle_view_mode() -> StringName:
+	var index := VIEW_MODES.find(_view_mode)
+	_view_mode = VIEW_MODES[(maxi(index, 0) + 1) % VIEW_MODES.size()]
+	_view_override = &""
+	if is_inside_tree() and target != null:
+		snap_to_target()
+	return _view_mode
+
+
+func get_view_mode() -> StringName:
+	return _view_mode
+
+
+func get_effective_view_mode() -> StringName:
+	return _view_override if not _view_override.is_empty() else _view_mode
+
+
+func get_view_label() -> String:
+	return str(_active_profile().get(&"label", "CHASE"))
+
+
+func get_view_preferences_snapshot() -> Dictionary:
+	return {
+		&"mode": _view_mode,
+		&"effective_mode": get_effective_view_mode(),
+		&"label": get_view_label(),
+		&"override": _view_override,
+		&"distance_scale": _distance_scale,
+		&"height_scale": _height_scale,
+		&"stiffness_scale": _stiffness_scale,
+		&"follow_distance": _effective_follow_distance(),
+		&"follow_height": _effective_follow_height(),
+		&"look_height": _profile_float(&"look_height", look_height),
+		&"base_fov": _effective_base_fov(),
+		&"maximum_fov": _effective_maximum_fov(),
+	}
 
 
 func set_reduced_motion(enabled: bool) -> void:
@@ -217,7 +385,8 @@ func set_reduced_motion(enabled: bool) -> void:
 	if _camera != null:
 		_camera.position = Vector3.ZERO
 		_camera.rotation.z = 0.0
-		_camera.fov = clampf(_camera.fov, base_fov, base_fov + REDUCED_SPEED_FOV_DELTA)
+		var effective_base := _effective_base_fov()
+		_camera.fov = clampf(_camera.fov, effective_base, effective_base + REDUCED_SPEED_FOV_DELTA)
 
 
 func is_reduced_motion_enabled() -> bool:
@@ -234,7 +403,7 @@ func get_motion_accessibility_snapshot() -> Dictionary:
 		&"dynamic_position_scale": REDUCED_DYNAMIC_POSITION_SCALE if _reduced_motion else 1.0,
 		&"look_ahead_scale": REDUCED_LOOK_AHEAD_SCALE if _reduced_motion else 1.0,
 		&"high_speed_fov": high_speed_fov,
-		&"speed_fov_delta": maxf(high_speed_fov - base_fov, 0.0),
+		&"speed_fov_delta": maxf(high_speed_fov - _effective_base_fov(), 0.0),
 		&"camera_offset": _camera.position if _camera != null else Vector3.ZERO,
 		&"camera_bank_radians": _camera.rotation.z if _camera != null else 0.0,
 		&"last_shake_strength": _last_shake_strength,
@@ -248,30 +417,37 @@ func _compute_look_target(target_forward: Vector3, ground_up: Vector3, speed_rat
 	var impulse_scale := REDUCED_IMPULSE_SCALE if _reduced_motion else 1.0
 	return (
 		target.global_position
-		+ target_forward * (base_look_ahead + clampf(speed_ratio, 0.0, 1.0) * speed_look_ahead * look_ahead_scale)
-		+ ground_up * (look_height - _landing_kick * 0.3 * impulse_scale)
+		+ target_forward * (
+			_profile_float(&"base_look_ahead", base_look_ahead)
+			+ clampf(speed_ratio, 0.0, 1.0)
+			* _profile_float(&"speed_look_ahead", speed_look_ahead)
+			* look_ahead_scale
+		)
+		+ ground_up * (_profile_float(&"look_height", look_height) - _landing_kick * 0.3 * impulse_scale)
 		+ composition_right * _composition_offset_right
 	)
 
 
 func _compute_target_fov(speed_ratio: float) -> float:
+	var effective_base := _effective_base_fov()
+	var effective_maximum := _effective_maximum_fov()
 	if _reduced_motion:
-		var reduced_ceiling := minf(maxf(maximum_fov, base_fov), base_fov + REDUCED_SPEED_FOV_DELTA)
-		return lerpf(base_fov, reduced_ceiling, smoothstep(0.0, 1.0, clampf(speed_ratio, 0.0, 1.0)))
+		var reduced_ceiling := minf(maxf(effective_maximum, effective_base), effective_base + REDUCED_SPEED_FOV_DELTA)
+		return lerpf(effective_base, reduced_ceiling, smoothstep(0.0, 1.0, clampf(speed_ratio, 0.0, 1.0)))
 	# Normal speed uses most of the optical range while reserving a narrow band
 	# for acceleration, boost, and route punches. This keeps those tactile cues
 	# without returning to the distorted 100+ degree presentation.
-	var safe_maximum := maxf(maximum_fov, base_fov)
-	var safe_headroom := clampf(dynamic_fov_headroom, 0.0, safe_maximum - base_fov)
+	var safe_maximum := maxf(effective_maximum, effective_base)
+	var safe_headroom := clampf(dynamic_fov_headroom, 0.0, safe_maximum - effective_base)
 	var cruise_ceiling := safe_maximum - safe_headroom
 	var fov_speed_ratio := pow(clampf(speed_ratio, 0.0, 1.0), speed_fov_curve_power)
 	return clampf(
-		lerpf(base_fov, cruise_ceiling, fov_speed_ratio)
+		lerpf(effective_base, cruise_ceiling, fov_speed_ratio)
 		+ _acceleration_punch * 1.4
 		+ _boost_punch * 3.0
 		+ _route_punch * 1.5
 		- _air_emphasis * 1.4,
-		maxf(base_fov - 2.0, 1.0),
+		maxf(effective_base - 2.0, 1.0),
 		safe_maximum
 	)
 
@@ -292,10 +468,14 @@ func _compute_desired_position() -> Vector3:
 	flat_forward = flat_forward.normalized()
 	var chase_forward := (flat_forward * 0.62 + terrain_forward * 0.38).normalized()
 	var camera_up := Vector3.UP.slerp(ground_up, 0.22).normalized()
-	var dynamic_scale := REDUCED_DYNAMIC_POSITION_SCALE if _reduced_motion else 1.0
+	var mode_dynamic_scale := _profile_float(&"dynamic_scale", 1.0)
+	var dynamic_scale := (
+		REDUCED_DYNAMIC_POSITION_SCALE * mode_dynamic_scale
+		if _reduced_motion else mode_dynamic_scale
+	)
 	var impulse_scale := REDUCED_IMPULSE_SCALE if _reduced_motion else 1.0
 	var dynamic_distance := (
-		follow_distance
+		_effective_follow_distance()
 		+ speed_ratio * 0.35 * dynamic_scale
 		+ (_acceleration_punch * 0.22 + _air_emphasis * 0.55 + _route_punch * 0.35) * impulse_scale
 	)
@@ -304,8 +484,37 @@ func _compute_desired_position() -> Vector3:
 	return (
 		predicted_target
 		- chase_forward * dynamic_distance
-		+ camera_up * (follow_height + speed_ratio * 0.25 * dynamic_scale + _air_emphasis * 0.28 * impulse_scale)
+		+ camera_up * (_effective_follow_height() + speed_ratio * 0.25 * dynamic_scale + _air_emphasis * 0.28 * impulse_scale)
 	)
+
+
+func _normalize_view_mode(value: Variant) -> StringName:
+	var normalized := StringName(String(value).strip_edges().to_upper())
+	return normalized if normalized in VIEW_MODES else VIEW_CHASE
+
+
+func _active_profile() -> Dictionary:
+	return VIEW_PROFILES.get(get_effective_view_mode(), VIEW_PROFILES[VIEW_CHASE]) as Dictionary
+
+
+func _profile_float(key: StringName, fallback: float) -> float:
+	return float(_active_profile().get(key, fallback))
+
+
+func _effective_follow_distance() -> float:
+	return _profile_float(&"distance", follow_distance) * _distance_scale
+
+
+func _effective_follow_height() -> float:
+	return _profile_float(&"height", follow_height) * _height_scale
+
+
+func _effective_base_fov() -> float:
+	return clampf(base_fov + _profile_float(&"fov_offset", 0.0), 45.0, 115.0)
+
+
+func _effective_maximum_fov() -> float:
+	return clampf(maximum_fov + _profile_float(&"fov_offset", 0.0), _effective_base_fov(), 120.0)
 
 
 func _get_ground_up() -> Vector3:
