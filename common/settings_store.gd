@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 6
+const SETTINGS_VERSION: int = 8
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -12,6 +12,7 @@ const COLOR_SAFE_MODES: Array[String] = ["OFF", "PROTANOPIA", "DEUTERANOPIA", "T
 const UNIT_MODES: Array[String] = ["IMPERIAL", "METRIC"]
 const RACE_DIFFICULTY_MODES: Array[String] = ["RELAXED", "STANDARD", "EXPERT"]
 const TRANSMISSION_MODES: Array[String] = ["AUTOMATIC", "MANUAL"]
+const PRELOAD_BEHAVIOR_MODES: Array[String] = ["HOLD", "TOGGLE"]
 const CAMERA_MODES: Array[String] = ["CHASE", "CLOSE_CHASE", "HELMET", "FIRST_PERSON", "HANDLEBAR"]
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
 const TOUCH_CONTROL_MODES: Array[String] = ["AUTO", "ON", "OFF"]
@@ -23,7 +24,10 @@ const DEFAULTS: Dictionary = {
 		"throttle_deadzone": 0.05,
 		"brake_deadzone": 0.05,
 		"steering_sensitivity": 1.0,
+		"lean_sensitivity": 1.0,
+		"air_control_sensitivity": 1.0,
 		"steering_curve": 1.35,
+		"preload_behavior": "HOLD",
 		"touch_controls": "AUTO",
 		"touch_control_scale": 1.0,
 		"touch_control_opacity": 0.72,
@@ -34,6 +38,7 @@ const DEFAULTS: Dictionary = {
 		"distance_scale": 1.0,
 		"height_scale": 1.0,
 		"stiffness_scale": 1.0,
+		"look_sensitivity": 1.0,
 		"fov_degrees": 78.0,
 		"shake_intensity": 0.75,
 	},
@@ -525,13 +530,17 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var visual_quality := str(graphics.get("visual_quality", "BALANCED")).to_upper()
 	var touch_controls := str(controls.get("touch_controls", "AUTO")).to_upper()
 	var touch_handedness := str(controls.get("touch_handedness", "RIGHT")).to_upper()
+	var preload_behavior := str(controls.get("preload_behavior", "HOLD")).to_upper()
 	var output := {
 		"controls": {
 			"steering_deadzone": clampf(float(controls.get("steering_deadzone", 0.12)), 0.0, 0.5),
 			"throttle_deadzone": clampf(float(controls.get("throttle_deadzone", 0.05)), 0.0, 0.5),
 			"brake_deadzone": clampf(float(controls.get("brake_deadzone", 0.05)), 0.0, 0.5),
 			"steering_sensitivity": clampf(float(controls.get("steering_sensitivity", 1.0)), 0.25, 3.0),
+			"lean_sensitivity": clampf(float(controls.get("lean_sensitivity", 1.0)), 0.50, 1.50),
+			"air_control_sensitivity": clampf(float(controls.get("air_control_sensitivity", 1.0)), 0.50, 1.50),
 			"steering_curve": clampf(float(controls.get("steering_curve", 1.35)), 0.5, 3.0),
+			"preload_behavior": preload_behavior if preload_behavior in PRELOAD_BEHAVIOR_MODES else "HOLD",
 			"touch_controls": touch_controls if touch_controls in TOUCH_CONTROL_MODES else "AUTO",
 			"touch_control_scale": clampf(float(controls.get("touch_control_scale", 1.0)), 0.75, 1.4),
 			"touch_control_opacity": clampf(float(controls.get("touch_control_opacity", 0.72)), 0.35, 1.0),
@@ -542,6 +551,7 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"distance_scale": clampf(float(camera.get("distance_scale", 1.0)), 0.75, 1.35),
 			"height_scale": clampf(float(camera.get("height_scale", 1.0)), 0.75, 1.25),
 			"stiffness_scale": clampf(float(camera.get("stiffness_scale", 1.0)), 0.60, 1.50),
+			"look_sensitivity": clampf(float(camera.get("look_sensitivity", 1.0)), 0.50, 1.50),
 			"fov_degrees": clampf(float(camera.get("fov_degrees", 78.0)), 55.0, 110.0),
 			"shake_intensity": clampf(float(camera.get("shake_intensity", 0.75)), 0.0, 1.0),
 		},

@@ -100,6 +100,7 @@ var _controls: Node
 var _observer: ActionObserver
 var _failures: Array[String] = []
 var _added_actions: Array[StringName] = []
+var _prior_control_response: Dictionary = {}
 
 
 func _ready() -> void:
@@ -107,6 +108,7 @@ func _ready() -> void:
 
 
 func _run() -> void:
+	_prior_control_response = InputRouter.get_control_response_snapshot()
 	_ensure_actions()
 	_observer = ActionObserver.new()
 	add_child(_observer)
@@ -128,6 +130,7 @@ func _run() -> void:
 	_probe_touch_mouse_mode_handoff()
 	_probe_analog_joystick()
 	_probe_simultaneous_riding_inputs()
+	await _probe_preload_toggle_mode()
 	_probe_riding_system_actions()
 	await _probe_manual_transmission()
 	await _probe_deactivation_and_modes()
@@ -141,7 +144,7 @@ func _run() -> void:
 	if passed:
 		print(
 			"TOUCH RIDING CONTROLS PROBE: PASS  //  ride=10 garage=10 minimum=112px "
-			+ "results=4 multitouch=true analog=true modes=3 handedness=2 portrait=true"
+			+ "results=4 multitouch=true analog=true preload=hold/toggle modes=3 handedness=2 portrait=true"
 		)
 	else:
 		for failure: String in _failures:
@@ -261,6 +264,57 @@ func _probe_riding_system_actions() -> void:
 	var snapshot := _snapshot()
 	for control_id: StringName in RIDE_SYSTEM_ACTIONS:
 		_probe_semantic_button(snapshot, control_id, RIDE_SYSTEM_ACTIONS[control_id], 30 + RIDE_SYSTEM_ACTIONS.keys().find(control_id), "RIDE")
+
+
+func _probe_preload_toggle_mode() -> void:
+	_release_everything()
+	var toggle_response := _prior_control_response.duplicate(true)
+	toggle_response[&"preload_behavior"] = &"TOGGLE"
+	InputRouter.configure_controls(toggle_response)
+	_configure(&"AUTO", &"RIGHT", &"AUTOMATIC", &"TOGGLE")
+	await _settle_layout()
+	var snapshot := _snapshot()
+	var preload_control := (snapshot.get(&"controls", {}) as Dictionary).get(&"preload", {}) as Dictionary
+	_check(
+		StringName(snapshot.get(&"preload_behavior", &"")) == &"TOGGLE"
+			and String(preload_control.get(&"label", "")).contains("TAP"),
+		"Toggle preload is not presented as a tap control"
+	)
+
+	_press_target(snapshot, &"preload", 29)
+	await get_tree().physics_frame
+	var first_press := InputRouter.get_preload_state()
+	_release_target(snapshot, &"preload", 29)
+	await get_tree().physics_frame
+	var physical_release := InputRouter.get_preload_state()
+	snapshot = _snapshot()
+	preload_control = (snapshot.get(&"controls", {}) as Dictionary).get(&"preload", {}) as Dictionary
+	_check(
+		bool(first_press.get(&"just_pressed", false))
+			and bool(physical_release.get(&"pressed", false))
+			and not bool(physical_release.get(&"just_released", true))
+			and bool(snapshot.get(&"preload_toggle_active", false))
+			and bool(preload_control.get(&"pressed", false)),
+		"touch Toggle preload did not remain visibly armed after finger release"
+	)
+
+	_press_target(snapshot, &"preload", 30)
+	await get_tree().physics_frame
+	var second_press := InputRouter.get_preload_state()
+	_release_target(snapshot, &"preload", 30)
+	await get_tree().physics_frame
+	InputRouter.get_preload_state()
+	snapshot = _snapshot()
+	preload_control = (snapshot.get(&"controls", {}) as Dictionary).get(&"preload", {}) as Dictionary
+	_check(
+		bool(second_press.get(&"just_released", false))
+			and not bool(snapshot.get(&"preload_toggle_active", true))
+			and not bool(preload_control.get(&"pressed", true)),
+		"second touch tap did not release and visually clear Toggle preload"
+	)
+	InputRouter.configure_controls(_prior_control_response)
+	_configure(&"AUTO", &"RIGHT", &"AUTOMATIC", &"HOLD")
+	await _settle_layout()
 
 
 func _probe_manual_transmission() -> void:
@@ -543,7 +597,8 @@ func _snapshot() -> Dictionary:
 func _configure(
 	mode: StringName,
 	handedness: StringName,
-	transmission_mode: StringName = &"AUTOMATIC"
+	transmission_mode: StringName = &"AUTOMATIC",
+	preload_behavior: StringName = &"HOLD"
 ) -> void:
 	_controls.call(&"configure_touch_controls", {
 		"touch_controls": String(mode),
@@ -551,6 +606,7 @@ func _configure(
 		"touch_control_opacity": 0.72,
 		"touch_handedness": String(handedness),
 		"transmission_mode": String(transmission_mode),
+		"preload_behavior": String(preload_behavior),
 	})
 
 
@@ -606,6 +662,7 @@ func _check(condition: bool, label: String, details: String = "") -> void:
 
 func _cleanup() -> void:
 	_release_everything()
+	InputRouter.configure_controls(_prior_control_response)
 	if is_instance_valid(_controls):
 		_controls.queue_free()
 	if is_instance_valid(_observer):

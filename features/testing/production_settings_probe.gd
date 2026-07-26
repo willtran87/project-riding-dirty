@@ -178,18 +178,84 @@ func _run() -> void:
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"RIDE"))
 	service.call(&"_refresh_settings_text")
 	var ride_items: Array = service.get("_settings_items") as Array
-	_check(ride_items.size() >= 7, "ride page is missing deadzones or feedback controls")
-	_check(ride_items[0].get(&"key", &"") == &"steering_deadzone", "steering deadzone is not player-facing")
+	var expected_response_keys: Array[StringName] = [
+		&"steering_deadzone",
+		&"throttle_deadzone",
+		&"brake_deadzone",
+		&"steering_sensitivity",
+		&"lean_sensitivity",
+		&"air_control_sensitivity",
+		&"preload_behavior",
+		&"steering_curve",
+	]
+	_check(ride_items.size() >= 12, "Ride page is missing independent response or feedback controls")
+	for index: int in mini(expected_response_keys.size(), ride_items.size()):
+		_check(
+			StringName((ride_items[index] as Dictionary).get(&"key", &""))
+				== expected_response_keys[index],
+			"Ride response setting order is incomplete at row %d" % index
+		)
 	var difficulty_index := -1
 	var transmission_index := -1
+	var lean_sensitivity_index := -1
+	var preload_behavior_index := -1
 	for index: int in ride_items.size():
 		var ride_key := StringName((ride_items[index] as Dictionary).get(&"key", &""))
 		if ride_key == &"race_difficulty":
 			difficulty_index = index
 		elif ride_key == &"transmission_mode":
 			transmission_index = index
+		elif ride_key == &"lean_sensitivity":
+			lean_sensitivity_index = index
+		elif ride_key == &"preload_behavior":
+			preload_behavior_index = index
 	_check(difficulty_index >= 0, "ride page is missing race difficulty")
 	_check(transmission_index >= 0, "ride page is missing automatic/manual transmission")
+	_check(lean_sensitivity_index >= 0, "Ride page is missing independent rider-lean sensitivity")
+	_check(preload_behavior_index >= 0, "Ride page is missing Hold/Toggle preload behavior")
+	if lean_sensitivity_index >= 0 and preload_behavior_index >= 0:
+		var locked_response := service.get_preferred_control_response()
+		_check(
+			service.set_activity_control_response_override(locked_response),
+			"ordinary run did not lock its exact control response"
+		)
+		service.set("_settings_index", lean_sensitivity_index)
+		service.call(&"_adjust_setting", 1)
+		_check(
+			is_equal_approx(
+				float(service.settings.get_value(&"controls", &"lean_sensitivity", 0.0)),
+				1.05
+			)
+				and is_equal_approx(
+					float(service.get_effective_control_response().get(&"lean_sensitivity", 0.0)),
+					1.0
+				)
+				and String(service.get("_settings_message")).contains("APPLIES NEXT EVENT"),
+			"mid-run lean sensitivity did not persist safely for the next event"
+		)
+		service.set("_settings_index", preload_behavior_index)
+		service.call(&"_adjust_setting", 1)
+		_check(
+			StringName(service.settings.get_value(&"controls", &"preload_behavior", &"")) == &"TOGGLE"
+				and StringName(
+					service.get_effective_control_response().get(&"preload_behavior", &"")
+				) == &"HOLD"
+				and String(service.get("_settings_message")).contains("APPLIES NEXT EVENT"),
+			"mid-run preload behavior did not persist safely for the next event"
+		)
+		service.clear_activity_control_response_override()
+		_check(
+			is_equal_approx(
+				float(service.get_effective_control_response().get(&"lean_sensitivity", 0.0)),
+				1.05
+			)
+				and StringName(
+					service.get_effective_control_response().get(&"preload_behavior", &"")
+				) == &"TOGGLE",
+			"new response settings did not activate after the run lock cleared"
+		)
+		service.settings.set_value(&"controls", &"preload_behavior", &"HOLD")
+		service.call(&"_apply_settings")
 	if difficulty_index >= 0:
 		var active_race := RaceController.new()
 		active_race.state = RaceController.State.RACING
@@ -237,6 +303,16 @@ func _run() -> void:
 		service.call(&"_adjust_setting", 1)
 		service.race = null
 		transmission_race.free()
+
+	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"CAMERA"))
+	service.call(&"_refresh_settings_text")
+	var camera_items: Array = service.get("_settings_items") as Array
+	var camera_look_index := -1
+	for index: int in camera_items.size():
+		if StringName((camera_items[index] as Dictionary).get(&"key", &"")) == &"look_sensitivity":
+			camera_look_index = index
+			break
+	_check(camera_look_index >= 0, "Camera page is missing independent photo-look sensitivity")
 
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"ASSISTS"))
 	service.call(&"_refresh_settings_text")
@@ -488,6 +564,10 @@ func _run() -> void:
 	_check(_has_physical_key(InputMap.action_get_events(InputRouter.THROTTLE), KEY_W), "per-action reset did not restore the default key")
 	service.call(&"_reset_all_settings")
 	_check(is_equal_approx(float(service.settings.get_value(&"audio", &"master_volume", 0.0)), 1.0), "reset all did not restore audio defaults")
+	_check(
+		StringName(service.settings.get_value(&"controls", &"preload_behavior", &"")) == &"HOLD",
+		"reset all did not restore Hold preload behavior"
+	)
 	_assert_exact_default_bindings()
 
 	var panel := service.get("_settings_panel") as PanelContainer

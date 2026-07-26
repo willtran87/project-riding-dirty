@@ -1241,6 +1241,31 @@ func show_camera_view(label: String) -> void:
 	_pulse_highlight()
 
 
+func show_preload_toggle_state(active: bool) -> void:
+	## Toggle mode needs persistent semantic confirmation because the physical key
+	## or touch contact is no longer held while the virtual preload remains armed.
+	var binding := (
+		"PRELOAD"
+		if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+		else InputRouter.get_action_label(InputRouter.PRELOAD, InputRouter.input_mode, 2)
+	)
+	_message_label.text = (
+		"PRELOAD ARMED  //  TAP %s TO RELEASE" % binding
+		if active
+		else "PRELOAD RELEASED"
+	)
+	_message_label.modulate = AMBER if active else CYAN
+	_message_time = 1.75
+	if active:
+		_pulse_highlight()
+
+
+func refresh_control_behavior() -> void:
+	_refresh_binding_prompts(InputRouter.input_mode)
+	if _activity == &"ACADEMY" and not _academy_lesson.is_empty():
+		_refresh_academy_panel()
+
+
 func show_feat(title: String) -> void:
 	_queue_reward("FEAT UNLOCKED  //  %s  //  +1 STYLE TOKEN" % title, 4.0, CYAN)
 
@@ -1792,6 +1817,12 @@ func _resolve_academy_coach_template(template: String, mode: StringName) -> Stri
 	output = output.replace("{LEAN_STEER}", _academy_lean_steer_label(mode))
 	output = output.replace("{STEER}", _academy_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode))
 	output = output.replace("{LEAN}", _academy_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode))
+	if InputRouter.preload_behavior == &"TOGGLE":
+		var preload_label := _academy_action_label(InputRouter.PRELOAD, mode)
+		output = output.replace(
+			"HOLD %s, RELEASE" % preload_label,
+			"TAP %s TO LOAD, TAP AGAIN" % preload_label
+		)
 	return output
 
 
@@ -2931,13 +2962,18 @@ func _on_bindings_changed(_actions: Array[StringName]) -> void:
 
 
 func _refresh_binding_prompts(mode: StringName) -> void:
+	var preload_prompt := (
+		"%s TAP PRELOAD" % InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2)
+		if InputRouter.preload_behavior == &"TOGGLE"
+		else "%s PRELOAD" % InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2)
+	)
 	if mode == InputRouter.INPUT_MODE_GAMEPAD:
-		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s PRELOAD   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
+		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
 			InputRouter.get_action_label(InputRouter.THROTTLE, mode, 2),
 			InputRouter.get_action_label(InputRouter.BRAKE, mode, 2),
 			InputRouter.get_action_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode, 2),
 			InputRouter.get_action_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode, 2),
-			InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2),
+			preload_prompt,
 			InputRouter.get_action_label(InputRouter.FLOW_BOOST, mode, 2),
 			InputRouter.get_action_label(InputRouter.RACECRAFT, mode, 2),
 			InputRouter.get_action_label(InputRouter.RESET_BIKE, mode, 2),
@@ -2947,19 +2983,23 @@ func _refresh_binding_prompts(mode: StringName) -> void:
 		_anchor_rect(_controls_panel, Vector2(0.0, 1.0), Rect2(28.0, -104.0, 620.0, 70.0))
 		_anchor_rect(_controls_label, Vector2(0.0, 1.0), Rect2(42.0, -98.0, 592.0, 56.0))
 	elif mode == InputRouter.INPUT_MODE_TOUCH:
-		_controls_label.text = "LEFT PAD  STEER + LEAN   //   HOLD THROTTLE + BRAKE\nHOLD + RELEASE PRELOAD TO HOP   //   FLOW + TECH ARE CONTEXTUAL"
+		_controls_label.text = (
+			"LEFT PAD  STEER + LEAN   //   HOLD THROTTLE + BRAKE\nTAP PRELOAD TO LOAD  //  TAP AGAIN TO HOP  //  FLOW + TECH ARE CONTEXTUAL"
+			if InputRouter.preload_behavior == &"TOGGLE"
+			else "LEFT PAD  STEER + LEAN   //   HOLD THROTTLE + BRAKE\nHOLD + RELEASE PRELOAD TO HOP   //   FLOW + TECH ARE CONTEXTUAL"
+		)
 		_controls_label.add_theme_font_size_override(&"font_size", 22)
 		# The center lane below the top band avoids contract, flag, integrity,
 		# standings, minimap, and both hand zones while the learned hint fades.
 		_anchor_rect(_controls_panel, Vector2(0.5, 0.0), Rect2(-390.0, 196.0, 780.0, 78.0))
 		_anchor_rect(_controls_label, Vector2(0.5, 0.0), Rect2(-372.0, 202.0, 744.0, 66.0))
 	else:
-		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s PRELOAD   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
+		_controls_label.text = "%s THROTTLE   %s BRAKE   %s STEER   %s LEAN\n%s   %s CONTEXT FLOW   %s CLUTCH / DAB / PUMP   %s RESET   %s GARAGE" % [
 			InputRouter.get_action_label(InputRouter.THROTTLE, mode, 2),
 			InputRouter.get_action_label(InputRouter.BRAKE, mode, 2),
 			InputRouter.get_action_pair_label(InputRouter.STEER_LEFT, InputRouter.STEER_RIGHT, mode, 2),
 			InputRouter.get_action_pair_label(InputRouter.LEAN_FORWARD, InputRouter.LEAN_BACK, mode, 2),
-			InputRouter.get_action_label(InputRouter.PRELOAD, mode, 2),
+			preload_prompt,
 			InputRouter.get_action_label(InputRouter.FLOW_BOOST, mode, 2),
 			InputRouter.get_action_label(InputRouter.RACECRAFT, mode, 2),
 			InputRouter.get_action_label(InputRouter.RESET_BIKE, mode, 2),

@@ -363,6 +363,7 @@ func _probe_live_and_result_presentation() -> void:
 	var catalog: Variant = ACADEMY_CATALOG_SCRIPT.create_default()
 	var lesson: Dictionary = catalog.get_lesson(&"CONTROL_BASICS")
 	var prior_input_mode := InputRouter.input_mode
+	var prior_control_response := InputRouter.get_control_response_snapshot()
 	var throttle_bindings := _snapshot_action(InputRouter.THROTTLE)
 	var flow_bindings := _snapshot_action(InputRouter.FLOW_BOOST)
 	InputRouter.call(&"_set_input_mode", InputRouter.INPUT_MODE_KEYBOARD_MOUSE)
@@ -392,6 +393,22 @@ func _probe_live_and_result_presentation() -> void:
 	_check(live_objectives.size() == 2, "HUD did not enforce the two-objective Academy limit")
 	_check(live_objectives[0].contains("PASS") and live_objectives[1].contains("PASS"), "HUD objectives omitted their passing thresholds")
 	_check(not bool(hud.get_control_hint_state().get(&"visible", true)), "Academy duplicated its focused coach with the generic control wall")
+	var toggle_response := prior_control_response.duplicate(true)
+	toggle_response[&"preload_behavior"] = &"TOGGLE"
+	InputRouter.configure_controls(toggle_response)
+	hud.configure_academy_lesson(catalog.get_lesson(&"PRELOAD_LANDING"))
+	hud.refresh_control_behavior()
+	var toggle_preload_coach := str(
+		hud.get_academy_presentation_snapshot().get(&"coach", "")
+	)
+	_check(
+		toggle_preload_coach.contains("TAP SPACE TO LOAD, TAP AGAIN")
+			and not toggle_preload_coach.contains("HOLD SPACE"),
+		"Academy preload lesson did not teach the selected Toggle behavior"
+	)
+	InputRouter.configure_controls(prior_control_response)
+	hud.configure_academy_lesson(lesson)
+	hud.refresh_control_behavior()
 	hud.update_line("LINE BROKEN", 0, 1.0, 0, 0.0)
 	hud.update_contract("SPONSOR: LAND 2 CLEAN JUMPS", 0, 2, false)
 	hud.update_modifier("TAILWIND", "+12% drive force")
@@ -588,6 +605,7 @@ func _probe_live_and_result_presentation() -> void:
 	)
 	_check(bool(compact_presentation.get(&"content_fits", false)), "Academy panel clipped after reducing text scale")
 	InputRouter.call(&"_set_input_mode", prior_input_mode)
+	InputRouter.configure_controls(prior_control_response)
 
 	var evaluation := Profile.record_academy_result(&"CONTROL_BASICS", _metrics_for_grade(lesson, 1))
 	var credited := evaluation.get(&"credited_rewards", {}) as Dictionary

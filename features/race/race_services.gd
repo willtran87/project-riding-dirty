@@ -106,6 +106,7 @@ var _saved_hud_unhandled_input := true
 var _riding_camera_active := true
 var _activity_transmission_override: StringName = &""
 var _activity_transmission_forced: bool = false
+var _activity_control_response_override: Dictionary = {}
 
 
 func _ready() -> void:
@@ -137,6 +138,8 @@ func initialize(race_controller: RaceController, player_bike: DirtBikeController
 		InputRouter.input_mode_changed.connect(_on_input_prompt_context_changed)
 	if not InputRouter.bindings_changed.is_connected(_on_input_bindings_changed):
 		InputRouter.bindings_changed.connect(_on_input_bindings_changed)
+	if not InputRouter.preload_toggle_changed.is_connected(_on_preload_toggle_changed):
+		InputRouter.preload_toggle_changed.connect(_on_preload_toggle_changed)
 	_snapshot_default_bindings()
 	if &"--smoke-test" not in OS.get_cmdline_user_args():
 		settings.load_from_disk()
@@ -293,9 +296,64 @@ func _apply_effective_transmission() -> void:
 	var effective_mode := get_effective_transmission_mode()
 	if bike != null and bike.has_method(&"configure_transmission"):
 		bike.call(&"configure_transmission", effective_mode)
+	get_tree().call_group(
+		&"touch_controls", &"configure_touch_controls",
+		_effective_touch_control_values()
+	)
+
+
+func get_preferred_control_response() -> Dictionary:
+	return InputRouter.sanitize_control_response(
+		settings.values.get("controls", {}) as Dictionary
+	)
+
+
+func get_effective_control_response() -> Dictionary:
+	return (
+		_activity_control_response_override.duplicate(true)
+		if not _activity_control_response_override.is_empty()
+		else get_preferred_control_response()
+	)
+
+
+func get_preferred_control_response_signature() -> String:
+	return InputRouter.control_response_signature(get_preferred_control_response())
+
+
+func has_activity_control_response_override() -> bool:
+	return not _activity_control_response_override.is_empty()
+
+
+func set_activity_control_response_override(response: Dictionary) -> bool:
+	if response.is_empty():
+		return false
+	_activity_control_response_override = InputRouter.sanitize_control_response(response)
+	_apply_effective_control_response()
+	return true
+
+
+func clear_activity_control_response_override() -> void:
+	_activity_control_response_override.clear()
+	_apply_effective_control_response()
+
+
+func _apply_effective_control_response() -> void:
+	InputRouter.configure_controls(get_effective_control_response())
+	get_tree().call_group(
+		&"touch_controls", &"configure_touch_controls",
+		_effective_touch_control_values()
+	)
+	if hud != null and hud.has_method(&"refresh_control_behavior"):
+		hud.call(&"refresh_control_behavior")
+
+
+func _effective_touch_control_values() -> Dictionary:
 	var touch_values := (settings.values.get("controls", {}) as Dictionary).duplicate(true)
-	touch_values["transmission_mode"] = String(effective_mode)
-	get_tree().call_group(&"touch_controls", &"configure_touch_controls", touch_values)
+	var effective_response := get_effective_control_response()
+	for key: StringName in InputRouter.CONTROL_RESPONSE_KEYS:
+		touch_values[String(key)] = effective_response.get(key)
+	touch_values["transmission_mode"] = String(get_effective_transmission_mode())
+	return touch_values
 
 
 func can_start_replay() -> bool:
@@ -507,8 +565,9 @@ func _update_photo_camera(delta: float) -> void:
 		)
 	var yaw := Input.get_axis(InputRouter.PHOTO_LOOK_LEFT, InputRouter.PHOTO_LOOK_RIGHT)
 	var pitch := Input.get_axis(InputRouter.PHOTO_LOOK_UP, InputRouter.PHOTO_LOOK_DOWN)
-	chase_camera.rotate_y(-yaw * delta * 1.3)
-	chase_camera.rotate_object_local(Vector3.RIGHT, -pitch * delta * 0.9)
+	var look_sensitivity := float(settings.get_value(&"camera", &"look_sensitivity", 1.0))
+	chase_camera.rotate_y(-yaw * delta * 1.3 * look_sensitivity)
+	chase_camera.rotate_object_local(Vector3.RIGHT, -pitch * delta * 0.9 * look_sensitivity)
 
 
 func _show_photo_prompt() -> void:
@@ -587,6 +646,17 @@ func _on_input_prompt_context_changed(_mode: StringName) -> void:
 
 func _on_input_bindings_changed(_actions: Array[StringName]) -> void:
 	_refresh_live_input_prompts()
+
+
+func _on_preload_toggle_changed(active: bool, user_initiated: bool) -> void:
+	if not user_initiated:
+		return
+	if hud != null and hud.has_method(&"show_preload_toggle_state"):
+		hud.call(&"show_preload_toggle_state", active)
+	_emit_interface_feedback(
+		&"CONFIRM" if active else &"CANCEL",
+		&"PRELOAD_TOGGLE"
+	)
 
 
 func _refresh_live_input_prompts() -> void:
@@ -853,7 +923,7 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	var controls := settings.values.get("controls", {}) as Dictionary
 	var interface := settings.values.get("interface", {}) as Dictionary
 	var gameplay := settings.values.get("gameplay", {}) as Dictionary
-	InputRouter.configure_controls(controls)
+	InputRouter.configure_controls(get_effective_control_response())
 	RaceEventCatalog.set_player_difficulty_mode(gameplay.get("race_difficulty", "STANDARD"))
 	_apply_visual_quality(str(settings.get_value(&"graphics", &"visual_quality", "BALANCED")))
 	var bindings := settings.values.get("bindings", {}) as Dictionary
@@ -887,8 +957,7 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 		&"reduced_motion_consumers", &"set_reduced_motion",
 		bool(interface.get("reduced_motion", false))
 	)
-	var touch_values := controls.duplicate(true)
-	touch_values["transmission_mode"] = String(get_effective_transmission_mode())
+	var touch_values := _effective_touch_control_values()
 	get_tree().call_group(&"touch_controls", &"configure_touch_controls", touch_values)
 	if Profile.has_method(&"set_settings_reference"):
 		Profile.call(&"set_settings_reference", SettingsStore.DEFAULT_PATH)
@@ -1254,7 +1323,15 @@ func _adjust_setting(direction: int) -> void:
 			var current := float(settings.get_value(section, key, item.get(&"default", 0.0)))
 			changed = settings.set_value(section, key, current + float(item.get(&"step", 0.1)) * direction)
 	if changed:
-		if section == &"gameplay" and key == &"race_difficulty" and _has_active_race_session():
+		if (
+			section == &"controls"
+			and key in InputRouter.CONTROL_RESPONSE_KEYS
+			and has_activity_control_response_override()
+		):
+			_settings_message = "%s SAVED  //  APPLIES NEXT EVENT" % str(
+				item.get(&"label", "CONTROL RESPONSE")
+			)
+		elif section == &"gameplay" and key == &"race_difficulty" and _has_active_race_session():
 			# RaceSessionConfig and its run signature are immutable once the event is
 			# composed. Persist the selection now and state its safe activation point.
 			_settings_message = "RACE DIFFICULTY SAVED  //  APPLIES NEXT EVENT"
@@ -1429,6 +1506,9 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("THROTTLE DEADZONE", &"controls", &"throttle_deadzone", &"PERCENT", 0.01, 0.05),
 				_value_item("BRAKE DEADZONE", &"controls", &"brake_deadzone", &"PERCENT", 0.01, 0.05),
 				_value_item("STEERING SENSITIVITY", &"controls", &"steering_sensitivity", &"DECIMAL", 0.05, 1.0),
+				_value_item("RIDER LEAN SENSITIVITY", &"controls", &"lean_sensitivity", &"DECIMAL", 0.05, 1.0),
+				_value_item("AIR CONTROL SENSITIVITY", &"controls", &"air_control_sensitivity", &"DECIMAL", 0.05, 1.0),
+				_enum_item("PRELOAD INPUT", &"controls", &"preload_behavior", SettingsStore.PRELOAD_BEHAVIOR_MODES),
 				_value_item("STEERING RESPONSE CURVE", &"controls", &"steering_curve", &"DECIMAL", 0.05, 1.35),
 				_enum_item("RACE DIFFICULTY", &"gameplay", &"race_difficulty", SettingsStore.RACE_DIFFICULTY_MODES),
 				_enum_item("TRANSMISSION", &"gameplay", &"transmission_mode", SettingsStore.TRANSMISSION_MODES),
@@ -1459,6 +1539,7 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("CAMERA DISTANCE", &"camera", &"distance_scale", &"PERCENT", 0.05, 1.0),
 				_value_item("CAMERA HEIGHT", &"camera", &"height_scale", &"PERCENT", 0.05, 1.0),
 				_value_item("CAMERA STIFFNESS", &"camera", &"stiffness_scale", &"PERCENT", 0.05, 1.0),
+				_value_item("PHOTO LOOK SENSITIVITY", &"camera", &"look_sensitivity", &"DECIMAL", 0.05, 1.0),
 				_value_item("FIELD OF VIEW", &"camera", &"fov_degrees", &"DEGREES", 2.0, 78.0),
 				_value_item("CAMERA IMPACT + SHAKE", &"camera", &"shake_intensity", &"PERCENT", 0.05, 0.75),
 			])
@@ -1716,7 +1797,15 @@ func _reset_selected_setting() -> void:
 		var default_section := SettingsStore.DEFAULTS.get(String(section), {}) as Dictionary
 		if default_section.has(String(key)):
 			settings.set_value(section, key, default_section[String(key)])
-			_settings_message = "%s RESTORED" % str(item.get(&"label", "SETTING"))
+			_settings_message = (
+				"%s RESTORED  //  APPLIES NEXT EVENT" % str(item.get(&"label", "SETTING"))
+				if (
+					section == &"controls"
+					and key in InputRouter.CONTROL_RESPONSE_KEYS
+					and has_activity_control_response_override()
+				)
+				else "%s RESTORED" % str(item.get(&"label", "SETTING"))
+			)
 	settings.capture_input_map(REBINDABLE_ACTIONS)
 	settings.save_to_disk()
 	_apply_settings(changed_binding_actions)
@@ -1730,7 +1819,11 @@ func _reset_all_settings() -> void:
 	settings.capture_input_map(REBINDABLE_ACTIONS)
 	settings.save_to_disk()
 	_apply_settings(REBINDABLE_ACTIONS)
-	_settings_message = "ALL SETTINGS AND INPUTS RESTORED"
+	_settings_message = (
+		"ALL SETTINGS RESTORED  //  RIDE RESPONSE APPLIES NEXT EVENT"
+		if has_activity_control_response_override()
+		else "ALL SETTINGS AND INPUTS RESTORED"
+	)
 
 
 func _snapshot_default_bindings() -> void:

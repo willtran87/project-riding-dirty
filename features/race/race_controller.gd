@@ -1155,6 +1155,7 @@ func _build_competitive_signature() -> String:
 			StringName(bike.get_transmission_snapshot().get(&"mode", &"AUTOMATIC"))
 			if bike != null else &"AUTOMATIC"
 		),
+		"control_signature": InputRouter.get_control_response_signature(),
 		"setup_id": competitive_rules.get(&"competitive_setup_id", Profile.current_setup),
 		"tune_signature": build_signature,
 		"weather": _session_config.weather,

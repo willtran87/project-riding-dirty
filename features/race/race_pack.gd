@@ -2500,10 +2500,13 @@ func _resolve_player_total_progress(chainage: float) -> float:
 		return candidate
 	# The duplicated start/finish point can report either the terminal or opening
 	# chainage while RaceController advances the authoritative lap on an adjacent
-	# tick. Reconcile only inside that seam window, leaving real reversing and
-	# recovery movement elsewhere untouched.
+	# tick. The pack samples player projection at 10 Hz, so the prior sample can
+	# legitimately sit beyond the integrity tracker's immediate jump allowance
+	# when the finish trigger advances first. Reconcile across the full
+	# start/finish approach while leaving real reversing and recovery movement
+	# elsewhere untouched.
 	var seam_window := minf(
-		maxf(28.0, CourseCatalog.get_track_width(_track_id) * 1.25),
+		maxf(48.0, CourseCatalog.get_track_width(_track_id) * 1.75),
 		_track_length * 0.15
 	)
 	var prior_mod := fposmod(_player_total_progress_m, _track_length)

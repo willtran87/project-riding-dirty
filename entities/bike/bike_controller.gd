@@ -343,15 +343,20 @@ func _physics_process(delta: float) -> void:
 	var brake := InputRouter.get_brake() if controls_enabled or accepts_gate_input else 0.0
 	var brake_just_pressed := brake > 0.18 and not _brake_was_pressed
 	_brake_was_pressed = brake > 0.18
-	var raw_steer := InputRouter.get_steer() if controls_enabled else 0.0
-	var lean := InputRouter.get_lean() if controls_enabled else 0.0
+	var ground_steer := InputRouter.get_steer() if controls_enabled else 0.0
+	var air_steer := InputRouter.get_air_steer() if controls_enabled else 0.0
+	var ground_lean := InputRouter.get_lean() if controls_enabled else 0.0
+	var air_lean := InputRouter.get_air_lean() if controls_enabled else 0.0
+	var response_was_grounded := _was_grounded or _motion_locked
+	var active_steer := ground_steer if response_was_grounded else air_steer
+	var active_lean := ground_lean if response_was_grounded else air_lean
 	_last_throttle = throttle
 	_last_brake = brake
-	_last_lean = lean
+	_last_lean = active_lean
 	# Brake staging is presentation/evaluation only; it must not preload a hidden
 	# center-of-mass shift before the rigid body is released.
-	_update_center_of_mass(lean, brake if controls_enabled else 0.0, delta)
-	_update_steering_input(raw_steer, delta)
+	_update_center_of_mass(active_lean, brake if controls_enabled else 0.0, delta)
+	_update_steering_input(ground_steer, delta)
 	_priority_haptic_time = maxf(_priority_haptic_time - delta, 0.0)
 	_flow_denied_haptic_cooldown = maxf(_flow_denied_haptic_cooldown - delta, 0.0)
 	_pack_contact_cooldown = maxf(_pack_contact_cooldown - delta, 0.0)
@@ -380,15 +385,15 @@ func _physics_process(delta: float) -> void:
 		(controls_enabled or accepts_gate_input) and InputRouter.is_shift_down_just_pressed(),
 		maximum_speed_mps
 	)
-	_handle_flow_boost(delta, brake, raw_steer)
-	_handle_racecraft_technique(throttle, brake, raw_steer)
+	_handle_flow_boost(delta, brake, active_steer)
+	_handle_racecraft_technique(throttle, brake, active_steer)
 
 	if _motion_locked:
 		_airborne_fall_speed = 0.0
 		_update_terrain_feedback(delta)
 		# Staging input may rev the engine and animate the rider, but the frozen
 		# rigid body remains the sole authority over pre-green motion.
-		_update_visual_and_audio(delta, 0.0, _steer_input, lean, throttle)
+		_update_visual_and_audio(delta, 0.0, _steer_input, ground_lean, throttle)
 		_update_telemetry(delta, 0.0, throttle)
 		_emit_racecraft_state(delta)
 		return
@@ -397,7 +402,7 @@ func _physics_process(delta: float) -> void:
 	if _grounded:
 		_landing_target_valid = false
 		_landing_alignment_weight = 0.0
-		_apply_ground_drive(throttle, brake, _steer_input, lean, delta)
+		_apply_ground_drive(throttle, brake, _steer_input, ground_lean, delta)
 		_apply_balance(_steer_input)
 		_update_wheelie(delta, get_speed_mps())
 		_safe_sample_time += delta
@@ -415,10 +420,10 @@ func _physics_process(delta: float) -> void:
 		_airtime += delta
 		_air_rotation += angular_velocity.length() * delta
 		_sample_landing_target()
-		_apply_air_control(raw_steer)
+		_apply_air_control(air_steer)
 		_apply_air_brake_pop(brake_just_pressed)
-		_update_scrub(lean, delta)
-		_whip_time += delta if absf(raw_steer) > 0.55 else 0.0
+		_update_scrub(air_lean, delta)
+		_whip_time += delta if absf(air_steer) > 0.55 else 0.0
 		_airborne_fall_speed = maxf(_airborne_fall_speed, -linear_velocity.y)
 
 	if _grounded and not _was_grounded:
@@ -466,7 +471,13 @@ func _physics_process(delta: float) -> void:
 
 	_update_terrain_feedback(delta)
 	var speed_mps := get_speed_mps()
-	_update_visual_and_audio(delta, speed_mps, _steer_input if _grounded else raw_steer, lean, throttle)
+	_update_visual_and_audio(
+		delta,
+		speed_mps,
+		_steer_input if _grounded else air_steer,
+		ground_lean if _grounded else air_lean,
+		throttle
+	)
 	_update_telemetry(delta, speed_mps, throttle)
 	_update_skill_line(delta)
 	_emit_racecraft_state(delta)
@@ -479,6 +490,10 @@ func _physics_process(delta: float) -> void:
 
 func set_controls_enabled(enabled: bool) -> void:
 	controls_enabled = enabled
+	if not enabled:
+		InputRouter.cancel_preload_behavior()
+		_preload_charge = 0.0
+		_preload_buffer_time = 0.0
 	if not enabled and (is_boosting() or _active_flow_mode != &"NONE"):
 		_boost_time = 0.0
 		_active_flow_mode = &"NONE"
@@ -574,7 +589,9 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_takeoff_alignment = 1.0
 	_whip_time = 0.0
 	_wobble_time = 0.0
+	_preload_charge = 0.0
 	_preload_buffer_time = 0.0
+	InputRouter.cancel_preload_behavior()
 	_ground_coyote_time = 0.0
 	_front_contact = WheelContact.new()
 	_rear_contact = WheelContact.new()
@@ -2458,10 +2475,13 @@ func _handle_preload(delta: float) -> void:
 	if not controls_enabled:
 		_preload_charge = 0.0
 		_preload_buffer_time = 0.0
+		InputRouter.cancel_preload_behavior()
 		return
-	if InputRouter.is_preload_pressed():
+	var preload_state := InputRouter.get_preload_state()
+	var preload_pressed := bool(preload_state.get(&"pressed", false))
+	if preload_pressed:
 		_preload_charge = minf(_preload_charge + delta, 0.5)
-	if InputRouter.is_preload_just_released():
+	if bool(preload_state.get(&"just_released", false)):
 		_preload_buffer_time = 0.14
 	if _preload_buffer_time > 0.0 and _ground_coyote_time > 0.0 and _preload_charge > 0.08:
 		var charge_ratio := _preload_charge / 0.5
@@ -2473,7 +2493,7 @@ func _handle_preload(delta: float) -> void:
 		_preload_buffer_time = 0.0
 	else:
 		_preload_buffer_time = maxf(_preload_buffer_time - delta, 0.0)
-		if _ground_coyote_time <= 0.0 and _preload_buffer_time <= 0.0 and not InputRouter.is_preload_pressed():
+		if _ground_coyote_time <= 0.0 and _preload_buffer_time <= 0.0 and not preload_pressed:
 			_preload_charge = 0.0
 
 

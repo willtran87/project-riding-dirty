@@ -5,7 +5,7 @@ class_name CompetitiveRunSignature
 const SCHEMA_VERSION: int = 1
 ## Bumps whenever deterministic bike/racecraft rules change lap potential. It is
 ## part of the normalized payload while the rs1 envelope remains importable.
-const RACECRAFT_VERSION: int = 5
+const RACECRAFT_VERSION: int = 6
 const REQUIRED_CONTEXT_KEYS: Array[String] = [
 	"event_id",
 	"track_id",
@@ -16,6 +16,7 @@ const REQUIRED_CONTEXT_KEYS: Array[String] = [
 	"difficulty",
 	"assist_mode",
 	"transmission_mode",
+	"control_signature",
 	"setup_id",
 ]
 
@@ -39,6 +40,7 @@ static func normalize_context(context: Dictionary) -> Dictionary:
 		"difficulty": clampi(int(context.get("difficulty", 2)), 0, 10),
 		"assist_mode": _clean_token(context.get("assist_mode", "STANDARD")),
 		"transmission_mode": _clean_token(context.get("transmission_mode", "AUTOMATIC")),
+		"control_signature": _clean_token(context.get("control_signature", "DEFAULT")),
 		"setup_id": _clean_token(context.get("setup_id", "BALANCED")),
 		"tune_signature": str(context.get("tune_signature", "")).strip_edges().substr(0, 256),
 		"weather": _clean_token(context.get("weather", "CLEAR")),

@@ -94,6 +94,8 @@ var _user_scale: float = 1.0
 var _opacity: float = 0.82
 var _handedness: StringName = HANDEDNESS_RIGHT
 var _manual_transmission: bool = false
+var _preload_toggle_mode: bool = false
+var _preload_toggle_active: bool = false
 
 var _viewport_size := Vector2.ZERO
 var _safe_rect := Rect2()
@@ -129,6 +131,12 @@ func _ready() -> void:
 		get_viewport().size_changed.connect(_on_viewport_size_changed)
 	if not visibility_changed.is_connected(_on_visibility_changed):
 		visibility_changed.connect(_on_visibility_changed)
+	if not InputRouter.preload_toggle_changed.is_connected(_on_preload_toggle_changed):
+		InputRouter.preload_toggle_changed.connect(_on_preload_toggle_changed)
+	if not InputRouter.preload_behavior_changed.is_connected(_on_preload_behavior_changed):
+		InputRouter.preload_behavior_changed.connect(_on_preload_behavior_changed)
+	_preload_toggle_mode = InputRouter.preload_behavior == &"TOGGLE"
+	_preload_toggle_active = InputRouter.is_preload_toggle_active()
 	_update_layout(true)
 
 
@@ -136,6 +144,10 @@ func _exit_tree() -> void:
 	release_all_inputs()
 	if get_viewport() != null and get_viewport().size_changed.is_connected(_on_viewport_size_changed):
 		get_viewport().size_changed.disconnect(_on_viewport_size_changed)
+	if InputRouter.preload_toggle_changed.is_connected(_on_preload_toggle_changed):
+		InputRouter.preload_toggle_changed.disconnect(_on_preload_toggle_changed)
+	if InputRouter.preload_behavior_changed.is_connected(_on_preload_behavior_changed):
+		InputRouter.preload_behavior_changed.disconnect(_on_preload_behavior_changed)
 
 
 func _notification(what: int) -> void:
@@ -203,6 +215,9 @@ func configure_touch_controls(values: Dictionary) -> void:
 	)
 	_handedness = _normalize_handedness(handedness_value)
 	_manual_transmission = str(values.get("transmission_mode", "AUTOMATIC")).to_upper() == "MANUAL"
+	_preload_toggle_mode = str(values.get("preload_behavior", "HOLD")).to_upper() == "TOGGLE"
+	if not _preload_toggle_mode:
+		_preload_toggle_active = false
 	if _has_any_setting(values, ["touchscreen_override", "touch_override"]):
 		set_touchscreen_override(int(_first_setting(
 			values, ["touchscreen_override", "touch_override"], _touchscreen_override
@@ -261,11 +276,14 @@ func get_touch_layout_snapshot() -> Dictionary:
 		var control_id := StringName(raw_id)
 		var spec: Dictionary = _controls[control_id]
 		var rect: Rect2 = spec.get(&"rect", Rect2())
+		var control_pressed := _role_fingers.has(control_id)
+		if control_id == &"preload" and _preload_toggle_mode and _preload_toggle_active:
+			control_pressed = true
 		control_snapshot[control_id] = {
 			&"rect": rect,
 			&"center": rect.get_center(),
 			&"visible": bool(spec.get(&"visible", false)),
-			&"pressed": _role_fingers.has(control_id),
+			&"pressed": control_pressed,
 			&"action": StringName(spec.get(&"action", &"")),
 			&"label": str(spec.get(&"label", "")),
 			&"minimum_size": Vector2(TARGET_AUTHORED_PIXELS, TARGET_AUTHORED_PIXELS),
@@ -285,6 +303,8 @@ func get_touch_layout_snapshot() -> Dictionary:
 		&"rotate_prompt_visible": _rotate_prompt_visible,
 		&"handedness": _handedness,
 		&"manual_transmission": _manual_transmission,
+		&"preload_behavior": &"TOGGLE" if _preload_toggle_mode else &"HOLD",
+		&"preload_toggle_active": _preload_toggle_active,
 		&"authored_scale": _authored_scale,
 		&"user_scale": _user_scale,
 		&"opacity": _opacity,
@@ -412,7 +432,11 @@ func _rebuild_control_specs() -> void:
 	_add_control(CONTROL_JOYSTICK, &"steer_lean", "STEER / LEAN", CYAN)
 	_add_control(&"throttle", ACTION_THROTTLE, "THROTTLE", AMBER)
 	_add_control(&"brake", ACTION_BRAKE, "BRAKE", WARNING)
-	_add_control(&"preload", ACTION_PRELOAD, "PRELOAD", CREAM)
+	_add_control(
+		&"preload", ACTION_PRELOAD,
+		"PRELOAD\nTAP" if _preload_toggle_mode else "PRELOAD",
+		CREAM
+	)
 	_add_control(&"flow", ACTION_FLOW, "FLOW", CYAN)
 	_add_control(&"racecraft", ACTION_RACECRAFT, "TECHNIQUE", AMBER)
 	_add_control(&"shift_down", ACTION_SHIFT_DOWN, "SHIFT\nDOWN", CREAM)
@@ -844,7 +868,10 @@ func _draw_button(canvas: Control, control_id: StringName) -> void:
 		return
 	var rect: Rect2 = spec.get(&"rect", Rect2())
 	var accent: Color = spec.get(&"accent", CREAM)
-	var pressed := _role_fingers.has(control_id)
+	var pressed := (
+		_role_fingers.has(control_id)
+		or (control_id == &"preload" and _preload_toggle_mode and _preload_toggle_active)
+	)
 	var corner := minf(rect.size.x, rect.size.y) * 0.14
 	var points := PackedVector2Array([
 		Vector2(rect.position.x + corner, rect.position.y),
@@ -951,6 +978,18 @@ func _label_font_size(rect: Rect2, multiline: bool) -> int:
 
 func _alpha(color: Color, multiplier: float) -> Color:
 	return Color(color.r, color.g, color.b, clampf(color.a * _opacity * multiplier, 0.0, 1.0))
+
+
+func _on_preload_toggle_changed(active: bool, _user_initiated: bool) -> void:
+	_preload_toggle_active = active and _preload_toggle_mode
+	_request_redraw()
+
+
+func _on_preload_behavior_changed(mode: StringName) -> void:
+	_preload_toggle_mode = mode == &"TOGGLE"
+	if not _preload_toggle_mode:
+		_preload_toggle_active = false
+	_update_layout(true)
 
 
 func _request_redraw() -> void:

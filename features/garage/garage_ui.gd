@@ -1838,6 +1838,7 @@ func _competition_signature(session: RaceSessionConfig) -> String:
 			Profile.get_assist_signature() if Profile.has_method(&"get_assist_signature") else Profile.assist_mode
 		),
 		"transmission_mode": _preferred_transmission_mode(),
+		"control_signature": _preferred_control_response_signature(),
 		"setup_id": rules.get(&"competitive_setup_id", Profile.current_setup),
 		"tune_signature": build_signature,
 		"weather": session.weather,
@@ -1851,6 +1852,17 @@ func _preferred_transmission_mode() -> StringName:
 	if _competition_source != null and _competition_source.has_method(&"get_preferred_transmission_mode"):
 		return StringName(_competition_source.call(&"get_preferred_transmission_mode"))
 	return &"AUTOMATIC"
+
+
+func _preferred_control_response_signature() -> String:
+	if (
+		_competition_source != null
+		and _competition_source.has_method(&"get_preferred_control_response_signature")
+	):
+		return str(_competition_source.call(&"get_preferred_control_response_signature"))
+	return InputRouter.control_response_signature(
+		SettingsStore.DEFAULTS.get("controls", {}) as Dictionary
+	)
 
 
 func _session_challenge_id(session: RaceSessionConfig) -> StringName:

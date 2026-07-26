@@ -4,6 +4,10 @@ extends Node
 signal device_changed(using_gamepad: bool)
 signal input_mode_changed(mode: StringName)
 signal bindings_changed(actions: Array[StringName])
+signal preload_behavior_changed(mode: StringName)
+signal preload_toggle_changed(active: bool, user_initiated: bool)
+
+const INPUT_BEHAVIOR_STATE := preload("res://common/input_behavior_state.gd")
 
 const INPUT_MODE_KEYBOARD_MOUSE: StringName = &"KEYBOARD_MOUSE"
 const INPUT_MODE_GAMEPAD: StringName = &"GAMEPAD"
@@ -127,7 +131,24 @@ var steering_deadzone: float = 0.12
 var throttle_deadzone: float = 0.05
 var brake_deadzone: float = 0.05
 var steering_sensitivity: float = 1.0
+var lean_sensitivity: float = 1.0
+var air_control_sensitivity: float = 1.0
 var steering_curve: float = 1.35
+var preload_behavior: StringName = InputBehaviorState.MODE_HOLD
+var _preload_behavior_state: InputBehaviorState = INPUT_BEHAVIOR_STATE.new()
+var _preload_sample_frame: int = -1
+var _preload_sample: Dictionary = {}
+
+const CONTROL_RESPONSE_KEYS: Array[StringName] = [
+	&"steering_deadzone",
+	&"throttle_deadzone",
+	&"brake_deadzone",
+	&"steering_sensitivity",
+	&"lean_sensitivity",
+	&"air_control_sensitivity",
+	&"steering_curve",
+	&"preload_behavior",
+]
 
 
 func _ready() -> void:
@@ -444,33 +465,152 @@ func get_brake() -> float:
 
 
 func get_steer() -> float:
-	var raw := Input.get_axis(STEER_LEFT, STEER_RIGHT)
-	var magnitude := _shape_trigger(absf(raw), steering_deadzone)
-	return signf(raw) * clampf(pow(magnitude, steering_curve) * steering_sensitivity, 0.0, 1.0)
+	return _get_shaped_steer(steering_sensitivity)
+
+
+func get_air_steer() -> float:
+	## Air response is intentionally independent from ground steering response.
+	## The same physical stick/key pair remains authoritative while riders can
+	## slow aerial rotation without making cornering numb, or do the inverse.
+	return _get_shaped_steer(air_control_sensitivity)
 
 
 func configure_controls(values: Dictionary) -> void:
-	steering_deadzone = clampf(float(values.get("steering_deadzone", steering_deadzone)), 0.0, 0.5)
-	throttle_deadzone = clampf(float(values.get("throttle_deadzone", throttle_deadzone)), 0.0, 0.5)
-	brake_deadzone = clampf(float(values.get("brake_deadzone", brake_deadzone)), 0.0, 0.5)
-	steering_sensitivity = clampf(float(values.get("steering_sensitivity", steering_sensitivity)), 0.25, 3.0)
-	steering_curve = clampf(float(values.get("steering_curve", steering_curve)), 0.5, 3.0)
+	var normalized := sanitize_control_response(values)
+	steering_deadzone = float(normalized[&"steering_deadzone"])
+	throttle_deadzone = float(normalized[&"throttle_deadzone"])
+	brake_deadzone = float(normalized[&"brake_deadzone"])
+	steering_sensitivity = float(normalized[&"steering_sensitivity"])
+	lean_sensitivity = float(normalized[&"lean_sensitivity"])
+	air_control_sensitivity = float(normalized[&"air_control_sensitivity"])
+	steering_curve = float(normalized[&"steering_curve"])
+	var next_preload_behavior := StringName(normalized[&"preload_behavior"])
+	var preload_was_active := _preload_behavior_state.is_toggle_active()
+	var behavior_changed := _preload_behavior_state.configure(
+		next_preload_behavior,
+		Input.is_action_pressed(PRELOAD)
+	)
+	preload_behavior = next_preload_behavior
+	_invalidate_preload_sample()
 	InputMap.action_set_deadzone(STEER_LEFT, steering_deadzone)
 	InputMap.action_set_deadzone(STEER_RIGHT, steering_deadzone)
 	InputMap.action_set_deadzone(THROTTLE, throttle_deadzone)
 	InputMap.action_set_deadzone(BRAKE, brake_deadzone)
+	if behavior_changed and preload_was_active:
+		preload_toggle_changed.emit(false, false)
+	if behavior_changed:
+		preload_behavior_changed.emit(preload_behavior)
 
 
 func get_lean() -> float:
-	return Input.get_axis(LEAN_FORWARD, LEAN_BACK)
+	return clampf(
+		Input.get_axis(LEAN_FORWARD, LEAN_BACK) * lean_sensitivity,
+		-1.0,
+		1.0
+	)
+
+
+func get_air_lean() -> float:
+	return clampf(
+		Input.get_axis(LEAN_FORWARD, LEAN_BACK) * air_control_sensitivity,
+		-1.0,
+		1.0
+	)
+
+
+func get_control_response_snapshot() -> Dictionary:
+	return {
+		&"steering_deadzone": steering_deadzone,
+		&"throttle_deadzone": throttle_deadzone,
+		&"brake_deadzone": brake_deadzone,
+		&"steering_sensitivity": steering_sensitivity,
+		&"lean_sensitivity": lean_sensitivity,
+		&"air_control_sensitivity": air_control_sensitivity,
+		&"steering_curve": steering_curve,
+		&"preload_behavior": preload_behavior,
+	}
+
+
+func get_control_response_signature() -> String:
+	return control_response_signature(get_control_response_snapshot())
+
+
+static func sanitize_control_response(values: Dictionary) -> Dictionary:
+	return {
+		&"steering_deadzone": clampf(float(values.get("steering_deadzone", 0.12)), 0.0, 0.5),
+		&"throttle_deadzone": clampf(float(values.get("throttle_deadzone", 0.05)), 0.0, 0.5),
+		&"brake_deadzone": clampf(float(values.get("brake_deadzone", 0.05)), 0.0, 0.5),
+		&"steering_sensitivity": clampf(float(values.get("steering_sensitivity", 1.0)), 0.25, 3.0),
+		&"lean_sensitivity": clampf(float(values.get("lean_sensitivity", 1.0)), 0.50, 1.50),
+		&"air_control_sensitivity": clampf(float(values.get("air_control_sensitivity", 1.0)), 0.50, 1.50),
+		&"steering_curve": clampf(float(values.get("steering_curve", 1.35)), 0.5, 3.0),
+		&"preload_behavior": InputBehaviorState.normalize_mode(
+			values.get("preload_behavior", InputBehaviorState.MODE_HOLD)
+		),
+	}
+
+
+static func control_response_signature(values: Dictionary) -> String:
+	var normalized := sanitize_control_response(values)
+	var preload_token := "PMT" if StringName(normalized[&"preload_behavior"]) == InputBehaviorState.MODE_TOGGLE else "PMH"
+	return "SD%04d_TD%04d_BD%04d_SS%04d_LS%04d_AS%04d_SC%04d_%s" % [
+		roundi(float(normalized[&"steering_deadzone"]) * 1000.0),
+		roundi(float(normalized[&"throttle_deadzone"]) * 1000.0),
+		roundi(float(normalized[&"brake_deadzone"]) * 1000.0),
+		roundi(float(normalized[&"steering_sensitivity"]) * 1000.0),
+		roundi(float(normalized[&"lean_sensitivity"]) * 1000.0),
+		roundi(float(normalized[&"air_control_sensitivity"]) * 1000.0),
+		roundi(float(normalized[&"steering_curve"]) * 1000.0),
+		preload_token,
+	]
+
+
+func _get_shaped_steer(response_scale: float) -> float:
+	var raw := Input.get_axis(STEER_LEFT, STEER_RIGHT)
+	var magnitude := _shape_trigger(absf(raw), steering_deadzone)
+	return signf(raw) * clampf(
+		pow(magnitude, steering_curve) * response_scale,
+		0.0,
+		1.0
+	)
 
 
 func is_preload_pressed() -> bool:
-	return Input.is_action_pressed(PRELOAD)
+	return bool(get_preload_state().get(&"pressed", false))
 
 
 func is_preload_just_released() -> bool:
-	return Input.is_action_just_released(PRELOAD)
+	return bool(get_preload_state().get(&"just_released", false))
+
+
+func get_preload_state() -> Dictionary:
+	var physics_frame := Engine.get_physics_frames()
+	if physics_frame == _preload_sample_frame and not _preload_sample.is_empty():
+		return _preload_sample.duplicate()
+	_preload_sample_frame = physics_frame
+	_preload_sample = _preload_behavior_state.sample(Input.is_action_pressed(PRELOAD))
+	if bool(_preload_sample.get(&"toggle_changed", false)):
+		preload_toggle_changed.emit(
+			bool(_preload_sample.get(&"toggle_active", false)),
+			true
+		)
+	return _preload_sample.duplicate()
+
+
+func is_preload_toggle_active() -> bool:
+	return _preload_behavior_state.is_toggle_active()
+
+
+func cancel_preload_behavior(notify_presentation: bool = false) -> void:
+	var was_active := _preload_behavior_state.reset(Input.is_action_pressed(PRELOAD))
+	_invalidate_preload_sample()
+	if was_active:
+		preload_toggle_changed.emit(false, notify_presentation)
+
+
+func _invalidate_preload_sample() -> void:
+	_preload_sample_frame = -1
+	_preload_sample.clear()
 
 
 func is_flow_boost_just_pressed() -> bool:

@@ -284,6 +284,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 			active_build = Profile.call(&"get_active_bike_setup_snapshot") as Dictionary
 		apply_career_opponent_build_match(session, active_build, setup)
 	_apply_session_transmission_rule(session)
+	_apply_session_control_response_rule()
 	var authoritative_route := get_authoritative_route(track_id)
 	var authoritative_surface_root := _get_track_builder(track_id)
 	# RaceController owns route preparation internally, so it still receives the
@@ -438,6 +439,7 @@ func _restart_academy_progression() -> void:
 		return
 	session.bike_class = Profile.selected_bike_class
 	_apply_session_transmission_rule(session)
+	_apply_session_control_response_rule()
 	_ensure_track_loaded(session.track_id)
 	var authoritative_route := get_authoritative_route(session.track_id)
 	var authoritative_surface_root := _get_track_builder(session.track_id)
@@ -453,6 +455,7 @@ func _stop_all_activities() -> void:
 	if is_instance_valid(_race_services):
 		_race_services.stop_transient_presentation()
 		_race_services.clear_activity_transmission_override()
+		_race_services.clear_activity_control_response_override()
 	_race.enter_waiting()
 	_freestyle.enter_waiting()
 	_discovery.enter_waiting()
@@ -473,6 +476,17 @@ func _apply_session_transmission_rule(session: RaceSessionConfig) -> void:
 		_race_services.set_activity_transmission_override(
 			_race_services.get_preferred_transmission_mode(), false
 		)
+
+
+func _apply_session_control_response_rule() -> void:
+	if not is_instance_valid(_race_services):
+		return
+	# Deadzones, response curves, and riding sensitivities all change physical
+	# lap potential. Freeze the exact preferred values at activity composition;
+	# Settings can safely store a new preference for the next event.
+	_race_services.set_activity_control_response_override(
+		_race_services.get_preferred_control_response()
+	)
 
 
 func _get_requested_test_activity() -> StringName:

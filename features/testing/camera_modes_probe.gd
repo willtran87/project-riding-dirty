@@ -61,6 +61,7 @@ func _run() -> void:
 	_check(store.set_value(&"camera", &"distance_scale", 1.25), "camera distance setting was rejected")
 	_check(store.set_value(&"camera", &"height_scale", 0.85), "camera height setting was rejected")
 	_check(store.set_value(&"camera", &"stiffness_scale", 1.40), "camera stiffness setting was rejected")
+	_check(store.set_value(&"camera", &"look_sensitivity", 1.35), "camera look sensitivity was rejected")
 	_check(store.save_to_disk(), "camera preferences did not save atomically")
 	var restored := SettingsStore.new(TEST_PATH)
 	_check(bool(restored.load_from_disk().get(&"ok", false)), "camera preferences did not reload")
@@ -68,6 +69,7 @@ func _run() -> void:
 	_check(is_equal_approx(float(restored.get_value(&"camera", &"distance_scale", 0.0)), 1.25), "camera distance did not persist")
 	_check(is_equal_approx(float(restored.get_value(&"camera", &"height_scale", 0.0)), 0.85), "camera height did not persist")
 	_check(is_equal_approx(float(restored.get_value(&"camera", &"stiffness_scale", 0.0)), 1.40), "camera stiffness did not persist")
+	_check(is_equal_approx(float(restored.get_value(&"camera", &"look_sensitivity", 0.0)), 1.35), "camera look sensitivity did not persist")
 
 	var service := RaceServices.new()
 	service.settings = restored
@@ -83,7 +85,7 @@ func _run() -> void:
 	var camera_items: Array = service.get("_settings_items") as Array
 	var expected_keys: Array[StringName] = [
 		&"visual_quality", &"mode", &"distance_scale", &"height_scale",
-		&"stiffness_scale", &"fov_degrees", &"shake_intensity",
+		&"stiffness_scale", &"look_sensitivity", &"fov_degrees", &"shake_intensity",
 	]
 	_check(camera_items.size() == expected_keys.size(), "Camera page does not expose the complete preference set")
 	for index: int in mini(camera_items.size(), expected_keys.size()):
