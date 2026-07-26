@@ -10,6 +10,14 @@ Original prompt: Resolve the complete race-experience backlog, make the authorit
 - **Validation:** The parser/editor scan and directly affected presentation, reduced-motion, production-settings, settings-navigation, Academy, progression, Results, competition, and Web release contracts pass. The curated production gate passed all 56 high-risk probes plus Academy, Circuit, Pine, Mesa, Freestyle, and Discovery smokes in `430.3 seconds`; the opponent challenge probe retained deterministic Flow/boost pressure across all difficulty tiers. A fresh V28 Web export passes all 15 delivery/recovery tests and serves `index.61f905ffc6d7.pck` (`5,151,648` bytes) on `127.0.0.1:8777`.
 - **Browser proof:** A fresh 1920×1080 browser session reached the garage at Quarry event `01 / 18`, entered live Circuit play, and visually verified Full, Focused at 85%, Minimal, Off, and the Off-mode pause overlay. The browser reported zero console errors and zero page errors. No commit, push, or GitHub Pages publication was performed in this continuation.
 
+## Persistent HUD customization GitHub Pages publication — 2026-07-26
+
+- **Source release:** Commit `8245462` publishes persistent Full, Focused, Minimal, and Off HUD modes; independent 75–100% HUD sizing; activity-safe essential guidance; verified settings migration; immutable Web-asset reuse; deterministic presentation coverage; and the verified Web bundle on `codex/racecraft-v27`.
+- **Pages deployment:** GitHub Pages commit `d2887278e2ca9f3ece42937c4e015d20c1fffc05` and workflow run `30198576243` completed successfully from `gh-pages` with HTTPS enforcement at `https://willtran87.github.io/project-riding-dirty/`.
+- **Public payload proof:** The public manifest and inner page reference `index.61f905ffc6d7.pck`. An independent public download is exactly `5,151,648` bytes with SHA-256 `61f905ffc6d75a9a0437c82ebd4677d337876d64d22b0106bb2818659fd05fbe`, matching the committed release manifest; the former `index.46c826851ada.pck` returns 404.
+- **Public browser proof:** The production wrapper starts the isolated Godot game at Quarry Trail event `01 / 18` with no browser console errors, preserving the intended first-event startup.
+- **Release gates:** The published source passed the parser/editor scan, all 56 curated high-risk probes, six production activity smokes in `430.3 seconds`, the opponent Flow/boost challenge matrix, all 15 Web delivery/recovery tests, exact public payload verification, and production-wrapper browser startup.
+
 ## Racecraft V28 implementation pass — 2026-07-16
 
 The V28 source target is `0.3.8-racecraft-v28`. This file records implemented source and verification contracts; a version string alone does not prove that the browser files currently served on port 8777 have been rebuilt.
