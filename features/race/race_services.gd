@@ -39,6 +39,7 @@ const WEB_VISUAL_QUALITY_OVERRIDES: Dictionary = {
 const QUALITY_BASE_SHADOW_ENABLED_META: StringName = &"rd_quality_base_shadow_enabled"
 const QUALITY_BASE_SHADOW_DISTANCE_META: StringName = &"rd_quality_base_shadow_distance"
 const QUALITY_BASE_SHADOW_MODE_META: StringName = &"rd_quality_base_shadow_mode"
+const REDUCED_PARTICLE_RATIO: float = 0.25
 const REBINDABLE_ACTIONS: Array[StringName] = [
 	&"throttle", &"brake", &"steer_left", &"steer_right", &"lean_forward", &"lean_back",
 	&"preload", &"flow_boost", &"racecraft_technique", &"shift_down", &"shift_up",
@@ -89,6 +90,12 @@ var _capture_action: StringName = &""
 var _settings_message := ""
 var _settings_saved_tree_paused := false
 var _settings_saved_controls_enabled := false
+var _save_feedback_layer: CanvasLayer
+var _save_feedback_panel: PanelContainer
+var _save_feedback_label: Label
+var _save_feedback_generation: int = 0
+var _save_feedback_state: StringName = &"IDLE"
+var _save_feedback_context: String = ""
 var _default_bindings: Dictionary = {}
 var _spectator_index := 0
 var _saved_camera_target: Node3D
@@ -112,6 +119,12 @@ var _activity_control_response_override: Dictionary = {}
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_build_settings_overlay()
+	_build_save_feedback_overlay()
+	if not SaveLifecycle.state_changed.is_connected(_on_save_lifecycle_changed):
+		SaveLifecycle.state_changed.connect(_on_save_lifecycle_changed)
+	var existing_save_state := SaveLifecycle.get_snapshot()
+	if StringName(existing_save_state.get(&"state", &"IDLE")) != &"IDLE":
+		_on_save_lifecycle_changed(existing_save_state)
 
 
 func initialize(race_controller: RaceController, player_bike: DirtBikeController, camera: ChaseCamera, race_hud: Node) -> void:
@@ -925,7 +938,10 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	var gameplay := settings.values.get("gameplay", {}) as Dictionary
 	InputRouter.configure_controls(get_effective_control_response())
 	RaceEventCatalog.set_player_difficulty_mode(gameplay.get("race_difficulty", "STANDARD"))
-	_apply_visual_quality(str(settings.get_value(&"graphics", &"visual_quality", "BALANCED")))
+	_apply_visual_quality(
+		str(settings.get_value(&"graphics", &"visual_quality", "BALANCED")),
+		bool(interface.get("reduced_particles", false))
+	)
 	var bindings := settings.values.get("bindings", {}) as Dictionary
 	if not bindings.is_empty():
 		settings.apply_to_input_map(true)
@@ -947,6 +963,9 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	_set_bus_volume(&"Music", float(audio.get("music_volume", 0.72)))
 	_set_bus_volume(&"Engine", float(audio.get("engine_volume", 1.0)))
 	_set_bus_volume(&"SFX", float(audio.get("effects_volume", 0.9)))
+	_set_bus_volume(&"Commentary", float(audio.get("commentary_volume", 0.8)))
+	_set_bus_volume(&"Crowd", float(audio.get("crowd_volume", 0.8)))
+	_set_bus_volume(&"Interface", float(audio.get("interface_volume", 0.9)))
 	if bike != null and bike.has_method(&"configure_feedback"):
 		bike.call(&"configure_feedback", settings.values.get("feedback", {}) as Dictionary)
 	if bike != null and bike.has_method(&"configure_transmission"):
@@ -966,8 +985,12 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	settings_changed.emit(settings.values.duplicate(true))
 
 
-func _apply_visual_quality(requested_mode: String) -> void:
-	var resolved := resolve_visual_quality_preset(requested_mode, OS.has_feature("web"))
+func _apply_visual_quality(requested_mode: String, reduced_particles: bool = false) -> void:
+	var resolved := resolve_visual_quality_preset(
+		requested_mode,
+		OS.has_feature("web"),
+		reduced_particles
+	)
 	var mode := StringName(resolved[&"mode"])
 	var render_scale := float(resolved[&"render_scale"])
 	var requested_msaa := int(resolved[&"requested_msaa_3d"])
@@ -982,7 +1005,11 @@ func _apply_visual_quality(requested_mode: String) -> void:
 	refresh_visual_quality()
 
 
-static func resolve_visual_quality_preset(requested_mode: String, web_environment: bool = false) -> Dictionary:
+static func resolve_visual_quality_preset(
+	requested_mode: String,
+	web_environment: bool = false,
+	reduced_particles: bool = false
+) -> Dictionary:
 	var mode := StringName(requested_mode.strip_edges().to_upper())
 	if not VISUAL_QUALITY_PRESETS.has(mode):
 		mode = &"BALANCED"
@@ -998,6 +1025,7 @@ static func resolve_visual_quality_preset(requested_mode: String, web_environmen
 		not is_equal_approx(render_scale, float((VISUAL_QUALITY_PRESETS[mode] as Dictionary).get(&"render_scale", render_scale)))
 		or requested_msaa != native_requested_msaa
 	)
+	var base_particle_ratio := clampf(float(preset.get(&"particle_ratio", 1.0)), 0.0, 1.0)
 	return {
 		&"mode": mode,
 		&"render_scale": render_scale,
@@ -1006,7 +1034,9 @@ static func resolve_visual_quality_preset(requested_mode: String, web_environmen
 		&"web_capped": web_capped,
 		&"web_environment": web_environment,
 		&"shadow_distance": float(preset.get(&"shadow_distance", -1.0)),
-		&"particle_ratio": clampf(float(preset.get(&"particle_ratio", 1.0)), 0.0, 1.0),
+		&"base_particle_ratio": base_particle_ratio,
+		&"reduced_particles": reduced_particles,
+		&"particle_ratio": minf(base_particle_ratio, REDUCED_PARTICLE_RATIO) if reduced_particles else base_particle_ratio,
 	}
 
 
@@ -1046,7 +1076,7 @@ static func apply_visual_quality_to_scene(scene_root: Node, resolved: Dictionary
 			light.directional_shadow_max_distance = authored_distance
 			light.directional_shadow_mode = authored_mode as DirectionalLight3D.ShadowMode
 
-	var particle_ratio := float(resolved.get(&"particle_ratio", 1.0)) if web_environment else 1.0
+	var particle_ratio := float(resolved.get(&"particle_ratio", 1.0))
 	for raw_particles: Node in scene_root.find_children("*", "GPUParticles3D", true, false):
 		var particles := raw_particles as GPUParticles3D
 		if particles != null:
@@ -1179,6 +1209,96 @@ func _build_settings_overlay() -> void:
 
 	_settings_backdrop.visible = false
 	_settings_panel.visible = false
+
+
+func _build_save_feedback_overlay() -> void:
+	_save_feedback_layer = CanvasLayer.new()
+	_save_feedback_layer.layer = 95
+	add_child(_save_feedback_layer)
+	_save_feedback_panel = PanelContainer.new()
+	_save_feedback_panel.name = "SaveFeedback"
+	_save_feedback_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_save_feedback_panel.offset_left = -270.0
+	_save_feedback_panel.offset_right = 270.0
+	_save_feedback_panel.offset_top = 24.0
+	_save_feedback_panel.offset_bottom = 80.0
+	_save_feedback_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.025, 0.035, 0.04, 0.96)
+	panel_style.border_color = Color("56d6ff")
+	panel_style.set_border_width_all(2)
+	panel_style.corner_radius_top_left = 7
+	panel_style.corner_radius_top_right = 7
+	panel_style.corner_radius_bottom_left = 7
+	panel_style.corner_radius_bottom_right = 7
+	panel_style.content_margin_left = 20.0
+	panel_style.content_margin_right = 20.0
+	panel_style.content_margin_top = 11.0
+	panel_style.content_margin_bottom = 11.0
+	_save_feedback_panel.add_theme_stylebox_override(&"panel", panel_style)
+	_save_feedback_layer.add_child(_save_feedback_panel)
+	_save_feedback_label = Label.new()
+	_save_feedback_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_save_feedback_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_save_feedback_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_save_feedback_label.add_theme_font_size_override(&"font_size", 18)
+	_save_feedback_label.add_theme_color_override(&"font_color", Color("f7e5b2"))
+	_save_feedback_panel.add_child(_save_feedback_label)
+	_save_feedback_panel.visible = false
+
+
+func _on_save_lifecycle_changed(snapshot: Dictionary) -> void:
+	if _save_feedback_panel == null or _save_feedback_label == null:
+		return
+	_save_feedback_generation += 1
+	var generation := _save_feedback_generation
+	var state := StringName(snapshot.get(&"state", &"IDLE"))
+	var context := str(snapshot.get(&"context", "PROGRESS")).strip_edges().to_upper()
+	_save_feedback_state = state
+	_save_feedback_context = context
+	var prefix := ""
+	var accent := Color("56d6ff")
+	var hold_seconds := 0.0
+	match state:
+		&"SAVING":
+			prefix = "SAVING"
+		&"SAVED":
+			prefix = "SAVED"
+			accent = Color("8ee59b")
+			hold_seconds = 2.2
+		&"RECOVERED":
+			prefix = "RECOVERED"
+			accent = Color("ffb52d")
+			hold_seconds = 5.0
+		&"FAILED":
+			prefix = "SAVE FAILED"
+			accent = Color("ff6b5f")
+			hold_seconds = 6.0
+		_:
+			_save_feedback_panel.visible = false
+			return
+	_save_feedback_label.text = "[%s]  //  %s" % [prefix, context]
+	_save_feedback_label.add_theme_color_override(&"font_color", accent)
+	var panel_style := _save_feedback_panel.get_theme_stylebox(&"panel") as StyleBoxFlat
+	if panel_style != null:
+		panel_style.border_color = accent
+	_save_feedback_panel.visible = true
+	if hold_seconds <= 0.0:
+		return
+	await get_tree().create_timer(hold_seconds, true, false, true).timeout
+	if generation == _save_feedback_generation and _save_feedback_state != &"SAVING":
+		_save_feedback_panel.visible = false
+
+
+func get_save_feedback_snapshot() -> Dictionary:
+	return {
+		&"state": _save_feedback_state,
+		&"context": _save_feedback_context,
+		&"visible": is_instance_valid(_save_feedback_panel) and _save_feedback_panel.visible,
+		&"text": _save_feedback_label.text if is_instance_valid(_save_feedback_label) else "",
+		&"panel_rect": _save_feedback_panel.get_global_rect() if is_instance_valid(_save_feedback_panel) else Rect2(),
+		&"lifecycle": SaveLifecycle.get_snapshot(),
+	}
 
 
 func _toggle_settings() -> void:
@@ -1499,6 +1619,9 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("MUSIC VOLUME", &"audio", &"music_volume", &"PERCENT", 0.05, 0.72),
 				_value_item("ENGINE VOLUME", &"audio", &"engine_volume", &"PERCENT", 0.05, 1.0),
 				_value_item("EFFECTS VOLUME", &"audio", &"effects_volume", &"PERCENT", 0.05, 0.9),
+				_value_item("COMMENTARY VOLUME", &"audio", &"commentary_volume", &"PERCENT", 0.05, 0.8),
+				_value_item("CROWD VOLUME", &"audio", &"crowd_volume", &"PERCENT", 0.05, 0.8),
+				_value_item("INTERFACE VOLUME", &"audio", &"interface_volume", &"PERCENT", 0.05, 0.9),
 			])
 		&"RIDE":
 			items.assign([
@@ -1548,7 +1671,10 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("TEXT SCALE", &"interface", &"text_scale", &"PERCENT", 0.05, 1.0),
 				_enum_item("HUD DETAIL", &"interface", &"hud_detail", SettingsStore.HUD_DETAIL_MODES),
 				_value_item("HUD SIZE", &"interface", &"hud_scale", &"PERCENT", 0.05, 1.0),
+				_value_item("HUD SAFE AREA", &"interface", &"hud_safe_area", &"PERCENT", 0.05, 0.0),
 				_value_item("REDUCED MOTION", &"interface", &"reduced_motion", &"BOOL", 1.0, false),
+				_value_item("REDUCED FLASHES", &"interface", &"reduced_flashes", &"BOOL", 1.0, false),
+				_value_item("REDUCED PARTICLES", &"interface", &"reduced_particles", &"BOOL", 1.0, false),
 				_value_item("HIGH CONTRAST HUD", &"interface", &"high_contrast", &"BOOL", 1.0, false),
 				_enum_item("COLOR-SAFE MODE", &"interface", &"color_safe_mode", SettingsStore.COLOR_SAFE_MODES),
 				_enum_item("SPEED UNITS", &"interface", &"units", SettingsStore.UNIT_MODES),

@@ -1132,6 +1132,8 @@ func set_settings_reference(path: String) -> bool:
 	var normalized := path.strip_edges()
 	if not normalized.begins_with("user://") or normalized.length() > 180:
 		return false
+	if settings_reference == normalized:
+		return true
 	settings_reference = normalized
 	_emit_meta_and_save()
 	return true
@@ -1910,24 +1912,35 @@ func _emit_meta_and_save() -> bool:
 func _save_profile() -> bool:
 	if not persistence_enabled:
 		return true
+	var save_token := SaveLifecycle.begin_save(&"CAREER", "CAREER PROGRESS", true)
 	var profile_data := _profile_to_dictionary()
 	if OS.has_feature("web"):
 		if not WebPlatform.save_json(WEB_SAVE_KEY, profile_data):
+			SaveLifecycle.finish_save(save_token, false, "browser_write_failed")
 			push_warning("Unable to save rider profile to browser storage.")
 			return false
+		SaveLifecycle.finish_save(save_token, true)
 		return true
 	var save_result := ATOMIC_CONFIG_STORE.save_section(SAVE_PATH, &"profile", profile_data)
 	if not bool(save_result.get("ok", false)):
-		push_warning("Unable to save rider profile: %s" % str(save_result.get("error", "unknown_error")))
+		var save_error := str(save_result.get("error", "unknown_error"))
+		SaveLifecycle.finish_save(save_token, false, save_error)
+		push_warning("Unable to save rider profile: %s" % save_error)
 		return false
+	SaveLifecycle.finish_save(save_token, true)
 	return true
 
 
 func _load_profile() -> void:
 	if OS.has_feature("web"):
-		var web_data: Variant = WebPlatform.load_json(WEB_SAVE_KEY)
+		var web_result := WebPlatform.load_json_result(WEB_SAVE_KEY)
+		var web_data: Variant = web_result.get(&"value", null)
 		if web_data is Dictionary:
 			_apply_profile_dictionary(web_data as Dictionary)
+			if str(web_result.get(&"source", "")) == "backup":
+				SaveLifecycle.report_recovered(
+					&"CAREER", "CAREER PROGRESS", bool(web_result.get(&"repaired", false))
+				)
 		return
 	var load_result := ATOMIC_CONFIG_STORE.load_section(SAVE_PATH, &"profile", persistence_enabled)
 	if not bool(load_result.get("ok", false)):
@@ -1935,6 +1948,9 @@ func _load_profile() -> void:
 	var profile_data := load_result.get("data", {}) as Dictionary
 	if str(load_result.get("source", "")) == "backup":
 		push_warning("Recovered rider profile from backup after the primary save became unreadable.")
+		SaveLifecycle.report_recovered(
+			&"CAREER", "CAREER PROGRESS", bool(load_result.get("repaired", false))
+		)
 	_apply_profile_dictionary(profile_data)
 
 

@@ -56,10 +56,14 @@ var _activity_progression_baselines: Dictionary = {}
 var _pending_garage_event: StringName = &""
 var _pending_academy_settlement: Dictionary = {}
 var _pending_race_settlement: Dictionary = {}
+var _pending_close_after_save: bool = false
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	get_tree().auto_accept_quit = false
+	if not SaveLifecycle.state_changed.is_connected(_on_save_lifecycle_for_pending_close):
+		SaveLifecycle.state_changed.connect(_on_save_lifecycle_for_pending_close)
 	_smoke_test_enabled = &"--smoke-test" in OS.get_cmdline_user_args()
 	if _smoke_test_enabled:
 		# Career initialization happens before the requested smoke activity. Disable
@@ -166,6 +170,40 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	ProceduralSurfaceTexture.clear_cache()
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST:
+		return
+	if SaveLifecycle.is_critical_save_active():
+		_pending_close_after_save = true
+		return
+	get_tree().quit()
+
+
+func _on_save_lifecycle_for_pending_close(snapshot: Dictionary) -> void:
+	if not _pending_close_after_save or int(snapshot.get(&"critical_count", 0)) > 0:
+		return
+	if StringName(snapshot.get(&"state", &"FAILED")) == &"FAILED":
+		_pending_close_after_save = false
+		return
+	_pending_close_after_save = false
+	get_tree().call_deferred(&"quit")
+
+
+static func should_release_pending_close_after_save(snapshot: Dictionary) -> bool:
+	return (
+		int(snapshot.get(&"critical_count", 0)) <= 0
+		and StringName(snapshot.get(&"state", &"FAILED")) != &"FAILED"
+	)
+
+
+func get_save_close_guard_snapshot() -> Dictionary:
+	return {
+		&"pending_close": _pending_close_after_save,
+		&"critical_save_active": SaveLifecycle.is_critical_save_active(),
+		&"auto_accept_quit": get_tree().auto_accept_quit,
+	}
 
 
 func _unhandled_input(event: InputEvent) -> void:

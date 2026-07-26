@@ -1,10 +1,12 @@
 extends Node
-## End-to-end reduced-motion contract: legacy defaults, persisted settings UI,
-## camera envelope, and non-moving but fully informative district transitions.
+## End-to-end sensory-accessibility contract: legacy defaults, persisted
+## settings UI, camera motion, HUD flashes, particle density, and informative
+## static district transitions.
 
 const TEST_PATH := "user://tests/reduced_motion_accessibility_probe.json"
 const CAMERA_SCENE := preload("res://features/camera/chase_camera.tscn")
 const TRANSITION_SCENE := preload("res://features/tour/district_transition.tscn")
+const HUD_SCENE := preload("res://features/hud/race_hud.tscn")
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
 
 var _failures: Array[String] = []
@@ -27,9 +29,15 @@ func _run() -> void:
 		"Existing settings without the field did not default Reduced Motion to off"
 	)
 	_check(
+		not bool(legacy_store.get_value(&"interface", &"reduced_flashes", true))
+		and not bool(legacy_store.get_value(&"interface", &"reduced_particles", true)),
+		"Existing settings did not default optional sensory reductions to off"
+	)
+	_check(
 		StringName(legacy_store.get_value(&"interface", &"hud_detail", &"")) == &"FULL"
-		and is_equal_approx(float(legacy_store.get_value(&"interface", &"hud_scale", 0.0)), 1.0),
-		"Existing settings did not migrate to the complete 100% HUD"
+		and is_equal_approx(float(legacy_store.get_value(&"interface", &"hud_scale", 0.0)), 1.0)
+		and is_zero_approx(float(legacy_store.get_value(&"interface", &"hud_safe_area", -1.0))),
+		"Existing settings did not migrate to the complete 100% edge-aligned HUD"
 	)
 	_check(bool(legacy_load.get(&"migrated", false)), "Legacy settings were not migrated to the verified format")
 	_check(bool(legacy_load.get(&"repaired", false)), "Legacy migration did not rewrite the primary slot")
@@ -41,9 +49,16 @@ func _run() -> void:
 	add_child(transition)
 	var camera := CAMERA_SCENE.instantiate() as ChaseCamera
 	add_child(camera)
+	var hud := HUD_SCENE.instantiate() as RaceHud
+	add_child(hud)
+	var particles := GPUParticles3D.new()
+	particles.name = "SensoryAccessibilityParticles"
+	particles.amount = 100
+	add_child(particles)
 	var service := RaceServices.new()
 	service.settings = legacy_store
 	service.chase_camera = camera
+	service.hud = hud
 	add_child(service)
 	await get_tree().process_frame
 	service.call(&"_apply_settings")
@@ -58,22 +73,90 @@ func _run() -> void:
 	service.call(&"_refresh_settings_text")
 	var access_items: Array = service.get("_settings_items") as Array
 	var reduced_motion_index := _find_setting_index(access_items, &"reduced_motion")
+	var reduced_flashes_index := _find_setting_index(access_items, &"reduced_flashes")
+	var reduced_particles_index := _find_setting_index(access_items, &"reduced_particles")
 	var hud_detail_index := _find_setting_index(access_items, &"hud_detail")
 	var hud_scale_index := _find_setting_index(access_items, &"hud_scale")
-	_check(access_items.size() == 8, "Accessibility page does not include the complete eight-row option set")
+	var hud_safe_area_index := _find_setting_index(access_items, &"hud_safe_area")
+	_check(access_items.size() == 11, "Accessibility page does not include the complete eleven-row option set")
 	_check(
-		hud_detail_index == 1 and hud_scale_index == 2,
-		"HUD detail and size are not presented directly after global text scale"
+		hud_detail_index == 1 and hud_scale_index == 2 and hud_safe_area_index == 3,
+		"HUD detail, size, and safe area are not presented directly after global text scale"
 	)
-	_check(reduced_motion_index >= 0, "Reduced Motion is missing from the Accessibility page")
+	_check(
+		reduced_motion_index == 4
+		and reduced_flashes_index == 5
+		and reduced_particles_index == 6,
+		"Sensory reduction settings are missing or presented out of order"
+	)
 	service.set("_settings_index", hud_detail_index)
 	service.call(&"_adjust_setting", 1)
 	service.set("_settings_index", hud_scale_index)
 	service.call(&"_adjust_setting", -1)
+	service.set("_settings_index", hud_safe_area_index)
+	service.call(&"_adjust_setting", 1)
 	_check(
 		StringName(service.settings.get_value(&"interface", &"hud_detail", &"")) == &"FOCUSED"
-		and is_equal_approx(float(service.settings.get_value(&"interface", &"hud_scale", 0.0)), 0.95),
-		"Accessibility UI did not adjust HUD detail and size independently"
+		and is_equal_approx(float(service.settings.get_value(&"interface", &"hud_scale", 0.0)), 0.95)
+		and is_equal_approx(float(service.settings.get_value(&"interface", &"hud_safe_area", 0.0)), 0.05),
+		"Accessibility UI did not adjust HUD detail, size, and safe area independently"
+	)
+	service.set("_settings_index", reduced_flashes_index)
+	service.call(&"_adjust_setting", 1)
+	var flash_setting_reached := bool(
+		service.settings.get_value(&"interface", &"reduced_flashes", false)
+	)
+	var hud_preferences := hud.get_hud_customization_snapshot()
+	hud.call(&"_pulse_highlight")
+	var highlight_overlay := hud.get("_highlight_overlay") as ColorRect
+	var highlight_suppressed := (
+		flash_setting_reached
+		and bool(hud_preferences.get(&"reduced_flashes", false))
+		and highlight_overlay != null
+		and is_zero_approx(highlight_overlay.color.a)
+	)
+	_check(highlight_suppressed, "Reduced Flashes did not suppress the full-screen HUD pulse")
+	service.set("_settings_index", reduced_flashes_index)
+	service.call(&"_adjust_setting", -1)
+	hud.call(&"_pulse_highlight")
+	var normal_highlight_visible := highlight_overlay != null and highlight_overlay.color.a > 0.1
+	_check(normal_highlight_visible, "Disabling Reduced Flashes did not restore accepted-action feedback")
+	service.set("_settings_index", reduced_flashes_index)
+	service.call(&"_adjust_setting", 1)
+	hud.set("_flow_denied_feedback_time", 1.0)
+	hud.call(&"_update_flow_denied_feedback", 0.02)
+	var flow_bar := hud.get("_flow_bar") as ProgressBar
+	var static_flow_color := flow_bar.modulate if flow_bar != null else Color.TRANSPARENT
+	hud.call(&"_update_flow_denied_feedback", 0.12)
+	_check(
+		flow_bar != null and flow_bar.modulate.is_equal_approx(static_flow_color),
+		"Reduced Flashes left the Flow refusal meter oscillating"
+	)
+	hud.call(&"_clear_flow_denied_feedback")
+
+	service.set("_settings_index", reduced_particles_index)
+	service.call(&"_adjust_setting", 1)
+	var particle_snapshot := service.get_visual_quality_snapshot()
+	var particles_reduced := (
+		bool(service.settings.get_value(&"interface", &"reduced_particles", false))
+		and bool(particle_snapshot.get(&"reduced_particles", false))
+		and is_equal_approx(
+			float(particle_snapshot.get(&"particle_ratio", 1.0)),
+			RaceServices.REDUCED_PARTICLE_RATIO
+		)
+		and is_equal_approx(particles.amount_ratio, RaceServices.REDUCED_PARTICLE_RATIO)
+	)
+	_check(particles_reduced, "Reduced Particles did not reach the live scene budget")
+	var streamed_particles := GPUParticles3D.new()
+	streamed_particles.name = "StreamedSensoryAccessibilityParticles"
+	streamed_particles.amount = 100
+	var streamed_root := Node3D.new()
+	add_child(streamed_root)
+	streamed_root.add_child(streamed_particles)
+	service.refresh_visual_quality(streamed_root)
+	_check(
+		is_equal_approx(streamed_particles.amount_ratio, RaceServices.REDUCED_PARTICLE_RATIO),
+		"Reduced Particles did not reach effects streamed after the setting changed"
 	)
 
 	var camera_node := camera.get_node("Camera3D") as Camera3D
@@ -129,8 +212,14 @@ func _run() -> void:
 	_check(bool(persisted.load_from_disk().get(&"ok", false)), "Reduced Motion setting did not persist")
 	_check(bool(persisted.get_value(&"interface", &"reduced_motion", false)), "Persisted Reduced Motion value was not restored")
 	_check(
+		bool(persisted.get_value(&"interface", &"reduced_flashes", false))
+		and bool(persisted.get_value(&"interface", &"reduced_particles", false)),
+		"Persisted sensory reductions were not restored"
+	)
+	_check(
 		StringName(persisted.get_value(&"interface", &"hud_detail", &"")) == &"FOCUSED"
-		and is_equal_approx(float(persisted.get_value(&"interface", &"hud_scale", 0.0)), 0.95),
+		and is_equal_approx(float(persisted.get_value(&"interface", &"hud_scale", 0.0)), 0.95)
+		and is_equal_approx(float(persisted.get_value(&"interface", &"hud_safe_area", 0.0)), 0.05),
 		"Persisted HUD preferences were not restored"
 	)
 
@@ -165,17 +254,29 @@ func _run() -> void:
 	_check(str(recovery_result.get(&"source", "")) == "backup", "Settings recovery did not select the backup")
 	_check(bool(recovery_result.get(&"repaired", false)), "Backup recovery did not repair the primary")
 	_check(bool(recovered.get_value(&"interface", &"reduced_motion", false)), "Recovered backup lost Reduced Motion")
+	_check(
+		bool(recovered.get_value(&"interface", &"reduced_flashes", false))
+		and bool(recovered.get_value(&"interface", &"reduced_particles", false)),
+		"Recovered backup lost sensory reductions"
+	)
 	var repaired := SettingsStore.new(TEST_PATH)
 	var repaired_result := repaired.load_from_disk()
 	_check(str(repaired_result.get(&"source", "")) == "primary", "Repaired settings did not reload from primary")
 	_check(bool(repaired.get_value(&"interface", &"reduced_motion", false)), "Repaired primary lost Reduced Motion")
+	_check(
+		bool(repaired.get_value(&"interface", &"reduced_flashes", false))
+		and bool(repaired.get_value(&"interface", &"reduced_particles", false)),
+		"Repaired primary lost sensory reductions"
+	)
 
-	print("REDUCED MOTION ACCESSIBILITY PROBE: legacy_default=%s migrated=%s mouse=%s keyboard=%s gamepad=%s fov=%.1f->%.1f shake_scale=%.2f static_briefing=%s persisted=%s recovery=%s passed=%s" % [
+	print("SENSORY ACCESSIBILITY PROBE: legacy_default=%s migrated=%s mouse=%s keyboard=%s gamepad=%s flashes=%s particles=%.2f fov=%.1f->%.1f shake_scale=%.2f static_briefing=%s persisted=%s recovery=%s passed=%s" % [
 		str(legacy_default_off),
 		str(bool(legacy_load.get(&"migrated", false))),
 		str(mouse_reached),
 		str(keyboard_reached),
 		str(gamepad_reached),
+		str(highlight_suppressed and normal_highlight_visible),
+		float(particle_snapshot.get(&"particle_ratio", 1.0)),
 		float(normal_camera.get(&"speed_fov_delta", 0.0)),
 		float(reduced_camera.get(&"speed_fov_delta", 0.0)),
 		float(reduced_camera.get(&"shake_scale", 1.0)),
@@ -187,6 +288,7 @@ func _run() -> void:
 
 	service.queue_free()
 	camera.queue_free()
+	hud.queue_free()
 	transition.queue_free()
 	await get_tree().process_frame
 	_cleanup_test_file()
@@ -211,8 +313,11 @@ func _write_legacy_settings_file() -> void:
 	var legacy_values := SettingsStore.DEFAULTS.duplicate(true)
 	var legacy_interface := legacy_values["interface"] as Dictionary
 	legacy_interface.erase("reduced_motion")
+	legacy_interface.erase("reduced_flashes")
+	legacy_interface.erase("reduced_particles")
 	legacy_interface.erase("hud_detail")
 	legacy_interface.erase("hud_scale")
+	legacy_interface.erase("hud_safe_area")
 	var file := FileAccess.open(TEST_PATH, FileAccess.WRITE)
 	if file == null:
 		_failures.append("Could not create legacy settings fixture")

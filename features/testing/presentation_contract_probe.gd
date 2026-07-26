@@ -36,6 +36,7 @@ func _run() -> void:
 	)
 
 	var full_hud := hud.get_hud_customization_snapshot()
+	var full_live_size := full_hud.get(&"live_size", Vector2.ZERO) as Vector2
 	var top_band_rect := full_hud.get(&"top_band_rect", Rect2()) as Rect2
 	var standings_rect := full_hud.get(&"standings_rect", Rect2()) as Rect2
 	_check(
@@ -56,6 +57,7 @@ func _run() -> void:
 		&"text_scale": 1.0,
 		&"hud_detail": &"FOCUSED",
 		&"hud_scale": 0.85,
+		&"hud_safe_area": 0.10,
 	})
 	var focused_hud := hud.get_hud_customization_snapshot()
 	_check(
@@ -71,7 +73,25 @@ func _run() -> void:
 		(focused_hud.get(&"live_scale", Vector2.ONE) as Vector2).is_equal_approx(Vector2(0.85, 0.85)),
 		"Independent HUD sizing did not resize the live presentation"
 	)
-	hud.apply_accessibility({&"hud_detail": &"MINIMAL", &"hud_scale": 0.75})
+	_check(
+		is_equal_approx(float(focused_hud.get(&"safe_area", 0.0)), 0.10)
+		and (focused_hud.get(&"live_position", Vector2.ZERO) as Vector2).is_equal_approx(
+			full_live_size * 0.10
+		)
+		and (focused_hud.get(&"live_size", Vector2.ZERO) as Vector2).is_equal_approx(
+			full_live_size * 0.80
+		),
+		"HUD safe area geometry mismatch: safe=%s position=%s size=%s" % [
+			focused_hud.get(&"safe_area", 0.0),
+			focused_hud.get(&"live_position", Vector2.ZERO),
+			focused_hud.get(&"live_size", Vector2.ZERO),
+		]
+	)
+	hud.apply_accessibility({
+		&"hud_detail": &"MINIMAL",
+		&"hud_scale": 0.75,
+		&"hud_safe_area": 0.10,
+	})
 	var minimal_hud := hud.get_hud_customization_snapshot()
 	_check(
 		bool(minimal_hud.get(&"live_visible", false))
@@ -81,7 +101,11 @@ func _run() -> void:
 		and bool(minimal_hud.get(&"speed_visible", false)),
 		"Minimal HUD removed core race telemetry or retained secondary layers"
 	)
-	hud.apply_accessibility({&"hud_detail": &"OFF", &"hud_scale": 1.0})
+	hud.apply_accessibility({
+		&"hud_detail": &"OFF",
+		&"hud_scale": 1.0,
+		&"hud_safe_area": 0.10,
+	})
 	var hidden_hud := hud.get_hud_customization_snapshot()
 	_check(
 		not bool(hidden_hud.get(&"live_visible", true))
@@ -106,7 +130,11 @@ func _run() -> void:
 	results_panel.visible = false
 	EventBus.activity_prepared.emit(&"FREESTYLE")
 	await get_tree().process_frame
-	hud.apply_accessibility({&"hud_detail": &"MINIMAL", &"hud_scale": 1.0})
+	hud.apply_accessibility({
+		&"hud_detail": &"MINIMAL",
+		&"hud_scale": 1.0,
+		&"hud_safe_area": 0.10,
+	})
 	var freestyle_hud := hud.get_hud_customization_snapshot()
 	_check(
 		StringName(freestyle_hud.get(&"activity", &"")) == &"FREESTYLE"
@@ -133,7 +161,11 @@ func _run() -> void:
 	)
 	EventBus.activity_prepared.emit(&"CIRCUIT")
 	await get_tree().process_frame
-	hud.apply_accessibility({&"hud_detail": &"FULL", &"hud_scale": 1.0})
+	hud.apply_accessibility({
+		&"hud_detail": &"FULL",
+		&"hud_scale": 1.0,
+		&"hud_safe_area": 0.0,
+	})
 
 	var initial_hint := hud.get_control_hint_state()
 	var panel_size: Vector2 = initial_hint.get(&"panel_size", Vector2.ZERO)

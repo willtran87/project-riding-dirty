@@ -7,6 +7,8 @@ signal hud_updated(time_left_usec: int, score: int, combo: int, last_airtime: fl
 const SPAWN_TRANSFORM := Transform3D(Basis.IDENTITY, Vector3(0.0, 1.4, 31.0))
 const SESSION_USEC: int = 60_000_000
 const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
+const TRICK_RULES := preload("res://features/freestyle/freestyle_trick_rules.gd")
+const RECENT_TRICK_LIMIT: int = 4
 
 var bike: DirtBikeController
 var ghost: GhostController
@@ -18,6 +20,9 @@ var _run_clock: SimulationClock = SIMULATION_CLOCK_SCRIPT.new()
 var _last_airtime: float = 0.0
 var _attempt_context: Dictionary = {}
 var _pending_submission: Dictionary = {}
+var _trick_counts: Dictionary = {}
+var _recent_trick_ids: Array[StringName] = []
+var _last_trick_result: Dictionary = {}
 
 
 func _physics_process(delta: float) -> void:
@@ -33,8 +38,8 @@ func _physics_process(delta: float) -> void:
 func initialize(player_bike: DirtBikeController, ghost_controller: GhostController) -> void:
 	bike = player_bike
 	ghost = ghost_controller
-	if not bike.trick_landed.is_connected(_on_trick_landed):
-		bike.trick_landed.connect(_on_trick_landed)
+	if not bike.trick_resolved.is_connected(_on_trick_resolved):
+		bike.trick_resolved.connect(_on_trick_resolved)
 	enter_waiting()
 
 
@@ -62,6 +67,9 @@ func start_session() -> void:
 	score = 0
 	combo = 1
 	_last_airtime = 0.0
+	_trick_counts.clear()
+	_recent_trick_ids.clear()
+	_last_trick_result.clear()
 	_run_clock.reset()
 	bike.respawn_at(SPAWN_TRANSFORM)
 	bike.set_motion_locked(false)
@@ -97,22 +105,40 @@ func get_elapsed_usec() -> int:
 	return _run_clock.elapsed_usec
 
 
-func _on_trick_landed(airtime: float, rotation_amount: float, landing_intensity: float, clean: bool) -> void:
-	if not active or airtime < 0.28:
+func get_scoring_snapshot() -> Dictionary:
+	return {
+		&"score": score,
+		&"combo": combo,
+		&"last_airtime": _last_airtime,
+		&"trick_counts": _trick_counts.duplicate(true),
+		&"recent_trick_ids": _recent_trick_ids.duplicate(),
+		&"last_trick": _last_trick_result.duplicate(true),
+	}
+
+
+func _on_trick_resolved(observation: Dictionary) -> void:
+	var airtime := float(observation.get(&"airtime", 0.0))
+	if not active or airtime < 0.28 or not bool(observation.get(&"takeoff_valid", false)):
 		return
 	_last_airtime = airtime
-	var airtime_points := int(airtime * 900.0)
-	var rotation_points := int(rotation_amount / TAU * 1100.0)
-	var landing_points := int(lerpf(350.0, 80.0, clampf(landing_intensity, 0.0, 1.0)))
-	var raw_points := maxi(airtime_points + rotation_points + landing_points, 100)
-	if clean:
-		combo = mini(combo + 1, 6)
-	else:
-		combo = 1
-		raw_points = int(raw_points * 0.4)
-	var awarded_points := int(raw_points * (1.0 + float(combo - 1) * 0.22))
+	var provisional := TRICK_RULES.classify(observation)
+	var trick_id := StringName(provisional.get(&"trick_id", &"STRAIGHT_AIR"))
+	var result: Dictionary = TRICK_RULES.evaluate(observation, {
+		&"combo": combo,
+		&"repeat_count": int(_trick_counts.get(trick_id, 0)),
+		&"recent_trick_ids": _recent_trick_ids.duplicate(),
+	})
+	combo = int(result.get(&"combo", 1))
+	var awarded_points := int(result.get(&"awarded_points", 0))
 	score += awarded_points
+	result[&"score"] = score
+	_trick_counts[trick_id] = int(_trick_counts.get(trick_id, 0)) + 1
+	_recent_trick_ids.push_front(trick_id)
+	if _recent_trick_ids.size() > RECENT_TRICK_LIMIT:
+		_recent_trick_ids.resize(RECENT_TRICK_LIMIT)
+	_last_trick_result = result.duplicate(true)
 	EventBus.freestyle_score_changed.emit(score, combo, awarded_points)
+	EventBus.freestyle_trick_scored.emit(result.duplicate(true))
 
 
 func _finish_session() -> void:

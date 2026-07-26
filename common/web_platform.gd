@@ -34,8 +34,13 @@ func save_json(key: String, value: Variant) -> bool:
 
 
 func load_json(key: String) -> Variant:
+	var result := load_json_result(key)
+	return result.get(&"value", null) if bool(result.get(&"ok", false)) else null
+
+
+func load_json_result(key: String) -> Dictionary:
 	if not OS.has_feature("web") or key.strip_edges().is_empty():
-		return null
+		return {&"ok": false, &"value": null, &"source": "", &"repaired": false, &"error": "unavailable"}
 	var primary_key := STORAGE_PREFIX + key
 	var backup_key := primary_key + BACKUP_SUFFIX
 	var recovered := VERIFIED_JSON_CODEC.recover(
@@ -43,10 +48,18 @@ func load_json(key: String) -> Variant:
 		_read_storage_item(backup_key)
 	)
 	if not bool(recovered.get("ok", false)):
-		return null
+		return {
+			&"ok": false,
+			&"value": null,
+			&"source": "",
+			&"repaired": false,
+			&"error": str(recovered.get("error", "no_valid_data")),
+		}
 	var value: Variant = recovered.get("value", null)
+	var source := str(recovered.get("source", "primary"))
+	var repaired := false
 	if str(recovered.get("source", "")) == "backup":
-		var repaired := _write_storage_item(
+		repaired = _write_storage_item(
 			primary_key,
 			backup_key,
 			VERIFIED_JSON_CODEC.encode(value),
@@ -54,7 +67,13 @@ func load_json(key: String) -> Variant:
 		)
 		if not repaired:
 			push_warning("Recovered browser data from backup but could not repair its primary slot.")
-	return value
+	return {
+		&"ok": true,
+		&"value": value,
+		&"source": source,
+		&"repaired": repaired,
+		&"error": "",
+	}
 
 
 func _read_storage_item(storage_key: String) -> Variant:

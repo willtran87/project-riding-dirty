@@ -10,9 +10,14 @@ const FLOW_DENIED_CUE_END_HZ := 155.0
 const FLOW_DENIED_CUE_DURATION := 0.16
 const FLOW_DENIED_CUE_VOLUME_DB := -3.5
 const INTERFACE_FEEDBACK_COOLDOWN_USEC := 32_000
+const COMMENTARY_FEEDBACK_COOLDOWN_USEC := 520_000
+const CROWD_FEEDBACK_COOLDOWN_USEC := 860_000
 const MUSIC_BUS_NAME: StringName = &"Music"
 const SFX_BUS_NAME: StringName = &"SFX"
 const ENGINE_BUS_NAME: StringName = &"Engine"
+const COMMENTARY_BUS_NAME: StringName = &"Commentary"
+const CROWD_BUS_NAME: StringName = &"Crowd"
+const INTERFACE_BUS_NAME: StringName = &"Interface"
 const MUSIC_BEATS := 16.0
 const MUSIC_SILENCE_DB := -80.0
 const MUSIC_CROSSFADE_SECONDS := 0.72
@@ -52,6 +57,37 @@ const INTERFACE_FEEDBACK_CONTRACT := {
 		&"cue": &"ui_denied", &"start_hz": 230.0, &"end_hz": 125.0,
 		&"duration": 0.135, &"amplitude": 0.22, &"harmonic": 0.08,
 		&"pitch": 1.0, &"volume_db": -4.5,
+	},
+}
+const COMMENTARY_FEEDBACK_CONTRACT := {
+	&"POSITIVE": {
+		&"cue": &"commentary_positive", &"start_hz": 360.0, &"end_hz": 690.0,
+		&"duration": 0.17, &"amplitude": 0.24, &"harmonic": 0.30,
+		&"pitch": 1.0, &"volume_db": -3.0,
+	},
+	&"WARNING": {
+		&"cue": &"commentary_warning", &"start_hz": 470.0, &"end_hz": 245.0,
+		&"duration": 0.22, &"amplitude": 0.24, &"harmonic": 0.18,
+		&"pitch": 1.0, &"volume_db": -2.0,
+	},
+	&"MILESTONE": {
+		&"cue": &"commentary_milestone", &"start_hz": 410.0, &"end_hz": 980.0,
+		&"duration": 0.31, &"amplitude": 0.27, &"harmonic": 0.36,
+		&"pitch": 1.0, &"volume_db": -1.0,
+	},
+}
+const CROWD_FEEDBACK_CONTRACT := {
+	&"CHEER": {
+		&"cue": &"crowd_cheer", &"duration": 0.52, &"amplitude": 0.24,
+		&"brightness": 0.56, &"rise_ratio": 0.22, &"volume_db": -1.5,
+	},
+	&"ROAR": {
+		&"cue": &"crowd_roar", &"duration": 0.82, &"amplitude": 0.28,
+		&"brightness": 0.68, &"rise_ratio": 0.16, &"volume_db": -0.5,
+	},
+	&"GASP": {
+		&"cue": &"crowd_gasp", &"duration": 0.34, &"amplitude": 0.22,
+		&"brightness": 0.42, &"rise_ratio": 0.05, &"volume_db": -3.0,
 	},
 }
 const SPONSOR_FEEDBACK_CONTRACT := {
@@ -143,6 +179,16 @@ var _interface_feedback_suppressed_count: int = 0
 var _last_interface_feedback_usec: int = -1_000_000
 var _last_interface_feedback_kind: StringName = &""
 var _last_interface_feedback_context: StringName = &""
+var _commentary_feedback_count: int = 0
+var _commentary_feedback_suppressed_count: int = 0
+var _last_commentary_feedback_usec: int = -1_000_000
+var _last_commentary_feedback_kind: StringName = &""
+var _last_commentary_feedback_context: String = ""
+var _crowd_feedback_count: int = 0
+var _crowd_feedback_suppressed_count: int = 0
+var _last_crowd_feedback_usec: int = -1_000_000
+var _last_crowd_feedback_kind: StringName = &""
+var _last_crowd_feedback_context: String = ""
 var _music_banks: Array[Dictionary] = []
 var _active_music_bank: int = 0
 var _active_arrangement_hash: StringName = &""
@@ -164,6 +210,8 @@ var _contract_cued: bool = false
 var _sponsor_feedback_count: int = 0
 var _last_sponsor_feedback_id: StringName = &""
 var _last_sponsor_feedback_cue: StringName = &""
+var _freestyle_feedback_count: int = 0
+var _last_freestyle_feedback: Dictionary = {}
 var _shut_down: bool = false
 var _audio_enabled: bool = false
 var _race_snapshot_source: Node
@@ -198,6 +246,10 @@ func initialize(bike: DirtBikeController, ride_director: RideDirector) -> void:
 		bike.boost_activated.connect(_on_boost_activated)
 	if not bike.landed.is_connected(_on_bike_landed):
 		bike.landed.connect(_on_bike_landed)
+	if not bike.trick_landed.is_connected(_on_bike_trick_landed):
+		bike.trick_landed.connect(_on_bike_trick_landed)
+	if not bike.automatic_recovery_requested.is_connected(_on_bike_recovery_requested):
+		bike.automatic_recovery_requested.connect(_on_bike_recovery_requested)
 	if not bike.racecraft_event.is_connected(_on_bike_racecraft_event):
 		bike.racecraft_event.connect(_on_bike_racecraft_event)
 	if not ride_director.line_updated.is_connected(_on_line_updated):
@@ -326,6 +378,9 @@ static func get_bus_routing_contract() -> Dictionary:
 		&"music": MUSIC_BUS_NAME,
 		&"feedback": SFX_BUS_NAME,
 		&"engine": ENGINE_BUS_NAME,
+		&"commentary": COMMENTARY_BUS_NAME,
+		&"crowd": CROWD_BUS_NAME,
+		&"interface": INTERFACE_BUS_NAME,
 	}
 
 
@@ -353,16 +408,28 @@ static func get_flow_denied_audio_contract() -> Dictionary:
 
 static func get_interface_feedback_contract() -> Dictionary:
 	return {
-		&"bus": SFX_BUS_NAME,
+		&"bus": INTERFACE_BUS_NAME,
 		&"cooldown_usec": INTERFACE_FEEDBACK_COOLDOWN_USEC,
 		&"pooled_voices": VOICE_COUNT,
 		&"kinds": INTERFACE_FEEDBACK_CONTRACT.duplicate(true),
 	}
 
 
+static func get_competition_feedback_contract() -> Dictionary:
+	return {
+		&"commentary_bus": COMMENTARY_BUS_NAME,
+		&"crowd_bus": CROWD_BUS_NAME,
+		&"commentary_cooldown_usec": COMMENTARY_FEEDBACK_COOLDOWN_USEC,
+		&"crowd_cooldown_usec": CROWD_FEEDBACK_COOLDOWN_USEC,
+		&"pooled_voices": VOICE_COUNT,
+		&"commentary_kinds": COMMENTARY_FEEDBACK_CONTRACT.duplicate(true),
+		&"crowd_kinds": CROWD_FEEDBACK_CONTRACT.duplicate(true),
+	}
+
+
 static func get_sponsor_feedback_contract() -> Dictionary:
 	return {
-		&"bus": SFX_BUS_NAME,
+		&"bus": COMMENTARY_BUS_NAME,
 		&"pooled_voices": VOICE_COUNT,
 		&"identities": SPONSOR_FEEDBACK_CONTRACT.duplicate(true),
 	}
@@ -389,6 +456,9 @@ func get_racecraft_audio_feedback_snapshot() -> Dictionary:
 		&"flow_denied_suppressed_count": _flow_denied_suppressed_count,
 		&"last_flow_denied_payload": _last_flow_denied_payload.duplicate(true),
 		&"flow_denied_cue_ready": _cues.has(&"flow_denied"),
+		&"freestyle_feedback_count": _freestyle_feedback_count,
+		&"last_freestyle_feedback": _last_freestyle_feedback.duplicate(true),
+		&"freestyle_cue_ready": _cues.has(&"racecraft"),
 	}
 
 
@@ -405,6 +475,34 @@ func get_interface_feedback_snapshot() -> Dictionary:
 		&"last_context": _last_interface_feedback_context,
 		&"cue_ready": cue_ready,
 		&"contract": get_interface_feedback_contract(),
+	}
+
+
+func get_competition_feedback_snapshot() -> Dictionary:
+	var commentary_ready: Dictionary[StringName, bool] = {}
+	for raw_kind: Variant in COMMENTARY_FEEDBACK_CONTRACT:
+		var commentary_spec := COMMENTARY_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		var commentary_cue := StringName(commentary_spec.get(&"cue", &""))
+		commentary_ready[StringName(raw_kind)] = (
+			not commentary_cue.is_empty() and _cues.has(commentary_cue)
+		)
+	var crowd_ready: Dictionary[StringName, bool] = {}
+	for raw_kind: Variant in CROWD_FEEDBACK_CONTRACT:
+		var crowd_spec := CROWD_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		var crowd_cue := StringName(crowd_spec.get(&"cue", &""))
+		crowd_ready[StringName(raw_kind)] = not crowd_cue.is_empty() and _cues.has(crowd_cue)
+	return {
+		&"commentary_count": _commentary_feedback_count,
+		&"commentary_suppressed_count": _commentary_feedback_suppressed_count,
+		&"last_commentary_kind": _last_commentary_feedback_kind,
+		&"last_commentary_context": _last_commentary_feedback_context,
+		&"crowd_count": _crowd_feedback_count,
+		&"crowd_suppressed_count": _crowd_feedback_suppressed_count,
+		&"last_crowd_kind": _last_crowd_feedback_kind,
+		&"last_crowd_context": _last_crowd_feedback_context,
+		&"commentary_ready": commentary_ready,
+		&"crowd_ready": crowd_ready,
+		&"contract": get_competition_feedback_contract(),
 	}
 
 
@@ -465,6 +563,8 @@ func _connect_event_bus() -> void:
 		EventBus.activity_completed.connect(_on_activity_completed)
 	if not EventBus.activity_started.is_connected(_on_activity_started):
 		EventBus.activity_started.connect(_on_activity_started)
+	if not EventBus.freestyle_trick_scored.is_connected(_on_freestyle_trick_scored):
+		EventBus.freestyle_trick_scored.connect(_on_freestyle_trick_scored)
 
 
 func _connect_race_snapshot_source(bike: Node) -> void:
@@ -478,6 +578,7 @@ func _connect_race_snapshot_source(bike: Node) -> void:
 	_connect_source_signal(source, &"session_updated", Callable(self, &"_on_session_updated"))
 	_connect_source_signal(source, &"field_updated", Callable(self, &"_on_field_updated"))
 	_connect_source_signal(source, &"lap_completed", Callable(self, &"_on_lap_completed"))
+	_connect_source_signal(source, &"race_moment", Callable(self, &"_on_race_moment"))
 	_connect_source_signal(source, &"results_ready", Callable(self, &"_on_source_results_ready"))
 
 
@@ -504,6 +605,23 @@ func _build_cues() -> void:
 			float(sponsor_spec.get(&"duration", 0.48)),
 			float(sponsor_spec.get(&"amplitude", 0.38)),
 			float(sponsor_spec.get(&"harmonic", 0.30))
+		)
+	for raw_kind: Variant in COMMENTARY_FEEDBACK_CONTRACT:
+		var commentary_spec := COMMENTARY_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		_cues[StringName(commentary_spec.get(&"cue", &""))] = _make_sweep(
+			float(commentary_spec.get(&"start_hz", 440.0)),
+			float(commentary_spec.get(&"end_hz", 660.0)),
+			float(commentary_spec.get(&"duration", 0.20)),
+			float(commentary_spec.get(&"amplitude", 0.24)),
+			float(commentary_spec.get(&"harmonic", 0.24))
+		)
+	for raw_kind: Variant in CROWD_FEEDBACK_CONTRACT:
+		var crowd_spec := CROWD_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		_cues[StringName(crowd_spec.get(&"cue", &""))] = _make_crowd_swell(
+			float(crowd_spec.get(&"duration", 0.5)),
+			float(crowd_spec.get(&"amplitude", 0.24)),
+			float(crowd_spec.get(&"brightness", 0.55)),
+			float(crowd_spec.get(&"rise_ratio", 0.2))
 		)
 	_cues[&"count"] = _make_sweep(390.0, 390.0, 0.09, 0.34, 0.12)
 	_cues[&"go"] = _make_sweep(520.0, 880.0, 0.20, 0.38, 0.18)
@@ -539,6 +657,46 @@ func _make_sweep(start_hz: float, end_hz: float, duration: float, amplitude: flo
 		var envelope := attack * pow(1.0 - progress, 1.7)
 		var wave := sin(phase * TAU) + sin(phase * TAU * 2.0) * harmonic
 		var signed_sample := clampi(int(wave * amplitude * envelope * 32767.0), -32768, 32767)
+		var encoded_sample := signed_sample if signed_sample >= 0 else 65536 + signed_sample
+		data[sample_index * 2] = encoded_sample & 0xff
+		data[sample_index * 2 + 1] = (encoded_sample >> 8) & 0xff
+	var wave_stream := AudioStreamWAV.new()
+	wave_stream.format = AudioStreamWAV.FORMAT_16_BITS
+	wave_stream.mix_rate = MIX_RATE
+	wave_stream.stereo = false
+	wave_stream.data = data
+	return wave_stream
+
+
+func _make_crowd_swell(
+	duration: float,
+	amplitude: float,
+	brightness: float,
+	rise_ratio: float
+) -> AudioStreamWAV:
+	## Deterministic, band-shaped noise reads as a human swell without shipping a
+	## repeated stock cheer. Each semantic reaction has its own envelope/timbre.
+	var sample_count := maxi(int(duration * MIX_RATE), 1)
+	var data := PackedByteArray()
+	data.resize(sample_count * 2)
+	var seed := 0x4d595df4
+	var filtered_noise := 0.0
+	var low_noise := 0.0
+	for sample_index: int in sample_count:
+		var progress := float(sample_index) / float(sample_count)
+		seed = int((seed * 1_103_515_245 + 12_345) & 0x7fffffff)
+		var white := float(seed) / float(0x3fffffff) - 1.0
+		filtered_noise = lerpf(filtered_noise, white, clampf(brightness, 0.08, 0.92))
+		low_noise = lerpf(low_noise, white, 0.045)
+		var attack := clampf(progress / maxf(rise_ratio, 0.01), 0.0, 1.0)
+		var release := pow(maxf(1.0 - progress, 0.0), 0.78)
+		var pulse := 0.82 + sin(progress * TAU * 7.0) * 0.08
+		var crowd_wave := filtered_noise * 0.68 + low_noise * 0.52
+		var signed_sample := clampi(
+			int(crowd_wave * amplitude * attack * release * pulse * 32767.0),
+			-32768,
+			32767
+		)
 		var encoded_sample := signed_sample if signed_sample >= 0 else 65536 + signed_sample
 		data[sample_index * 2] = encoded_sample & 0xff
 		data[sample_index * 2 + 1] = (encoded_sample >> 8) & 0xff
@@ -988,10 +1146,20 @@ func _on_source_results_ready(_result: Dictionary) -> void:
 	_set_music_state(STATE_RESULTS)
 
 
-func _play(cue: StringName, pitch: float = 1.0, volume_db: float = 0.0) -> void:
-	if not _audio_enabled or _voices.is_empty() or not _cues.has(cue):
+func _play(
+	cue: StringName,
+	pitch: float = 1.0,
+	volume_db: float = 0.0,
+	bus: StringName = SFX_BUS_NAME
+) -> void:
+	if _voices.is_empty() or not _cues.has(cue):
 		return
 	var voice := _voices[_voice_index]
+	# Voices stay pooled, but every playback claims its semantic mixer route so
+	# a prior UI cue cannot leak into gameplay effects (or vice versa).
+	voice.bus = bus
+	if not _audio_enabled:
+		return
 	_voice_index = (_voice_index + 1) % _voices.size()
 	voice.stream = _cues[cue]
 	voice.pitch_scale = pitch
@@ -1018,8 +1186,112 @@ func _on_interface_feedback_requested(kind: StringName, context: StringName) -> 
 	_play(
 		StringName(spec.get(&"cue", &"")),
 		float(spec.get(&"pitch", 1.0)),
-		float(spec.get(&"volume_db", 0.0))
+		float(spec.get(&"volume_db", 0.0)),
+		INTERFACE_BUS_NAME
 	)
+
+
+func _play_commentary_feedback(kind: StringName, context: String) -> void:
+	if not COMMENTARY_FEEDBACK_CONTRACT.has(kind):
+		return
+	var now := Time.get_ticks_usec()
+	if now - _last_commentary_feedback_usec < COMMENTARY_FEEDBACK_COOLDOWN_USEC:
+		_commentary_feedback_suppressed_count += 1
+		return
+	_last_commentary_feedback_usec = now
+	_last_commentary_feedback_kind = kind
+	_last_commentary_feedback_context = context
+	_commentary_feedback_count += 1
+	var spec := COMMENTARY_FEEDBACK_CONTRACT[kind] as Dictionary
+	_play(
+		StringName(spec.get(&"cue", &"")),
+		float(spec.get(&"pitch", 1.0)),
+		float(spec.get(&"volume_db", 0.0)),
+		COMMENTARY_BUS_NAME
+	)
+
+
+func _play_crowd_feedback(kind: StringName, context: String) -> void:
+	if not CROWD_FEEDBACK_CONTRACT.has(kind):
+		return
+	var now := Time.get_ticks_usec()
+	if now - _last_crowd_feedback_usec < CROWD_FEEDBACK_COOLDOWN_USEC:
+		_crowd_feedback_suppressed_count += 1
+		return
+	_last_crowd_feedback_usec = now
+	_last_crowd_feedback_kind = kind
+	_last_crowd_feedback_context = context
+	_crowd_feedback_count += 1
+	var spec := CROWD_FEEDBACK_CONTRACT[kind] as Dictionary
+	_play(
+		StringName(spec.get(&"cue", &"")),
+		1.0,
+		float(spec.get(&"volume_db", 0.0)),
+		CROWD_BUS_NAME
+	)
+
+
+func _on_race_moment(label: String, points: int, positive: bool) -> void:
+	var commentary_kind := _commentary_kind_for_race_moment(label, points, positive)
+	if not commentary_kind.is_empty():
+		_play_commentary_feedback(commentary_kind, label)
+	var crowd_kind := _crowd_kind_for_race_moment(label, points, positive)
+	if not crowd_kind.is_empty():
+		_play_crowd_feedback(crowd_kind, label)
+
+
+static func _commentary_kind_for_race_moment(
+	label: String,
+	points: int,
+	positive: bool
+) -> StringName:
+	var normalized := label.to_upper()
+	if (
+		normalized.contains("POSITION LOST")
+		or normalized.contains("ELIMINATED")
+		or normalized.contains("PENALTY")
+		or normalized.contains("WRONG WAY")
+		or normalized.contains("RECOVERY")
+	):
+		return &"WARNING"
+	if (
+		normalized.contains("HOLESHOT")
+		or normalized.contains("OVERTAKE")
+		or normalized.contains("DRAFT SLINGSHOT")
+		or normalized.contains("BAR-TO-BAR")
+		or normalized.contains("AIRTIME")
+	):
+		return &"MILESTONE"
+	if points > 0 or positive:
+		return &"POSITIVE"
+	return &""
+
+
+static func _crowd_kind_for_race_moment(
+	label: String,
+	points: int,
+	positive: bool
+) -> StringName:
+	var normalized := label.to_upper()
+	if normalized.contains("HOLESHOT"):
+		return &"ROAR"
+	if (
+		normalized.contains("POSITION LOST")
+		or normalized.contains("ELIMINATED")
+		or normalized.contains("CRASH")
+		or normalized.contains("RECOVERY")
+	):
+		return &"GASP"
+	if (
+		normalized.contains("OVERTAKE")
+		or normalized.contains("DRAFT SLINGSHOT")
+		or normalized.contains("BAR-TO-BAR")
+		or normalized.contains("AIRTIME")
+		or points > 0
+		or positive
+	):
+		return &"CHEER"
+	return &""
 
 
 func _on_activity_prepared(activity: StringName) -> void:
@@ -1065,10 +1337,12 @@ func _on_race_started() -> void:
 	_set_music_state(STATE_RACING)
 
 
-func _on_race_finished(_time_usec: int, _medal: StringName, _is_new_best: bool) -> void:
+func _on_race_finished(_time_usec: int, medal: StringName, is_new_best: bool) -> void:
 	_session_phase = &"FINISHING"
 	_set_music_state(STATE_RESULTS)
-	_play(&"finish")
+	var finish_context := "NEW BEST" if is_new_best else "FINISH %s" % String(medal)
+	_play_commentary_feedback(&"MILESTONE", finish_context)
+	_play_crowd_feedback(&"ROAR", finish_context)
 
 
 func _on_race_results_ready(_result: Dictionary) -> void:
@@ -1082,7 +1356,9 @@ func _on_activity_completed(summary: Dictionary) -> void:
 	# The physical activity still ends when persistence is unavailable, but the
 	# celebratory finish cue belongs only to a durable or already-settled result.
 	if bool(summary.get(&"accepted", false)) or bool(summary.get(&"duplicate", false)):
-		_play(&"finish")
+		var activity_context := "ACTIVITY COMPLETE"
+		_play_commentary_feedback(&"MILESTONE", activity_context)
+		_play_crowd_feedback(&"ROAR", activity_context)
 
 
 func _on_activity_started(activity: StringName) -> void:
@@ -1143,6 +1419,58 @@ func _on_bike_landed(intensity: float) -> void:
 	_play(&"landing", lerpf(1.12, 0.72, weight), lerpf(-7.0, 1.5, weight))
 
 
+func _on_bike_trick_landed(
+	airtime: float,
+	_rotation_amount: float,
+	landing_intensity: float,
+	clean: bool
+) -> void:
+	if airtime < 0.35:
+		return
+	# Freestyle waits for the authoritative classification receipt so the cue can
+	# distinguish an ambitious clean trick from a late return. Other activities
+	# retain the immediate physical landing response.
+	if _current_activity == &"FREESTYLE":
+		return
+	var context := "CLEAN TRICK" if clean else "TRICK RECOVERY"
+	if clean and landing_intensity <= 0.65:
+		_play_commentary_feedback(&"POSITIVE", context)
+		_play_crowd_feedback(&"CHEER", context)
+	else:
+		_play_commentary_feedback(&"WARNING", context)
+		_play_crowd_feedback(&"GASP", context)
+
+
+func _on_freestyle_trick_scored(result: Dictionary) -> void:
+	if result.is_empty():
+		return
+	_freestyle_feedback_count += 1
+	_last_freestyle_feedback = result.duplicate(true)
+	var clean := bool(result.get(&"clean", false))
+	var points := maxi(int(result.get(&"awarded_points", 0)), 0)
+	var family_count := (result.get(&"families", []) as Array).size()
+	var pitch := clampf(0.82 + float(family_count) * 0.12 + float(points) / 9000.0, 0.78, 1.42)
+	var context := "%s // %s" % [
+		str(result.get(&"trick_name", "TRICK")),
+		str(result.get(&"landing_label", "ROUGH")),
+	]
+	_play(&"racecraft", pitch if clean else 0.72, 0.8 if clean else -2.0)
+	if clean:
+		var commentary_kind: StringName = &"MILESTONE" if points >= 2200 else &"POSITIVE"
+		var crowd_kind: StringName = &"ROAR" if points >= 2200 else &"CHEER"
+		_play_commentary_feedback(commentary_kind, context)
+		_play_crowd_feedback(crowd_kind, context)
+	else:
+		_play_commentary_feedback(&"WARNING", context)
+		_play_crowd_feedback(&"GASP", context)
+
+
+func _on_bike_recovery_requested(reason: StringName) -> void:
+	var context := "CRASH RECOVERY // %s" % String(reason).replace("_", " ")
+	_play_commentary_feedback(&"WARNING", context)
+	_play_crowd_feedback(&"GASP", context)
+
+
 func _on_line_updated(_label: String, chain: int, _multiplier: float, _score: int, _time_left: float) -> void:
 	_flow_mix = clampf(float(chain) / 6.0, 0.0, 1.0)
 	if _music_state == STATE_RACING:
@@ -1173,7 +1501,8 @@ func _on_contract_updated(
 		_sponsor_feedback_count += 1
 		_last_sponsor_feedback_id = sponsor_id
 		_last_sponsor_feedback_cue = cue
-		_play(cue, 1.0, float(spec.get(&"volume_db", 1.0)))
+		_play(cue, 1.0, float(spec.get(&"volume_db", 1.0)), COMMENTARY_BUS_NAME)
+		_play_crowd_feedback(&"CHEER", title)
 
 
 static func _sponsor_id_from_contract_title(title: String) -> StringName:
@@ -1189,9 +1518,13 @@ static func _sponsor_id_from_contract_title(title: String) -> StringName:
 
 static func ensure_audio_buses() -> Dictionary:
 	## Establish the complete runtime mixer before settings are applied. Keeping
-	## engine/contact layers off SFX makes both player-facing sliders truthful.
+	## Engine/contact and semantic UI layers stay off SFX so every player-facing
+	## category controls only the sound sources named by its label.
 	var sfx_index := _ensure_named_bus(SFX_BUS_NAME)
 	var engine_index := _ensure_named_bus(ENGINE_BUS_NAME)
+	var commentary_index := _ensure_named_bus(COMMENTARY_BUS_NAME)
+	var crowd_index := _ensure_named_bus(CROWD_BUS_NAME)
+	var interface_index := _ensure_named_bus(INTERFACE_BUS_NAME)
 	var music_was_missing := AudioServer.get_bus_index(MUSIC_BUS_NAME) < 0
 	var music_index := _ensure_named_bus(MUSIC_BUS_NAME)
 	if music_was_missing and music_index >= 0:
@@ -1203,6 +1536,9 @@ static func ensure_audio_buses() -> Dictionary:
 		&"music": music_index,
 		&"feedback": sfx_index,
 		&"engine": engine_index,
+		&"commentary": commentary_index,
+		&"crowd": crowd_index,
+		&"interface": interface_index,
 	}
 
 

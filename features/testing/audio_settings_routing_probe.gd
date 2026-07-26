@@ -17,10 +17,26 @@ func _run() -> void:
 	_expect(int(topology.get(&"music", -1)) >= 0, "Music bus is missing")
 	_expect(int(topology.get(&"feedback", -1)) >= 0, "SFX bus is missing")
 	_expect(int(topology.get(&"engine", -1)) >= 0, "Engine bus is missing")
+	_expect(int(topology.get(&"commentary", -1)) >= 0, "Commentary bus is missing")
+	_expect(int(topology.get(&"crowd", -1)) >= 0, "Crowd bus is missing")
+	_expect(int(topology.get(&"interface", -1)) >= 0, "Interface bus is missing")
 	_expect(
 		int(topology.get(&"feedback", -1)) != int(topology.get(&"engine", -1)),
 		"Engine and effects are still sharing one bus"
 	)
+	_expect(
+		int(topology.get(&"interface", -1)) != int(topology.get(&"feedback", -1))
+		and int(topology.get(&"interface", -1)) != int(topology.get(&"engine", -1)),
+		"Interface feedback is still sharing a gameplay bus"
+	)
+	var semantic_indices := [
+		int(topology.get(&"feedback", -1)),
+		int(topology.get(&"engine", -1)),
+		int(topology.get(&"commentary", -1)),
+		int(topology.get(&"crowd", -1)),
+		int(topology.get(&"interface", -1)),
+	]
+	_expect(_all_indices_distinct(semantic_indices), "Named audio categories do not have distinct buses")
 
 	var service := RaceServices.new()
 	service.settings = SettingsStore.new(TEST_PATH)
@@ -30,11 +46,17 @@ func _run() -> void:
 	_expect(service.settings.set_value(&"audio", &"music_volume", 0.40), "Music setting rejected a valid value")
 	_expect(service.settings.set_value(&"audio", &"engine_volume", 0.25), "Engine setting rejected a valid value")
 	_expect(service.settings.set_value(&"audio", &"effects_volume", 0.80), "Effects setting rejected a valid value")
+	_expect(service.settings.set_value(&"audio", &"commentary_volume", 0.45), "Commentary setting rejected a valid value")
+	_expect(service.settings.set_value(&"audio", &"crowd_volume", 0.35), "Crowd setting rejected a valid value")
+	_expect(service.settings.set_value(&"audio", &"interface_volume", 0.55), "Interface setting rejected a valid value")
 	service.call(&"_apply_settings")
 	_expect(_bus_matches(&"Master", 0.60, false), "Master volume was not applied")
 	_expect(_bus_matches(&"Music", 0.40, false), "Music volume was not applied")
 	_expect(_bus_matches(&"Engine", 0.25, false), "Engine volume was not independently applied")
 	_expect(_bus_matches(&"SFX", 0.80, false), "Effects volume was not independently applied")
+	_expect(_bus_matches(&"Commentary", 0.45, false), "Commentary volume was not independently applied")
+	_expect(_bus_matches(&"Crowd", 0.35, false), "Crowd volume was not independently applied")
+	_expect(_bus_matches(&"Interface", 0.55, false), "Interface volume was not independently applied")
 
 	_expect(service.settings.set_value(&"audio", &"engine_volume", 0.0), "Engine setting rejected exact zero")
 	service.call(&"_apply_settings")
@@ -43,14 +65,34 @@ func _run() -> void:
 	_expect(service.settings.set_value(&"audio", &"engine_volume", 0.35), "Engine setting rejected unmute value")
 	service.call(&"_apply_settings")
 	_expect(_bus_matches(&"Engine", 0.35, false), "Raising Engine above 0% did not unmute it")
+	_expect(service.settings.set_value(&"audio", &"interface_volume", 0.0), "Interface setting rejected exact zero")
+	service.call(&"_apply_settings")
+	_expect(_bus_matches(&"Interface", 0.0, true), "0% Interface did not exactly mute its bus")
+	_expect(_bus_matches(&"SFX", 0.80, false), "Muting Interface also muted gameplay Effects")
+	_expect(service.settings.set_value(&"audio", &"interface_volume", 0.65), "Interface setting rejected unmute value")
+	service.call(&"_apply_settings")
+	_expect(_bus_matches(&"Interface", 0.65, false), "Raising Interface above 0% did not unmute it")
 
 	_expect(not service.settings.set_value(&"audio", &"voice_volume", 0.5), "Dormant Voice preference is still writable")
-	_expect(not service.settings.set_value(&"audio", &"crowd_volume", 0.5), "Dormant Crowd preference is still writable")
+	_expect(service.settings.set_value(&"audio", &"commentary_volume", 0.0), "Commentary setting rejected exact zero")
+	service.call(&"_apply_settings")
+	_expect(_bus_matches(&"Commentary", 0.0, true), "0% Commentary did not exactly mute its bus")
+	_expect(_bus_matches(&"Crowd", 0.35, false), "Muting Commentary also muted Crowd")
+	_expect(_bus_matches(&"SFX", 0.80, false), "Muting Commentary also muted Effects")
+	_expect(service.settings.set_value(&"audio", &"commentary_volume", 0.45), "Commentary setting rejected unmute value")
+	_expect(service.settings.set_value(&"audio", &"crowd_volume", 0.0), "Crowd setting rejected exact zero")
+	service.call(&"_apply_settings")
+	_expect(_bus_matches(&"Crowd", 0.0, true), "0% Crowd did not exactly mute its bus")
+	_expect(_bus_matches(&"Commentary", 0.45, false), "Muting Crowd also muted Commentary")
+	_expect(service.settings.set_value(&"audio", &"crowd_volume", 0.35), "Crowd setting rejected unmute value")
 	_expect(service.settings.save_to_disk(), "Independent audio settings did not persist")
 	var restored := SettingsStore.new(TEST_PATH)
 	_expect(bool(restored.load_from_disk().get(&"ok", false)), "Independent audio settings did not reload")
 	_expect(is_equal_approx(float(restored.get_value(&"audio", &"engine_volume", -1.0)), 0.35), "Engine volume changed on reload")
 	_expect(is_equal_approx(float(restored.get_value(&"audio", &"effects_volume", -1.0)), 0.80), "Effects volume changed on reload")
+	_expect(is_equal_approx(float(restored.get_value(&"audio", &"commentary_volume", -1.0)), 0.45), "Commentary volume changed on reload")
+	_expect(is_equal_approx(float(restored.get_value(&"audio", &"crowd_volume", -1.0)), 0.35), "Crowd volume changed on reload")
+	_expect(is_equal_approx(float(restored.get_value(&"audio", &"interface_volume", -1.0)), 0.65), "Interface volume changed on reload")
 
 	_write_v3_fixture()
 	var migrated := SettingsStore.new(LEGACY_PATH)
@@ -59,10 +101,13 @@ func _run() -> void:
 	_expect(bool(migration.get(&"ok", false)) and bool(migration.get(&"migrated", false)), "Version-3 audio settings were not migrated")
 	_expect(is_equal_approx(float(migrated_audio.get("engine_volume", -1.0)), 0.31), "Migration lost Engine volume")
 	_expect(is_equal_approx(float(migrated_audio.get("effects_volume", -1.0)), 0.63), "Migration lost Effects volume")
-	_expect(not migrated_audio.has("voice_volume") and not migrated_audio.has("crowd_volume"), "Migration retained preferences with no sound sources")
+	_expect(is_equal_approx(float(migrated_audio.get("commentary_volume", -1.0)), 0.80), "Migration did not add the safe Commentary default")
+	_expect(is_equal_approx(float(migrated_audio.get("crowd_volume", -1.0)), 0.80), "Migration did not add the safe Crowd default")
+	_expect(is_equal_approx(float(migrated_audio.get("interface_volume", -1.0)), 0.90), "Migration did not add the safe Interface default")
+	_expect(not migrated_audio.has("voice_volume"), "Migration retained a preference with no sound source")
 
 	if _failures.is_empty():
-		print("AUDIO_SETTINGS_ROUTING_PROBE PASS engine=Engine effects=SFX exact_mute=true migrated_v3=true")
+		print("AUDIO_SETTINGS_ROUTING_PROBE PASS engine=Engine effects=SFX commentary=Commentary crowd=Crowd interface=Interface exact_mute=true migrated_v3=true")
 	else:
 		for failure: String in _failures:
 			push_error("AUDIO_SETTINGS_ROUTING_PROBE: %s" % failure)
@@ -80,13 +125,24 @@ func _bus_matches(bus_name: StringName, linear: float, muted: bool) -> bool:
 	return is_equal_approx(AudioServer.get_bus_volume_db(index), expected_db)
 
 
+func _all_indices_distinct(indices: Array) -> bool:
+	var seen := {}
+	for index: int in indices:
+		if index < 0 or seen.has(index):
+			return false
+		seen[index] = true
+	return true
+
+
 func _write_v3_fixture() -> void:
 	var legacy_values := SettingsStore.DEFAULTS.duplicate(true)
 	var audio := legacy_values.get("audio", {}) as Dictionary
 	audio["engine_volume"] = 0.31
 	audio["effects_volume"] = 0.63
+	audio.erase("commentary_volume")
+	audio.erase("crowd_volume")
+	audio.erase("interface_volume")
 	audio["voice_volume"] = 0.44
-	audio["crowd_volume"] = 0.27
 	legacy_values["audio"] = audio
 	var absolute := ProjectSettings.globalize_path(LEGACY_PATH)
 	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())

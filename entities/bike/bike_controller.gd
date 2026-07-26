@@ -6,6 +6,7 @@ const RECOVERY_TIPPED: StringName = &"AUTO_TIPPED"
 const RECOVERY_WORLD_FALL: StringName = &"AUTO_WORLD_FALL"
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
+const FREESTYLE_TRICK_RULES := preload("res://features/freestyle/freestyle_trick_rules.gd")
 const BIKE_TRANSMISSION_SCRIPT := preload("res://entities/bike/bike_transmission.gd")
 const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const GATE_LAUNCH_MIN_MULTIPLIER := 0.94
@@ -77,6 +78,7 @@ signal telemetry_updated(speed_mph: float, throttle: float, grounded: bool)
 signal landed(intensity: float)
 signal airtime_started()
 signal trick_landed(airtime: float, rotation_amount: float, landing_intensity: float, clean: bool)
+signal trick_resolved(observation: Dictionary)
 signal flow_changed(value: float, boosting: bool)
 signal flow_gained(amount: float)
 signal boost_activated(flow_remaining: float)
@@ -219,6 +221,23 @@ var _last_safe_transform: Transform3D
 var _respawn_generation: int = 0
 var _airtime: float = 0.0
 var _air_rotation: float = 0.0
+var _air_pitch_rotation: float = 0.0
+var _air_yaw_rotation: float = 0.0
+var _air_roll_rotation: float = 0.0
+var _air_steer_left_time: float = 0.0
+var _air_steer_right_time: float = 0.0
+var _air_forward_lean_time: float = 0.0
+var _air_back_lean_time: float = 0.0
+var _trick_modifier_time: float = 0.0
+var _trick_safe_return_time: float = 0.0
+var _trick_pose_times: Dictionary = {}
+var _freestyle_takeoff_valid: bool = false
+var _freestyle_contact_observed: bool = false
+var _trick_pose_snapshot: Dictionary = {
+	&"pose_id": &"NONE",
+	&"strength": 0.0,
+	&"side": 0.0,
+}
 var _base_engine_force: float = 1200.0
 var _base_lateral_grip: float = 620.0
 var _base_maximum_speed_mps: float = 30.0
@@ -374,6 +393,8 @@ func _physics_process(delta: float) -> void:
 	_front_distance = _front_contact.distance
 	_rear_distance = _rear_contact.distance
 	_grounded = _front_contact.colliding or _rear_contact.colliding
+	if _grounded:
+		_freestyle_contact_observed = true
 	_ground_coyote_time = 0.12 if _grounded else maxf(_ground_coyote_time - delta, 0.0)
 	_update_active_surface()
 	_transmission.update(
@@ -413,12 +434,15 @@ func _physics_process(delta: float) -> void:
 		if _was_grounded:
 			_airtime = 0.0
 			_air_rotation = 0.0
+			_reset_freestyle_observation()
+			_freestyle_takeoff_valid = _freestyle_contact_observed
 			_air_brake_pop_used = false
 			_takeoff_speed_mps = get_speed_mps()
 			_takeoff_alignment = clampf((-global_transform.basis.z).normalized().dot(linear_velocity.normalized()), 0.0, 1.0) if linear_velocity.length_squared() > 0.1 else 1.0
 			airtime_started.emit()
 		_airtime += delta
 		_air_rotation += angular_velocity.length() * delta
+		_update_freestyle_observation(air_steer, air_lean, delta)
 		_sample_landing_target()
 		_apply_air_control(air_steer)
 		_apply_air_brake_pop(brake_just_pressed)
@@ -444,6 +468,7 @@ func _physics_process(delta: float) -> void:
 			var clean_landing := global_transform.basis.y.normalized().dot(_get_ground_normal()) > 0.48 and intensity < 0.9
 			_apply_landing_momentum(intensity)
 			trick_landed.emit(_airtime, _air_rotation, intensity, clean_landing)
+			trick_resolved.emit(_build_freestyle_observation(intensity, clean_landing))
 			_award_landing_flow(_airtime, _air_rotation, clean_landing)
 			if clean_landing and _scrub_time >= 0.24:
 				style_event.emit(&"SCRUB", 240)
@@ -458,6 +483,7 @@ func _physics_process(delta: float) -> void:
 				_wobble_time = maxf(_wobble_time, 1.1)
 		_airtime = 0.0
 		_air_rotation = 0.0
+		_reset_freestyle_observation()
 		_airborne_fall_speed = 0.0
 		_scrub_time = 0.0
 		_scrub_strength = 0.0
@@ -580,6 +606,7 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_airborne_fall_speed = 0.0
 	_airtime = 0.0
 	_air_rotation = 0.0
+	_reset_freestyle_observation()
 	_reset_flow()
 	_wheelie_time = 0.0
 	_wheelie_awarded = false
@@ -595,6 +622,7 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_ground_coyote_time = 0.0
 	_front_contact = WheelContact.new()
 	_rear_contact = WheelContact.new()
+	_freestyle_contact_observed = false
 	_low_speed_forward = -spawn_transform.basis.z.slide(Vector3.UP).normalized()
 	_front_distance = suspension_rest_length + wheel_radius
 	_rear_distance = suspension_rest_length + wheel_radius
@@ -1761,7 +1789,8 @@ func _update_visual_and_audio(
 		get_rear_slip(),
 		_front_contact.compression,
 		_rear_contact.compression,
-		_suspension_activity
+		_suspension_activity,
+		_trick_pose_snapshot
 	)
 	_engine_audio.call(
 		&"set_engine_state",
@@ -1776,6 +1805,93 @@ func _update_visual_and_audio(
 		_transmission.normalized_rpm,
 		_transmission.shift_cut_remaining
 	)
+
+
+func get_freestyle_trick_snapshot() -> Dictionary:
+	var snapshot := _build_freestyle_observation(0.0, true)
+	snapshot[&"pose"] = _trick_pose_snapshot.duplicate(true)
+	return snapshot
+
+
+func _update_freestyle_observation(steer: float, lean: float, delta: float) -> void:
+	var right := global_transform.basis.x.normalized()
+	var forward := -global_transform.basis.z.normalized()
+	var up := global_transform.basis.y.normalized()
+	_air_pitch_rotation += angular_velocity.dot(right) * delta
+	_air_roll_rotation += angular_velocity.dot(forward) * delta
+	_air_yaw_rotation += angular_velocity.dot(up) * delta
+	if steer <= -0.42:
+		_air_steer_left_time += delta
+	elif steer >= 0.42:
+		_air_steer_right_time += delta
+	if lean <= -0.42:
+		_air_forward_lean_time += delta
+	elif lean >= 0.42:
+		_air_back_lean_time += delta
+
+	var modifier_pressed := controls_enabled and InputRouter.is_racecraft_pressed()
+	_trick_pose_snapshot = FREESTYLE_TRICK_RULES.pose_from_input(
+		modifier_pressed,
+		steer,
+		lean
+	)
+	if modifier_pressed:
+		_trick_modifier_time += delta
+		_trick_safe_return_time = 0.0
+		var pose_id := StringName(_trick_pose_snapshot.get(&"pose_id", &"NONE"))
+		if pose_id != &"NONE":
+			_trick_pose_times[pose_id] = float(_trick_pose_times.get(pose_id, 0.0)) + delta
+	elif _trick_modifier_time > 0.0:
+		_trick_safe_return_time += delta
+
+
+func _build_freestyle_observation(
+	landing_intensity: float,
+	physical_clean: bool
+) -> Dictionary:
+	return {
+		&"airtime": _airtime,
+		&"total_rotation": _air_rotation,
+		&"pitch_rotation": _air_pitch_rotation,
+		&"yaw_rotation": _air_yaw_rotation,
+		&"roll_rotation": _air_roll_rotation,
+		&"steer_left_time": _air_steer_left_time,
+		&"steer_right_time": _air_steer_right_time,
+		&"forward_lean_time": _air_forward_lean_time,
+		&"back_lean_time": _air_back_lean_time,
+		&"scrub_time": _scrub_time,
+		&"whip_time": _whip_time,
+		&"modifier_time": _trick_modifier_time,
+		&"safe_return_time": _trick_safe_return_time,
+		&"modifier_held_at_landing": (
+			controls_enabled and InputRouter.is_racecraft_pressed()
+		),
+		&"pose_times": _trick_pose_times.duplicate(true),
+		&"landing_intensity": landing_intensity,
+		&"upright_alignment": global_transform.basis.y.normalized().dot(_get_ground_normal()),
+		&"physical_clean": physical_clean,
+		&"takeoff_valid": _freestyle_takeoff_valid,
+		&"contact_observed_since_respawn": _freestyle_contact_observed,
+	}
+
+
+func _reset_freestyle_observation() -> void:
+	_air_pitch_rotation = 0.0
+	_air_yaw_rotation = 0.0
+	_air_roll_rotation = 0.0
+	_air_steer_left_time = 0.0
+	_air_steer_right_time = 0.0
+	_air_forward_lean_time = 0.0
+	_air_back_lean_time = 0.0
+	_trick_modifier_time = 0.0
+	_trick_safe_return_time = 0.0
+	_trick_pose_times.clear()
+	_freestyle_takeoff_valid = false
+	_trick_pose_snapshot = {
+		&"pose_id": &"NONE",
+		&"strength": 0.0,
+		&"side": 0.0,
+	}
 
 
 func _update_telemetry(delta: float, speed_mps: float, throttle: float) -> void:

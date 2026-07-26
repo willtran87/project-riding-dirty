@@ -22,10 +22,12 @@ GODOT_CANDIDATES = (
 )
 QUICK_PROBES = (
     "persistence_hardening_probe.tscn",
+    "save_lifecycle_feedback_probe.tscn",
     "production_settings_probe.tscn",
     "control_response_settings_probe.tscn",
     "input_prompt_integrity_probe.tscn",
     "reduced_motion_accessibility_probe.tscn",
+    "freestyle_trick_depth_probe.tscn",
     "race_difficulty_quality_probe.tscn",
     "web_runtime_budget_probe.tscn",
     "audio_settings_routing_probe.tscn",

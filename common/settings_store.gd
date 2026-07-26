@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 9
+const SETTINGS_VERSION: int = 13
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -59,12 +59,18 @@ const DEFAULTS: Dictionary = {
 		"music_volume": 0.72,
 		"engine_volume": 1.0,
 		"effects_volume": 0.9,
+		"commentary_volume": 0.8,
+		"crowd_volume": 0.8,
+		"interface_volume": 0.9,
 	},
 	"interface": {
 		"text_scale": 1.0,
 		"hud_detail": "FULL",
 		"hud_scale": 1.0,
+		"hud_safe_area": 0.0,
 		"reduced_motion": false,
+		"reduced_flashes": false,
+		"reduced_particles": false,
 		"high_contrast": false,
 		"color_safe_mode": "OFF",
 		"units": "IMPERIAL",
@@ -99,8 +105,12 @@ func load_from_disk() -> Dictionary:
 	if bool(backup.get("ok", false)):
 		var recovered := _adopt_settings_candidate(backup, "backup", true)
 		recovered["primary_error"] = str(primary.get("error", "missing"))
+		SaveLifecycle.report_recovered(
+			&"SETTINGS", "RIDER SETTINGS", bool(recovered.get("repaired", false))
+		)
 		return recovered
 	reset_to_defaults()
+	SaveLifecycle.report_failure(&"SETTINGS", "DEFAULTS RESTORED", "no_valid_settings")
 	return {
 		"ok": false,
 		"created_defaults": false,
@@ -114,6 +124,13 @@ func load_from_disk() -> Dictionary:
 
 
 func save_to_disk() -> bool:
+	var save_token := SaveLifecycle.begin_save(&"SETTINGS", "RIDER SETTINGS", true)
+	var succeeded := _save_to_disk_verified()
+	SaveLifecycle.finish_save(save_token, succeeded, "" if succeeded else "settings_write_failed")
+	return succeeded
+
+
+func _save_to_disk_verified() -> bool:
 	values = _sanitize_values(values)
 	var base_dir := storage_path.get_base_dir()
 	if not DirAccess.dir_exists_absolute(base_dir):
@@ -575,14 +592,20 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"music_volume": clampf(float(audio.get("music_volume", 0.72)), 0.0, 1.0),
 			"engine_volume": clampf(float(audio.get("engine_volume", 1.0)), 0.0, 1.0),
 			"effects_volume": clampf(float(audio.get("effects_volume", 0.9)), 0.0, 1.0),
+			"commentary_volume": clampf(float(audio.get("commentary_volume", 0.8)), 0.0, 1.0),
+			"crowd_volume": clampf(float(audio.get("crowd_volume", 0.8)), 0.0, 1.0),
+			"interface_volume": clampf(float(audio.get("interface_volume", 0.9)), 0.0, 1.0),
 		},
 		"interface": {
 			"text_scale": clampf(float(interface.get("text_scale", 1.0)), 0.8, 1.75),
 			"hud_detail": hud_detail if hud_detail in HUD_DETAIL_MODES else "FULL",
 			"hud_scale": clampf(float(interface.get("hud_scale", 1.0)), 0.75, 1.0),
+			"hud_safe_area": clampf(float(interface.get("hud_safe_area", 0.0)), 0.0, 0.10),
 			# Version-1 settings files predate this option. Missing values remain
 			# opt-in so existing riders keep the original presentation by default.
 			"reduced_motion": bool(interface.get("reduced_motion", false)),
+			"reduced_flashes": bool(interface.get("reduced_flashes", false)),
+			"reduced_particles": bool(interface.get("reduced_particles", false)),
 			"high_contrast": bool(interface.get("high_contrast", false)),
 			"color_safe_mode": color_mode if color_mode in COLOR_SAFE_MODES else "OFF",
 			"units": unit_mode if unit_mode in UNIT_MODES else "IMPERIAL",

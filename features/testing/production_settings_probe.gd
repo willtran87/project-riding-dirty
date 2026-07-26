@@ -147,12 +147,17 @@ func _run() -> void:
 	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"AUDIO"))
 	service.call(&"_refresh_settings_text")
 	var audio_items: Array = service.get("_settings_items") as Array
-	_check(audio_items.size() == 4, "audio page must expose Master, Music, Engine, and Effects")
+	_check(
+		audio_items.size() == 7,
+		"audio page must expose Master, Music, Engine, Effects, Commentary, Crowd, and Interface"
+	)
 	var expected_audio_keys: Array[StringName] = [
 		&"master_volume", &"music_volume", &"engine_volume", &"effects_volume",
+		&"commentary_volume", &"crowd_volume", &"interface_volume",
 	]
 	var expected_audio_labels := [
 		"MASTER VOLUME", "MUSIC VOLUME", "ENGINE VOLUME", "EFFECTS VOLUME",
+		"COMMENTARY VOLUME", "CROWD VOLUME", "INTERFACE VOLUME",
 	]
 	for index: int in expected_audio_keys.size():
 		_check(

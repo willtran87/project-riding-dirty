@@ -22,6 +22,7 @@ config/icon="res://assets/branding/riding_dirty_mark.svg"
 [autoload]
 
 EventBus="*res://common/event_bus.gd"
+SaveLifecycle="*res://common/save_lifecycle.gd"
 InputRouter="*res://common/input_router.gd"
 WebPlatform="*res://common/web_platform.gd"
 Profile="*res://common/player_profile.gd"

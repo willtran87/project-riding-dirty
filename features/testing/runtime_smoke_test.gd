@@ -489,11 +489,23 @@ func _run_circuit() -> void:
 func _run_freestyle() -> void:
 	var exit_code := 0
 	await _wait_physics_frames(12)
-	_bike.respawn_at(Transform3D(Basis.IDENTITY, Vector3(0.0, 2.5, 12.0)))
-	_bike.linear_velocity = Vector3(0.0, 5.0, -5.0)
+	# Establish real suspension contact before launching. An elevated respawn is
+	# recovery motion, not a player-authored takeoff, and must never grant free
+	# freestyle points.
+	_bike.respawn_at(Transform3D(Basis.IDENTITY, Vector3(0.0, 0.72, 12.0)))
+	for _frame: int in range(60):
+		if _bike.is_grounded():
+			break
+		await get_tree().physics_frame
+	if not _bike.is_grounded():
+		push_error("FREESTYLE SMOKE: bike did not establish takeoff contact.")
+		exit_code = 1
+	_bike.apply_central_impulse(Vector3(0.0, 7.0, -5.0) * _bike.mass)
 	_bike.angular_velocity = Vector3(0.25, 0.0, 0.0)
 	await _wait_physics_frames(100)
-	if _freestyle.score <= 0:
+	var freestyle_scoring := _freestyle.get_scoring_snapshot()
+	var last_trick := freestyle_scoring.get(&"last_trick", {}) as Dictionary
+	if _freestyle.score <= 0 or last_trick.is_empty():
 		push_error("FREESTYLE SMOKE: physical airtime and landing did not award points.")
 		exit_code = 1
 	if _ride_director.get_line_score() <= 0 or _ride_director.get_contract_progress() <= 0:

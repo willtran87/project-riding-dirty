@@ -29,14 +29,33 @@ func _run() -> void:
 	_expect(StringName(buses.get(&"music", &"")) == &"Music", "Music is not routed to the Music bus")
 	_expect(StringName(buses.get(&"feedback", &"")) == &"SFX", "Feedback bypasses the SFX bus")
 	_expect(StringName(buses.get(&"engine", &"")) == &"Engine", "Engine/contact audio has no independent bus")
+	_expect(StringName(buses.get(&"commentary", &"")) == &"Commentary", "Race callouts have no independent Commentary bus")
+	_expect(StringName(buses.get(&"crowd", &"")) == &"Crowd", "Crowd reactions have no independent bus")
+	_expect(StringName(buses.get(&"interface", &"")) == &"Interface", "Interface feedback has no independent bus")
 	var topology := GameplayAudio.ensure_audio_buses()
 	_expect(int(topology.get(&"music", -1)) >= 0, "Music bus was not established")
 	_expect(int(topology.get(&"feedback", -1)) >= 0, "SFX bus was not established")
 	_expect(int(topology.get(&"engine", -1)) >= 0, "Engine bus was not established")
+	_expect(int(topology.get(&"commentary", -1)) >= 0, "Commentary bus was not established")
+	_expect(int(topology.get(&"crowd", -1)) >= 0, "Crowd bus was not established")
+	_expect(int(topology.get(&"interface", -1)) >= 0, "Interface bus was not established")
 	_expect(
 		int(topology.get(&"feedback", -1)) != int(topology.get(&"engine", -1)),
 		"Engine and effects resolve to the same mixer bus"
 	)
+	_expect(
+		int(topology.get(&"interface", -1)) != int(topology.get(&"feedback", -1))
+		and int(topology.get(&"interface", -1)) != int(topology.get(&"engine", -1)),
+		"Interface feedback resolves to a gameplay mixer bus"
+	)
+	var semantic_bus_indices := [
+		int(topology.get(&"feedback", -1)),
+		int(topology.get(&"engine", -1)),
+		int(topology.get(&"commentary", -1)),
+		int(topology.get(&"crowd", -1)),
+		int(topology.get(&"interface", -1)),
+	]
+	_expect(_all_indices_distinct(semantic_bus_indices), "Semantic mixer categories do not resolve to distinct buses")
 	var transition_contract := GameplayAudio.get_transition_contract()
 	_expect(float(transition_contract.get(&"arrangement_crossfade_seconds", 0.0)) >= 0.35, "Arrangement crossfade is too short for click-free switching")
 	_expect(float(transition_contract.get(&"minimum_stem_transition_seconds", 0.0)) >= 0.30, "Stem transition contract is too abrupt")
@@ -49,7 +68,7 @@ func _run() -> void:
 	_expect(int(denial_contract.get(&"pooled_voices", 0)) >= 4, "Flow denial does not use the shared voice pool")
 	var interface_contract := GameplayAudio.get_interface_feedback_contract()
 	var interface_kinds := interface_contract.get(&"kinds", {}) as Dictionary
-	_expect(StringName(interface_contract.get(&"bus", &"")) == &"SFX", "Interface feedback bypasses the SFX bus")
+	_expect(StringName(interface_contract.get(&"bus", &"")) == &"Interface", "Interface feedback bypasses its independent bus")
 	_expect(int(interface_contract.get(&"pooled_voices", 0)) >= 4, "Interface feedback does not use pooled voices")
 	_expect(int(interface_contract.get(&"cooldown_usec", 0)) >= 25_000, "Interface feedback has no anti-spam interval")
 	_expect(interface_kinds.size() == 4, "Interface feedback does not define exactly navigate/confirm/cancel/denied")
@@ -68,9 +87,30 @@ func _run() -> void:
 		if spec_value is Dictionary:
 			interface_cues.append(String((spec_value as Dictionary).get(&"cue", "")))
 	_expect(interface_cues.size() == 4 and interface_cues[0] != interface_cues[1] and interface_cues[0] != interface_cues[2] and interface_cues[0] != interface_cues[3] and interface_cues[1] != interface_cues[2] and interface_cues[1] != interface_cues[3] and interface_cues[2] != interface_cues[3], "Interface meanings share an ambiguous cue identity")
+	var competition_contract := GameplayAudio.get_competition_feedback_contract()
+	var commentary_kinds := competition_contract.get(&"commentary_kinds", {}) as Dictionary
+	var crowd_kinds := competition_contract.get(&"crowd_kinds", {}) as Dictionary
+	_expect(StringName(competition_contract.get(&"commentary_bus", &"")) == &"Commentary", "Race callouts bypass Commentary")
+	_expect(StringName(competition_contract.get(&"crowd_bus", &"")) == &"Crowd", "Race reactions bypass Crowd")
+	_expect(int(competition_contract.get(&"commentary_cooldown_usec", 0)) >= 400_000, "Commentary can spam during rapid race moments")
+	_expect(int(competition_contract.get(&"crowd_cooldown_usec", 0)) >= 700_000, "Crowd can spam during rapid race moments")
+	_expect(
+		commentary_kinds.size() == 3
+		and commentary_kinds.has(&"POSITIVE")
+		and commentary_kinds.has(&"WARNING")
+		and commentary_kinds.has(&"MILESTONE"),
+		"Commentary does not define the three semantic callout classes"
+	)
+	_expect(
+		crowd_kinds.size() == 3
+		and crowd_kinds.has(&"CHEER")
+		and crowd_kinds.has(&"ROAR")
+		and crowd_kinds.has(&"GASP"),
+		"Crowd does not define cheer/roar/gasp reactions"
+	)
 	var sponsor_contract := GameplayAudio.get_sponsor_feedback_contract()
 	var sponsor_identities := sponsor_contract.get(&"identities", {}) as Dictionary
-	_expect(StringName(sponsor_contract.get(&"bus", &"")) == &"SFX", "Sponsor feedback bypasses the SFX bus")
+	_expect(StringName(sponsor_contract.get(&"bus", &"")) == &"Commentary", "Authored sponsor callouts bypass Commentary")
 	_expect(int(sponsor_contract.get(&"pooled_voices", 0)) >= 4, "Sponsor feedback bypasses the shared voice pool")
 	_expect(sponsor_identities.size() == 4, "Sponsor feedback does not expose three identities plus fallback")
 	var sponsor_cues := PackedStringArray()
@@ -111,8 +151,55 @@ func _run() -> void:
 	var cue_ready := interface_snapshot.get(&"cue_ready", {}) as Dictionary
 	for required_kind: StringName in [&"NAVIGATE", &"CONFIRM", &"CANCEL", &"DENIED"]:
 		_expect(bool(cue_ready.get(required_kind, false)), "Procedural interface cue was not built for %s" % String(required_kind))
+	var pooled_voice := AudioStreamPlayer.new()
+	audio.add_child(pooled_voice)
+	var pooled_voices := audio.get("_voices") as Array
+	pooled_voices.append(pooled_voice)
+	audio.call(&"_on_interface_feedback_requested", &"NAVIGATE", &"ROUTE_PROBE")
+	_expect(pooled_voice.bus == &"Interface", "A live interface cue did not claim the Interface bus")
+	audio.set("_commentary_feedback_count", 0)
+	audio.set("_commentary_feedback_suppressed_count", 0)
+	audio.set("_last_commentary_feedback_usec", -1_000_000)
+	audio.set("_crowd_feedback_count", 0)
+	audio.set("_crowd_feedback_suppressed_count", 0)
+	audio.set("_last_crowd_feedback_usec", -1_000_000)
+	audio.call(&"_play_commentary_feedback", &"MILESTONE", "ROUTE PROBE")
+	_expect(pooled_voice.bus == &"Commentary", "A live race callout did not claim the Commentary bus")
+	audio.call(&"_play_crowd_feedback", &"ROAR", "ROUTE PROBE")
+	_expect(pooled_voice.bus == &"Crowd", "A live crowd reaction did not claim the Crowd bus")
+	var race_root := Node.new()
+	race_root.name = "RaceRoot"
+	add_child(race_root)
+	var fake_bike := Node.new()
+	fake_bike.name = "Bike"
+	race_root.add_child(fake_bike)
+	var fake_race := Node.new()
+	fake_race.name = "RaceController"
+	fake_race.add_user_signal(&"race_moment", [
+		{&"name": &"label", &"type": TYPE_STRING},
+		{&"name": &"points", &"type": TYPE_INT},
+		{&"name": &"positive", &"type": TYPE_BOOL},
+	])
+	race_root.add_child(fake_race)
+	audio.call(&"_connect_race_snapshot_source", fake_bike)
+	audio.set("_last_commentary_feedback_usec", -1_000_000)
+	audio.set("_last_crowd_feedback_usec", -1_000_000)
+	fake_race.emit_signal(&"race_moment", "OVERTAKE  //  P3  //  +180", 180, true)
+	fake_race.emit_signal(&"race_moment", "OVERTAKE  //  P3  //  +180", 180, true)
+	var competition_snapshot := audio.get_competition_feedback_snapshot()
+	_expect(int(competition_snapshot.get(&"commentary_count", 0)) == 2, "Race moment did not produce one accepted Commentary callout")
+	_expect(int(competition_snapshot.get(&"commentary_suppressed_count", 0)) == 1, "Repeated race Commentary bypassed anti-spam suppression")
+	_expect(int(competition_snapshot.get(&"crowd_count", 0)) == 2, "Race moment did not produce one accepted Crowd reaction")
+	_expect(int(competition_snapshot.get(&"crowd_suppressed_count", 0)) == 1, "Repeated Crowd reaction bypassed anti-spam suppression")
+	var commentary_ready := competition_snapshot.get(&"commentary_ready", {}) as Dictionary
+	var crowd_ready := competition_snapshot.get(&"crowd_ready", {}) as Dictionary
+	for required_kind: StringName in [&"POSITIVE", &"WARNING", &"MILESTONE"]:
+		_expect(bool(commentary_ready.get(required_kind, false)), "Commentary cue was not built for %s" % String(required_kind))
+	for required_kind: StringName in [&"CHEER", &"ROAR", &"GASP"]:
+		_expect(bool(crowd_ready.get(required_kind, false)), "Crowd cue was not built for %s" % String(required_kind))
 	var denial_payload := {&"technique": &"SURGE", &"required": 35.0, &"available": 0.0}
 	audio.call(&"_on_bike_racecraft_event", &"FLOW_DENIED", denial_payload)
+	_expect(pooled_voice.bus == &"SFX", "A pooled gameplay cue inherited a prior semantic bus")
 	audio.call(&"_on_bike_racecraft_event", &"FLOW_DENIED", denial_payload)
 	var denial_snapshot := audio.get_racecraft_audio_feedback_snapshot()
 	_expect(bool(denial_snapshot.get(&"flow_denied_cue_ready", false)), "Procedural Flow denial cue was not built")
@@ -163,21 +250,39 @@ func _run() -> void:
 	_expect(float(timbre_snapshot.get(&"transition_hz", 0.0)) > 0.0, "Class changes are not smoothed")
 
 	if _failures.is_empty():
-		print("EVENT_AUDIO_IDENTITY_PROBE PASS quarry=%s pine=%s mesa=%s weekend=%s finale=%s challenge=%s transitions=%d flow_denied=%s interface=%d/%d" % [
+		print("EVENT_AUDIO_IDENTITY_PROBE PASS quarry=%s pine=%s mesa=%s weekend=%s finale=%s challenge=%s transitions=%d flow_denied=%s interface=%d/%d commentary=%d/%d crowd=%d/%d" % [
 			quarry_hash, pine_hash, mesa_hash,
 			weekend.get(&"contract_hash", &""), finale.get(&"contract_hash", &""), challenge.get(&"contract_hash", &""),
 			int(results_snapshot.get(&"transition_count", 0)),
 			str(int(denial_snapshot.get(&"flow_denied_cue_count", 0)) == 1 and int(denial_snapshot.get(&"flow_denied_suppressed_count", 0)) == 1),
 			int(interface_snapshot.get(&"count", 0)), int(interface_snapshot.get(&"suppressed_count", 0)),
+			int(competition_snapshot.get(&"commentary_count", 0)), int(competition_snapshot.get(&"commentary_suppressed_count", 0)),
+			int(competition_snapshot.get(&"crowd_count", 0)), int(competition_snapshot.get(&"crowd_suppressed_count", 0)),
 		])
 	else:
 		for failure: String in _failures:
 			push_error("EVENT_AUDIO_IDENTITY_PROBE: %s" % failure)
+	audio.set("_audio_enabled", false)
+	pooled_voice.stop()
+	pooled_voice.stream = null
+	pooled_voices.clear()
+	race_root.queue_free()
+	await get_tree().process_frame
 	engine.queue_free()
 	audio.queue_free()
+	await get_tree().process_frame
 	get_tree().quit(0 if _failures.is_empty() else 1)
 
 
 func _expect(condition: bool, failure: String) -> void:
 	if not condition:
 		_failures.append(failure)
+
+
+func _all_indices_distinct(indices: Array) -> bool:
+	var seen := {}
+	for index: int in indices:
+		if index < 0 or seen.has(index):
+			return false
+		seen[index] = true
+	return true

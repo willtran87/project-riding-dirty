@@ -45,6 +45,24 @@ func _ready() -> void:
 	_check(sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS, "Native quality did not restore authored splits")
 	_check(is_equal_approx(particles.amount_ratio, 1.0), "Native quality did not restore full particles")
 
+	var accessible_quality := RaceServices.resolve_visual_quality_preset("QUALITY", true, true)
+	RaceServices.apply_visual_quality_to_scene(root, accessible_quality)
+	_check(
+		is_equal_approx(
+			float(accessible_quality.get(&"base_particle_ratio", 0.0)),
+			0.84
+		),
+		"Reduced-particle accessibility lost the selected quality baseline"
+	)
+	_check(
+		is_equal_approx(particles.amount_ratio, RaceServices.REDUCED_PARTICLE_RATIO),
+		"Reduced-particle accessibility did not cap live effect density"
+	)
+	_check(
+		bool(accessible_quality.get(&"reduced_particles", false)),
+		"Reduced-particle accessibility is absent from the applied quality contract"
+	)
+
 	_check(ENGINE_LOOP != null and ENGINE_LOOP.loop_mode == AudioStreamWAV.LOOP_FORWARD, "Baked engine loop is invalid")
 	_check(MUSIC_BASE != null and MUSIC_BASE.get_length() > 6.0, "Baked Quarry music is invalid")
 

@@ -6,6 +6,7 @@ const SAMPLE_INTERVAL: float = 0.1
 const PLAYER_GRID_PROGRESS_METERS: float = 2.0
 const RIVAL_START_LEAD_METERS: float = 4.5
 const RIVAL_RIDE_HEIGHT_METERS: float = 0.75
+const ATOMIC_CONFIG_STORE := preload("res://common/atomic_config_store.gd")
 
 var target: Node3D
 var best_time_usec: int = -1
@@ -289,34 +290,65 @@ func _add_ghost_wheel(position: Vector3, material: StandardMaterial3D) -> void:
 	_ghost_root.add_child(mesh_instance)
 
 
-func _save_best_run() -> void:
+func _save_best_run() -> bool:
+	if not persistence_enabled:
+		return true
+	var save_token := SaveLifecycle.begin_save(&"GHOST", "PERSONAL BEST GHOST", true)
 	if OS.has_feature("web"):
 		var payload := {
 			"best_time_usec": best_time_usec,
 			"frames": _serialize_frames(_best_frames),
 		}
 		if not WebPlatform.save_json(_get_web_save_key(), payload):
+			SaveLifecycle.finish_save(save_token, false, "browser_write_failed")
 			push_warning("Unable to save the personal-best ghost to browser storage.")
-		return
-	var file := FileAccess.open(_get_save_path(), FileAccess.WRITE)
-	if file == null:
-		push_warning("Unable to save the personal-best ghost.")
-		return
-	file.store_var({&"best_time_usec": best_time_usec, &"frames": _best_frames}, true)
-	file.close()
+			return false
+		SaveLifecycle.finish_save(save_token, true)
+		return true
+	var save_result := ATOMIC_CONFIG_STORE.save_section(
+		_get_save_path(),
+		&"ghost",
+		{&"best_time_usec": best_time_usec, &"frames": _best_frames}
+	)
+	if not bool(save_result.get(&"ok", false)):
+		var save_error := str(save_result.get(&"error", "unknown_error"))
+		SaveLifecycle.finish_save(save_token, false, save_error)
+		push_warning("Unable to save the personal-best ghost: %s" % save_error)
+		return false
+	SaveLifecycle.finish_save(save_token, true)
+	return true
 
 
 func _load_best_run() -> void:
 	if OS.has_feature("web"):
-		var web_payload: Variant = WebPlatform.load_json(_get_web_save_key())
+		var web_result := WebPlatform.load_json_result(_get_web_save_key())
+		var web_payload: Variant = web_result.get(&"value", null)
 		if web_payload is Dictionary:
 			var saved_data := web_payload as Dictionary
 			best_time_usec = int(saved_data.get("best_time_usec", -1))
 			_best_frames = _deserialize_frames(saved_data.get("frames", []))
+			if str(web_result.get(&"source", "")) == "backup":
+				SaveLifecycle.report_recovered(
+					&"GHOST", "PERSONAL BEST GHOST", bool(web_result.get(&"repaired", false))
+				)
 		return
 	var save_path := _get_save_path()
 	if not FileAccess.file_exists(save_path):
 		return
+	var load_result := ATOMIC_CONFIG_STORE.load_section(save_path, &"ghost", persistence_enabled)
+	if bool(load_result.get(&"ok", false)):
+		var atomic_data := load_result.get(&"data", {}) as Dictionary
+		best_time_usec = int(atomic_data.get(&"best_time_usec", -1))
+		var atomic_frames: Variant = atomic_data.get(&"frames", [])
+		if atomic_frames is Array:
+			_best_frames.assign(atomic_frames)
+		if str(load_result.get(&"source", "")) == "backup":
+			SaveLifecycle.report_recovered(
+				&"GHOST", "PERSONAL BEST GHOST", bool(load_result.get(&"repaired", false))
+			)
+		return
+	# V27 and earlier used a direct Variant file. Read it once, then migrate it
+	# into the verified rotating format so an interrupted future write is recoverable.
 	var file := FileAccess.open(save_path, FileAccess.READ)
 	if file == null:
 		return
@@ -329,6 +361,8 @@ func _load_best_run() -> void:
 	var frames: Variant = saved_data.get(&"frames", [])
 	if frames is Array:
 		_best_frames.assign(frames)
+	if persistence_enabled:
+		_save_best_run()
 
 
 func _get_save_path() -> String:

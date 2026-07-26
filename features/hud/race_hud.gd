@@ -112,6 +112,8 @@ var _color_safe_mode: StringName = &"OFF"
 var _text_scale: float = 1.0
 var _hud_detail: StringName = &"FULL"
 var _hud_scale: float = 1.0
+var _hud_safe_area: float = 0.0
+var _reduced_flashes: bool = false
 var _control_hint_hold_time: float = 0.0
 var _control_hint_opacity: float = 1.0
 var _control_hint_pinned: bool = false
@@ -140,6 +142,7 @@ var _completion_message_prefix: String = ""
 var _academy_layout_refresh_queued: bool = false
 var _results_layout_refresh_queued: bool = false
 var _last_career_payoff: Dictionary = {}
+var _last_freestyle_trick: Dictionary = {}
 
 
 func _ready() -> void:
@@ -154,6 +157,7 @@ func _ready() -> void:
 	EventBus.activity_prepared.connect(_on_activity_prepared)
 	EventBus.activity_started.connect(_on_activity_started)
 	EventBus.freestyle_score_changed.connect(_on_freestyle_score_changed)
+	EventBus.freestyle_trick_scored.connect(_on_freestyle_trick_scored)
 	EventBus.discovery_progress_changed.connect(_on_discovery_progress_changed)
 	EventBus.activity_completed.connect(_on_activity_completed)
 	Profile.reward_granted.connect(_on_reward_granted)
@@ -945,6 +949,14 @@ func apply_accessibility(interface: Dictionary) -> void:
 	if _hud_detail not in [&"FULL", &"FOCUSED", &"MINIMAL", &"OFF"]:
 		_hud_detail = &"FULL"
 	_hud_scale = clampf(float(interface.get("hud_scale", 1.0)), 0.75, 1.0)
+	_hud_safe_area = clampf(float(interface.get("hud_safe_area", 0.0)), 0.0, 0.10)
+	_reduced_flashes = bool(interface.get("reduced_flashes", false))
+	if _reduced_flashes:
+		if _highlight_tween != null:
+			_highlight_tween.kill()
+			_highlight_tween = null
+		if _highlight_overlay != null:
+			_highlight_overlay.color = Color.TRANSPARENT
 	_apply_text_scale(_hud_root, _text_scale)
 	_apply_hud_preferences()
 	_queue_academy_layout_refresh()
@@ -969,6 +981,8 @@ func get_hud_customization_snapshot() -> Dictionary:
 		&"activity": _activity,
 		&"detail": _hud_detail,
 		&"scale": _hud_scale,
+		&"safe_area": _hud_safe_area,
+		&"reduced_flashes": _reduced_flashes,
 		&"live_visible": _live_hud_root != null and _live_hud_root.visible,
 		&"focused_visible": _focused_hud_layer != null and _focused_hud_layer.visible,
 		&"full_visible": _full_hud_layer != null and _full_hud_layer.visible,
@@ -980,6 +994,8 @@ func get_hud_customization_snapshot() -> Dictionary:
 		&"compass_visible": _compass_label != null and _compass_label.is_visible_in_tree(),
 		&"results_visible": _results_panel != null and _results_panel.is_visible_in_tree(),
 		&"live_scale": _live_hud_root.scale if _live_hud_root != null else Vector2.ONE,
+		&"live_position": _live_hud_root.position if _live_hud_root != null else Vector2.ZERO,
+		&"live_size": _live_hud_root.size if _live_hud_root != null else Vector2.ZERO,
 		&"top_band_rect": top_band.get_global_rect() if top_band != null else Rect2(),
 		&"standings_rect": _standings_panel.get_global_rect() if _standings_panel != null else Rect2(),
 	}
@@ -995,8 +1011,13 @@ func _apply_hud_preferences() -> void:
 
 
 func _refresh_live_hud_transform() -> void:
-	if _live_hud_root == null:
+	if _live_hud_root == null or _hud_root == null:
 		return
+	var inset := _hud_root.size * _hud_safe_area
+	_live_hud_root.offset_left = inset.x
+	_live_hud_root.offset_top = inset.y
+	_live_hud_root.offset_right = -inset.x
+	_live_hud_root.offset_bottom = -inset.y
 	_live_hud_root.pivot_offset = _live_hud_root.size * 0.5
 	_live_hud_root.scale = Vector2.ONE * _hud_scale
 
@@ -1220,6 +1241,10 @@ func _update_flow_denied_feedback(delta: float) -> void:
 			_racecraft_label.modulate = CREAM
 		return
 	var elapsed := FLOW_DENIED_FEEDBACK_SECONDS - _flow_denied_feedback_time
+	if _reduced_flashes:
+		_flow_label.modulate = WARNING.lerp(CREAM, 0.16)
+		_flow_bar.modulate = WARNING.lerp(Color.WHITE, 0.22)
+		return
 	var pulse := 0.5 + sin(elapsed * TAU * 4.2) * 0.5
 	_flow_label.modulate = WARNING.lerp(CREAM, 0.10 + pulse * 0.12)
 	_flow_bar.modulate = WARNING.lerp(Color.WHITE, 0.16 + pulse * 0.14)
@@ -1367,6 +1392,17 @@ func update_freestyle(time_left_usec: int, score: int, combo: int, last_airtime:
 	_compass_label.visible = false
 
 
+func get_freestyle_presentation_snapshot() -> Dictionary:
+	return {
+		&"activity": _activity,
+		&"message": _message_label.text if _message_label != null else "",
+		&"message_color": _message_label.modulate if _message_label != null else Color.WHITE,
+		&"score_text": _best_label.text if _best_label != null else "",
+		&"combo_text": _checkpoint_label.text if _checkpoint_label != null else "",
+		&"last_trick": _last_freestyle_trick.duplicate(true),
+	}
+
+
 func update_discovery(elapsed_usec: int, current: int, total: int, compass_angle: float, distance: float) -> void:
 	_timer_label.text = _format_usec(elapsed_usec)
 	_best_label.text = "NEAREST  %03dm" % int(round(distance))
@@ -1384,6 +1420,7 @@ func _build_hud() -> void:
 	add_child(master)
 	master.resized.connect(_queue_academy_layout_refresh)
 	master.resized.connect(_queue_results_layout_refresh)
+	master.resized.connect(_refresh_live_hud_transform)
 
 	var root := Control.new()
 	_live_hud_root = root
@@ -1391,7 +1428,6 @@ func _build_hud() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	master.add_child(root)
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	root.resized.connect(_refresh_live_hud_transform)
 	_focused_hud_layer = _make_hud_detail_layer(root, "FocusedHud")
 	_full_hud_layer = _make_hud_detail_layer(root, "FullHud")
 
@@ -3159,8 +3195,12 @@ func _on_activity_started(activity: StringName) -> void:
 			_message_label.modulate = Color("7bd66f")
 		&"FREESTYLE":
 			show_control_hints(CONTROL_HINT_RACE_SECONDS)
-			_message_label.text = "CHAIN AIRTIME, ROTATION, AND CLEAN LANDINGS"
-			_message_time = 2.8
+			_last_freestyle_trick.clear()
+			_message_label.text = (
+				"HOLD %s IN AIR + STEER / LEAN FOR TRICKS\n"
+				+ "RELEASE TO THE BIKE BEFORE LANDING"
+			) % _active_action_label(InputRouter.RACECRAFT)
+			_message_time = 4.2
 			_message_label.modulate = CREAM
 		&"DISCOVERY":
 			show_control_hints(CONTROL_HINT_RACE_SECONDS)
@@ -3227,6 +3267,29 @@ func _on_freestyle_score_changed(_score: int, combo: int, last_points: int) -> v
 		return
 	_message_label.text = "+%d  •  COMBO x%d" % [last_points, combo]
 	_message_time = 1.25
+
+
+func _on_freestyle_trick_scored(result: Dictionary) -> void:
+	if _activity != &"FREESTYLE" or result.is_empty():
+		return
+	_last_freestyle_trick = result.duplicate(true)
+	var breakdown := "BASE %d + AIR %d + ROT %d + LAND %d" % [
+		int(result.get(&"base_points", 0)),
+		int(result.get(&"airtime_points", 0)),
+		int(result.get(&"rotation_points", 0)),
+		int(result.get(&"landing_points", 0)),
+	]
+	_message_label.text = "%s  //  %s  //  +%d\n%s\nVAR %.2fx  //  REPEAT %.2fx  //  COMBO %dx" % [
+		str(result.get(&"trick_name", "STRAIGHT AIR")),
+		str(result.get(&"landing_label", "ROUGH")),
+		int(result.get(&"awarded_points", 0)),
+		breakdown,
+		float(result.get(&"variety_multiplier", 1.0)),
+		float(result.get(&"repetition_multiplier", 1.0)),
+		int(result.get(&"combo", 1)),
+	]
+	_message_label.modulate = CYAN if bool(result.get(&"clean", false)) else WARNING
+	_message_time = 2.25
 
 
 func _on_discovery_progress_changed(current: int, total: int) -> void:
@@ -3331,6 +3394,10 @@ func _format_usec(time_usec: int) -> String:
 func _pulse_highlight() -> void:
 	if _highlight_tween != null:
 		_highlight_tween.kill()
+		_highlight_tween = null
+	if _reduced_flashes:
+		_highlight_overlay.color = Color.TRANSPARENT
+		return
 	_highlight_overlay.color = Color(0.34, 0.84, 1.0, 0.12)
 	_highlight_tween = create_tween()
 	_highlight_tween.tween_property(_highlight_overlay, "color", Color.TRANSPARENT, 0.5).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
@@ -3339,6 +3406,10 @@ func _pulse_highlight() -> void:
 func _pulse_warning() -> void:
 	if _highlight_tween != null:
 		_highlight_tween.kill()
+		_highlight_tween = null
+	if _reduced_flashes:
+		_highlight_overlay.color = Color.TRANSPARENT
+		return
 	_highlight_overlay.color = Color(1.0, 0.2, 0.12, 0.08)
 	_highlight_tween = create_tween()
 	_highlight_tween.tween_property(_highlight_overlay, "color", Color.TRANSPARENT, 0.35).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)

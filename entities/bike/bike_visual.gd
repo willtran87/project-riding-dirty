@@ -42,6 +42,11 @@ var _current_surface: StringName = &"PACKED"
 var _surface_tint: Color = Color(0.44, 0.27, 0.14, 1.0)
 var _soft_particle_texture: Texture2D
 var _number_labels: Array[Label3D] = []
+var _active_trick_pose: StringName = &"NONE"
+var _trick_pose_blend: float = 0.0
+var _trick_pose_strength: float = 0.0
+var _trick_pose_side: float = 0.0
+var _trick_limb_targets: Dictionary = {}
 
 var _materials: Dictionary[StringName, StandardMaterial3D] = {}
 
@@ -87,7 +92,8 @@ func update_pose(
 	rear_slip: float = 0.0,
 	front_compression: float = 0.0,
 	rear_compression: float = 0.0,
-	suspension_activity: float = 0.0
+	suspension_activity: float = 0.0,
+	trick_pose: Dictionary = {}
 ) -> void:
 	_front_wheel_pivot.position.y = front_wheel_y
 	if _front_wheel_pivot.get_parent() == _front_assembly:
@@ -119,6 +125,7 @@ func update_pose(
 		-0.12 - lean * 0.12 - (0.12 if boosting else 0.0),
 		animation_response_weight(RIDER_TORSO_RESPONSE_HZ, delta)
 	)
+	_update_trick_pose_state(trick_pose, delta)
 	_update_suspension_geometry(front_wheel_y, rear_wheel_y)
 	_update_rider_limbs(steer, lean, boosting)
 	if surface != _current_surface:
@@ -960,6 +967,27 @@ func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
 	var torso_transform := _rider_torso_root.transform
 	var left_hand := _rider_root.to_local(_left_grip_anchor.global_position)
 	var right_hand := _rider_root.to_local(_right_grip_anchor.global_position)
+	var left_foot := _rider_root.to_local(_left_foot_anchor.global_position)
+	var right_foot := _rider_root.to_local(_right_foot_anchor.global_position)
+	var neutral_left_hand := left_hand
+	var neutral_right_hand := right_hand
+	var neutral_left_foot := left_foot
+	var neutral_right_foot := right_foot
+	var pose_weight := _trick_pose_blend * _trick_pose_strength
+	match _active_trick_pose:
+		&"NO_HANDER":
+			left_hand = left_hand.lerp(Vector3(-0.46, 1.48, 0.04), pose_weight)
+			right_hand = right_hand.lerp(Vector3(0.46, 1.48, 0.04), pose_weight)
+		&"SEAT_GRAB":
+			right_hand = right_hand.lerp(Vector3(0.13, 0.82, 0.52), pose_weight)
+		&"SUPERMAN":
+			left_foot = left_foot.lerp(Vector3(-0.29, 0.49, 1.12), pose_weight)
+			right_foot = right_foot.lerp(Vector3(0.29, 0.49, 1.12), pose_weight)
+		&"CAN_CAN_LEFT":
+			right_foot = right_foot.lerp(Vector3(-0.46, 0.43, 0.52), pose_weight)
+		&"CAN_CAN_RIGHT":
+			left_foot = left_foot.lerp(Vector3(0.46, 0.43, 0.52), pose_weight)
+
 	var left_shoulder := torso_transform * Vector3(-0.245, 1.29 - attack, -0.015 - attack + lean_shift)
 	var right_shoulder := torso_transform * Vector3(0.245, 1.29 - attack, -0.015 - attack + lean_shift)
 	var left_elbow := left_shoulder.lerp(left_hand, 0.52) + Vector3(-0.11, 0.055, 0.035 + steer * 0.015)
@@ -973,8 +1001,19 @@ func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
 	_arm_multimesh.set_instance_transform(6, _segment_transform(left_shoulder + Vector3(0.0, -0.055, 0.0), left_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
 	_arm_multimesh.set_instance_transform(7, _segment_transform(right_shoulder + Vector3(0.0, -0.055, 0.0), right_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
 
-	var left_foot := _rider_root.to_local(_left_foot_anchor.global_position)
-	var right_foot := _rider_root.to_local(_right_foot_anchor.global_position)
+	_trick_limb_targets = {
+		&"pose_id": _active_trick_pose,
+		&"blend": _trick_pose_blend,
+		&"strength": _trick_pose_strength,
+		&"left_hand": left_hand,
+		&"right_hand": right_hand,
+		&"left_foot": left_foot,
+		&"right_foot": right_foot,
+		&"left_hand_displacement": left_hand.distance_to(neutral_left_hand),
+		&"right_hand_displacement": right_hand.distance_to(neutral_right_hand),
+		&"left_foot_displacement": left_foot.distance_to(neutral_left_foot),
+		&"right_foot_displacement": right_foot.distance_to(neutral_right_foot),
+	}
 	var left_hip := torso_transform * Vector3(-0.19, 0.76 - attack * 0.45, 0.3 + attack * 0.3)
 	var right_hip := torso_transform * Vector3(0.19, 0.76 - attack * 0.45, 0.3 + attack * 0.3)
 	var left_knee := left_hip.lerp(left_foot, 0.52) + Vector3(-0.105, -0.025, -0.055)
@@ -989,6 +1028,31 @@ func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
 	_leg_multimesh.set_instance_transform(7, _segment_transform(right_knee + Vector3(0.0, -0.08, -0.015), right_knee + Vector3(0.0, 0.08, -0.015), 0.135))
 	_leg_multimesh.set_instance_transform(8, _segment_transform(left_hip + Vector3(0.0, -0.055, 0.0), left_hip + Vector3(0.0, 0.055, 0.0), 0.13))
 	_leg_multimesh.set_instance_transform(9, _segment_transform(right_hip + Vector3(0.0, -0.055, 0.0), right_hip + Vector3(0.0, 0.055, 0.0), 0.13))
+
+
+func get_trick_animation_snapshot() -> Dictionary:
+	return _trick_limb_targets.duplicate(true)
+
+
+func _update_trick_pose_state(trick_pose: Dictionary, delta: float) -> void:
+	var requested_pose := StringName(trick_pose.get(&"pose_id", &"NONE"))
+	var requested_strength := clampf(float(trick_pose.get(&"strength", 0.0)), 0.0, 1.0)
+	var response := animation_response_weight(11.5, delta)
+	if requested_pose != &"NONE":
+		if requested_pose != _active_trick_pose:
+			_active_trick_pose = requested_pose
+			_trick_pose_blend = minf(_trick_pose_blend, 0.32)
+		_trick_pose_strength = lerpf(_trick_pose_strength, requested_strength, response)
+		_trick_pose_side = float(trick_pose.get(&"side", 0.0))
+		_trick_pose_blend = lerpf(_trick_pose_blend, 1.0, response)
+	else:
+		_trick_pose_blend = lerpf(_trick_pose_blend, 0.0, response)
+		_trick_pose_strength = lerpf(_trick_pose_strength, 0.0, response)
+		if _trick_pose_blend <= 0.015:
+			_active_trick_pose = &"NONE"
+			_trick_pose_blend = 0.0
+			_trick_pose_strength = 0.0
+			_trick_pose_side = 0.0
 
 
 func _set_scaled_segment_root(root: Node3D, start: Vector3, end: Vector3) -> void:
