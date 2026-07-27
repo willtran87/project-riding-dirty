@@ -8,6 +8,11 @@ var _sun: DirectionalLight3D
 var _weather: GPUParticles3D
 var _sky_material: ProceduralSkyMaterial
 var _district_id: StringName = CourseCatalog.QUARRY_ID
+var _active_weather: StringName = &"CLEAR"
+var _weather_base_color := Color(1.0, 0.72, 0.36, 0.14)
+var _weather_intensity: float = 0.0
+var _target_weather_intensity: float = 0.18
+var _weather_rain_like: bool = false
 var _target_ambient := Color("516d7b")
 var _target_ambient_energy: float = 0.38
 var _target_fog := Color("c29b80")
@@ -87,6 +92,7 @@ func configure_session(weather: StringName, track_id: StringName = &"QUARRY") ->
 
 
 func _apply_weather_profile(weather: StringName, track_id: StringName) -> void:
+	_active_weather = weather if not weather.is_empty() else &"CLEAR"
 	_district_id = track_id if track_id in [CourseCatalog.QUARRY_ID, CourseCatalog.PINE_ID, CourseCatalog.MESA_MX_ID] else CourseCatalog.QUARRY_ID
 	var profile := _district_profile(_district_id)
 	var base_ambient: Color = profile[&"ambient"]
@@ -151,7 +157,7 @@ func _apply_weather_profile(weather: StringName, track_id: StringName) -> void:
 			_target_sky_horizon = base_sky_horizon.lerp(_target_fog, 0.44)
 			_target_sky_energy = base_sky_energy * 0.82
 			particle_color = Color(_target_fog.r, _target_fog.g, _target_fog.b, 0.18)
-			rain_like = true
+			rain_like = false
 		&"NIGHT":
 			_target_ambient = base_ambient.lerp(Color("273b58"), 0.64).darkened(0.16)
 			_target_ambient_energy = base_ambient_energy * 0.56
@@ -257,6 +263,26 @@ func _process(delta: float) -> void:
 		_sun.light_color = _sun.light_color.lerp(_target_sun, light_weight)
 		_sun.light_energy = lerpf(_sun.light_energy, _target_sun_energy, light_weight)
 		_sun.rotation_degrees = _sun.rotation_degrees.lerp(_target_sun_rotation, light_weight)
+	if _weather != null:
+		var weather_weight := 1.0 - exp(-1.35 * delta)
+		_weather_intensity = lerpf(_weather_intensity, _target_weather_intensity, weather_weight)
+		var process_material := _weather.process_material as ParticleProcessMaterial
+		if process_material != null:
+			var color := _weather_base_color
+			color.a *= clampf(_weather_intensity, 0.0, 1.0)
+			process_material.color = color
+
+
+func get_snapshot() -> Dictionary:
+	return {
+		&"weather": _active_weather,
+		&"track_id": _district_id,
+		&"rain_like": _weather_rain_like,
+		&"particle_intensity": clampf(_weather_intensity, 0.0, 1.0),
+		&"target_particle_intensity": clampf(_target_weather_intensity, 0.0, 1.0),
+		&"target_fog_density": _target_fog_density,
+		&"target_sun_energy": _target_sun_energy,
+	}
 
 
 func _on_activity_prepared(activity: StringName) -> void:
@@ -325,7 +351,12 @@ func _configure_weather(color: Color, rain_like: bool) -> void:
 	if _weather == null:
 		return
 	var process_material := _weather.process_material as ParticleProcessMaterial
-	process_material.color = color
+	_weather_base_color = color
+	_weather_rain_like = rain_like
+	_target_weather_intensity = 1.0 if rain_like else 0.22
+	var transition_color := color
+	transition_color.a *= clampf(_weather_intensity, 0.0, 1.0)
+	process_material.color = transition_color
 	process_material.direction = Vector3(0.18, -1.0, 0.12) if rain_like else Vector3(0.1, -0.2, 0.1)
 	process_material.initial_velocity_min = 4.0 if rain_like else 0.25
 	process_material.initial_velocity_max = 8.0 if rain_like else 1.1

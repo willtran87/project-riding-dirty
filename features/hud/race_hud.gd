@@ -110,6 +110,8 @@ var _holeshot_rider_id: StringName = &""
 var _last_integrity_warning: String = ""
 var _session_format: StringName = &"SPRINT"
 var _session_weather: StringName = &"CLEAR"
+var _session_next_weather: StringName = &""
+var _session_variable_weather: bool = false
 var _race_source: Object
 var _hud_root: Control
 var _live_hud_root: Control
@@ -252,6 +254,9 @@ func update_session_snapshot(snapshot: Dictionary) -> void:
 		_activity = StringName(snapshot.get(&"event_id", _activity))
 	_session_format = StringName(snapshot.get(&"format", _session_format))
 	_session_weather = StringName(snapshot.get(&"weather", _session_weather))
+	var conditions := snapshot.get(&"conditions", {}) as Dictionary
+	_session_variable_weather = bool(conditions.get(&"variable", false))
+	_session_next_weather = StringName(conditions.get(&"next_weather", &""))
 	var display_name := str(snapshot.get(&"display_name", snapshot.get(&"event_name", "")))
 	var phase := StringName(snapshot.get(&"phase", snapshot.get(&"state_name", &"RACING")))
 	var current_lap := maxi(int(snapshot.get(&"current_lap", snapshot.get(&"lap", 1))), 1)
@@ -1356,6 +1361,11 @@ func update_racecraft_state(snapshot: Dictionary) -> void:
 	var technique := StringName(snapshot.get(&"technique", &"NONE"))
 	var draft := clampf(float(snapshot.get(&"draft_strength", 0.0)), 0.0, 1.0)
 	var roost := clampf(float(snapshot.get(&"roost_pressure", 0.0)), 0.0, 1.0)
+	var evolution_value: Variant = snapshot.get(&"track_evolution", {})
+	var evolution := evolution_value as Dictionary if evolution_value is Dictionary else {}
+	var evolution_state := StringName(evolution.get(&"state", &"FRESH"))
+	var evolution_wear := clampf(float(evolution.get(&"wear", 0.0)), 0.0, 1.0)
+	var evolution_wet := bool(evolution.get(&"wet_policy", false))
 	if fast_line_cue.is_empty():
 		if technique != &"NONE":
 			tokens.append(String(technique).replace("_", " "))
@@ -1366,6 +1376,14 @@ func update_racecraft_state(snapshot: Dictionary) -> void:
 			var rut_outcome := StringName((rut_value as Dictionary).get(&"outcome", &""))
 			if not rut_outcome.is_empty():
 				tokens.append(String(rut_outcome).replace("_", " "))
+		if evolution_state == &"FORMING":
+			tokens.append("LINE FORMING %02d%%" % roundi(evolution_wear * 100.0))
+		elif evolution_state == &"COMPACTED":
+			tokens.append("COMPACTED LINE +GRIP")
+		elif evolution_state == &"SLICK_GROOVE":
+			tokens.append("SLICK GROOVE")
+		elif evolution_state == &"DEEP_RUT":
+			tokens.append("DEEP WET RUT" if evolution_wet else "DEEP RUT")
 		if draft >= 0.08:
 			tokens.append("DRAFT %02d%%" % roundi(draft * 100.0))
 		if roost >= 0.08:
@@ -1382,9 +1400,18 @@ func update_racecraft_state(snapshot: Dictionary) -> void:
 	var skill_phase := StringName(snapshot.get(&"skill_zone_phase", &"NONE"))
 	var skill_needs_commitment := skill_phase == &"ACTIVE" and not bool(snapshot.get(&"skill_line_committed", false))
 	_racecraft_label.modulate = (
-		WARNING if roost >= 0.45
+		WARNING if (
+			roost >= 0.45
+			or evolution_state == &"SLICK_GROOVE"
+			or (evolution_state == &"DEEP_RUT" and evolution_wet)
+		)
 		else AMBER if skill_needs_commitment
-		else CYAN if not fast_line_cue.is_empty() or draft >= 0.35 or technique != &"NONE"
+		else CYAN if (
+			not fast_line_cue.is_empty()
+			or draft >= 0.35
+			or technique != &"NONE"
+			or evolution_state in [&"COMPACTED", &"DEEP_RUT"]
+		)
 		else CREAM
 	)
 
@@ -2586,10 +2613,14 @@ func _refresh_live_standings() -> void:
 	if not player_racer.is_empty() and not visible_racers.has(player_racer):
 		visible_racers[LIVE_STANDING_ROWS - 1] = player_racer
 	var total := _classification.size()
-	var conditions := String(_session_format).replace("_", " ")
-	if _session_weather not in [&"", &"CLEAR"]:
-		conditions += " / %s" % String(_session_weather).replace("_", " ")
-	_standings_title.text = "LIVE  //  %s  //  FIELD %d" % [conditions, total] if total > 0 else "LIVE  //  FIELD"
+	var conditions_text := String(_session_format).replace("_", " ")
+	if _session_variable_weather:
+		conditions_text += " / %s" % String(_session_weather).replace("_", " ")
+		if not _session_next_weather.is_empty():
+			conditions_text += " > %s" % String(_session_next_weather).replace("_", " ")
+	elif _session_weather not in [&"", &"CLEAR"]:
+		conditions_text += " / %s" % String(_session_weather).replace("_", " ")
+	_standings_title.text = "LIVE  //  %s  //  FIELD %d" % [conditions_text, total] if total > 0 else "LIVE  //  FIELD"
 	for index: int in _standings_rows.size():
 		var label := _standings_rows[index]
 		if index >= visible_racers.size():

@@ -7,10 +7,15 @@ func _ready() -> void:
 	var endurance := RaceEventCatalog.get_session_config(&"MESA_ENDURANCE")
 	race.set("_session_config", endurance)
 	var surfaces: Array[StringName] = []
+	var weather: Array[StringName] = []
 	for lap: int in range(1, 7):
 		surfaces.append(race.call("_surface_for_lap", lap) as StringName)
+		weather.append(StringName((race.call("_conditions_for_lap", lap) as Dictionary).get(&"weather", &"")))
 	var variable_grip := surfaces == [
 		&"PACKED", &"LOOSE_DIRT", &"PACKED", &"WET", &"RUTTED", &"PACKED",
+	]
+	var variable_weather := weather == [
+		&"CLEAR", &"WINDY", &"OVERCAST", &"WET", &"STORM", &"OVERCAST",
 	]
 
 	var rhythm := RaceEventCatalog.get_session_config(&"MESA_RHYTHM")
@@ -28,9 +33,9 @@ func _ready() -> void:
 	race.set("_race_clean_airtime_seconds", 100.0)
 	race.set("_academy_clean_landings", 100)
 	var capped_bonus := int(race.call("_airtime_reward_bonus"))
-	var passed := variable_grip and advertised_bonus_real and capped_bonus == RaceController.AIRTIME_REWARD_CAP
-	print("RACE FEATURE CONTRACT: variable_grip=%s surfaces=%s airtime_bonus=%d capped_bonus=%d moments=%d passed=%s" % [
-		str(variable_grip), str(surfaces), bonus, capped_bonus, moments.size(), str(passed),
+	var passed := variable_grip and variable_weather and advertised_bonus_real and capped_bonus == RaceController.AIRTIME_REWARD_CAP
+	print("RACE FEATURE CONTRACT: variable_grip=%s surfaces=%s variable_weather=%s weather=%s airtime_bonus=%d capped_bonus=%d moments=%d passed=%s" % [
+		str(variable_grip), str(surfaces), str(variable_weather), str(weather), bonus, capped_bonus, moments.size(), str(passed),
 	])
 	race.free()
 	get_tree().quit(0 if passed else 1)

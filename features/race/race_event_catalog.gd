@@ -141,8 +141,8 @@ const EVENTS: Dictionary = {
 		&"format": &"ENDURANCE", &"session_type": &"SPECIAL", &"laps": 6, &"opponent_count": 11,
 		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION, &"checkpoint_count": 8, &"weather": &"VARIABLE", &"finish_grace_seconds": 8.0,
 		&"medal_times_usec": {&"gold": 445_000_000, &"silver": 525_000_000, &"bronze": 630_000_000},
-		&"description": "A longer main where consistency, condition and changing grip matter.",
-		&"meta": "6 LAPS  //  12 RIDERS  //  VARIABLE GRIP", &"unlock_rep": 170,
+		&"description": "Forecast: dry, wind, cloud, rain, storm, then a drying final lap.",
+		&"meta": "6 LAPS  //  12 RIDERS  //  VARIABLE WEATHER + GRIP", &"unlock_rep": 170,
 	},
 	&"QUARRY_HILLCLIMB": {
 		&"event_id": &"QUARRY_HILLCLIMB", &"track_id": &"QUARRY", &"display_name": "CRUSHER HILL CLIMB",

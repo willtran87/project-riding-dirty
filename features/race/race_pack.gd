@@ -140,6 +140,8 @@ var _player_sample_time: float = 0.0
 var _global_contact_cooldown: float = 0.0
 var _chaos_metrics: Dictionary = {}
 var _session_config: RaceSessionConfig = RaceEventCatalog.get_session_config(&"CIRCUIT")
+var _active_weather: StringName = &"CLEAR"
+var _active_surface_modifier: StringName = &"PACKED"
 var _active_rider_count: int = RIDER_COUNT
 var _total_laps: int = 1
 var _player_laps_completed: int = 0
@@ -194,6 +196,8 @@ func configure(
 	_ensure_riders()
 	_track_id = track_id if track_id in [CourseCatalog.QUARRY_ID, CourseCatalog.PINE_ID, CourseCatalog.MESA_MX_ID] else CourseCatalog.QUARRY_ID
 	_session_config = session_config if session_config != null else RaceEventCatalog.get_session_config(CourseCatalog.get_activity_id(_track_id))
+	_active_weather = _session_config.weather
+	_active_surface_modifier = _session_config.surface_modifier
 	_authored_difficulty = clampi(
 		int(_session_config.rules.get(&"authored_difficulty", _session_config.difficulty)),
 		0,
@@ -256,6 +260,14 @@ func set_player(player: DirtBikeController) -> void:
 		_update_player_progress()
 	_clear_player_racecraft_context()
 	_reset_player_pair_orders()
+
+
+func set_session_conditions(weather: StringName, surface: StringName) -> void:
+	## Variable sessions update this at each lap boundary. The immutable session
+	## config still owns rules and identity; these two tokens own live traction,
+	## visuals, roost, and opponent condition skill.
+	_active_weather = weather if not weather.is_empty() else &"CLEAR"
+	_active_surface_modifier = surface if not surface.is_empty() else &"PACKED"
 
 
 func reset_grid() -> void:
@@ -950,9 +962,9 @@ func _read_player_racecraft_snapshot() -> Dictionary:
 
 func _npc_roost_snapshot(state: Dictionary) -> Dictionary:
 	var surface: StringName = &"DIRT"
-	if _session_config.surface_modifier == &"MUD":
+	if _active_surface_modifier == &"MUD":
 		surface = &"MUD"
-	elif _session_config.surface_modifier == &"WET":
+	elif _active_surface_modifier == &"WET":
 		surface = &"LOAM"
 	var lateral_work := clampf(absf(float(state.get(&"lane_velocity", 0.0))) / LANE_CHANGE_SPEED, 0.0, 1.0)
 	var landing_work := 1.0 - clampf(float(state.get(&"landing_quality", 1.0)), 0.0, 1.0)
@@ -2604,7 +2616,7 @@ func _section_speed_factor(state: Dictionary) -> float:
 	var wet_skill := corner_skill * 0.55 + consistency * 0.45
 	var condition_factor := (
 		lerpf(0.86, 0.96, wet_skill)
-		if _session_config.surface_modifier in [&"WET", &"MUD"]
+		if _active_surface_modifier in [&"WET", &"MUD", &"RUTTED"]
 		else 1.0
 	)
 	var jump_plan := StringName(state.get(&"jump_plan", &"ROLL"))
@@ -2861,7 +2873,7 @@ func _update_rider(index: int, delta: float) -> void:
 		delta,
 		bool(state[&"surface_supported"]),
 		absf(float(state[&"surface_vertical_speed"])) / SURFACE_MAX_FALL_SPEED,
-		_session_config.surface_modifier,
+		_active_surface_modifier,
 		bool(state.get(&"landing_event", false)),
 		float(state.get(&"landing_quality", 1.0)),
 		bool(state.get(&"flow_boost_active", false))
@@ -3017,7 +3029,11 @@ func _update_audio_pool(delta: float) -> void:
 	_audio_update_time = 0.08
 	var listener_position := _player.global_position if is_instance_valid(_player) else global_position
 	var used: Dictionary[int, bool] = {}
-	var audio_surface: StringName = &"MUD" if _session_config.surface_modifier == &"WET" else &"LOOSE_DIRT"
+	var audio_surface: StringName = (
+		&"MUD"
+		if _active_surface_modifier in [&"WET", &"MUD", &"RUTTED"]
+		else &"LOOSE_DIRT"
+	)
 	for engine: AudioStreamPlayer3D in _audio_pool:
 		var chosen_index := -1
 		var chosen_distance := INF

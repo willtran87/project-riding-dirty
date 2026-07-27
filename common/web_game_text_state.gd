@@ -3,8 +3,9 @@ class_name WebGameTextState
 ## assistive diagnostics. Presentation nodes remain authoritative; this is only
 ## a current-state projection and never feeds gameplay decisions.
 
-const SCHEMA_VERSION := 4
+const SCHEMA_VERSION := 7
 const MAX_VISIBLE_RIDERS := 8
+const MAX_TRACKSIDE_LANDMARKS := 4
 
 
 static func build(raw: Dictionary) -> Dictionary:
@@ -55,6 +56,12 @@ static func build(raw: Dictionary) -> Dictionary:
 		&"camera": _camera_projection(raw.get(&"camera", {})),
 		&"graphics": _graphics_projection(raw.get(&"graphics", {})),
 		&"captions": _caption_projection(raw.get(&"captions", {})),
+		&"trackside_sponsor": _trackside_sponsor_projection(
+			raw.get(&"trackside_sponsor", {})
+		),
+		&"track_evolution": _track_evolution_projection(
+			raw.get(&"track_evolution", {})
+		) if live_presentation else _track_evolution_projection({}),
 		&"menu": _menu_projection(garage),
 		&"local_duel": _local_duel_projection(local_duel),
 		&"custom_tour": _custom_tour_projection(custom_tour),
@@ -173,6 +180,7 @@ static func _player_projection(player: Dictionary) -> Dictionary:
 
 static func _race_projection(session: Dictionary) -> Dictionary:
 	var integrity := _dictionary(session.get(&"integrity", {}))
+	var conditions := _dictionary(session.get(&"conditions", {}))
 	return {
 		&"phase": str(session.get(&"phase", "")),
 		&"event_id": str(session.get(&"event_id", "")),
@@ -180,6 +188,16 @@ static func _race_projection(session: Dictionary) -> Dictionary:
 		&"format": str(session.get(&"format", "")),
 		&"weather": str(session.get(&"weather", "")),
 		&"surface": str(session.get(&"surface", "")),
+		&"conditions": {
+			&"variable": bool(conditions.get(&"variable", false)),
+			&"label": str(conditions.get(&"label", "")),
+			&"weather": str(conditions.get(&"weather", session.get(&"weather", ""))),
+			&"surface": str(conditions.get(&"surface", session.get(&"surface", ""))),
+			&"next_lap": maxi(int(conditions.get(&"next_lap", 0)), 0),
+			&"next_weather": str(conditions.get(&"next_weather", "")),
+			&"next_surface": str(conditions.get(&"next_surface", "")),
+			&"next_label": str(conditions.get(&"next_label", "")),
+		},
 		&"elapsed_seconds": maxf(float(session.get(&"elapsed_usec", 0)) / 1_000_000.0, 0.0),
 		&"countdown_seconds": maxf(float(session.get(&"countdown", 0.0)), 0.0),
 		&"lap": maxi(int(session.get(&"current_lap", 0)), 0),
@@ -275,6 +293,59 @@ static func _caption_projection(value: Variant) -> Dictionary:
 		&"display_text": str(captions.get(&"display_text", "")),
 		&"priority": clampi(int(captions.get(&"priority", 0)), 0, 2),
 		&"repeat_count": clampi(int(captions.get(&"repeat_count", 1)), 1, 9),
+	}
+
+
+static func _trackside_sponsor_projection(value: Variant) -> Dictionary:
+	var source := _dictionary(value)
+	var positions: Array[Dictionary] = []
+	var raw_positions: Variant = source.get(&"landmark_positions", [])
+	if raw_positions is Array:
+		for raw_position: Variant in raw_positions:
+			positions.append(_vector_projection(raw_position))
+			if positions.size() >= MAX_TRACKSIDE_LANDMARKS:
+				break
+	var visible := bool(source.get(&"visible", false))
+	return {
+		&"visible": visible,
+		&"activity_id": str(source.get(&"activity_id", "")) if visible else "",
+		&"sponsor_id": str(source.get(&"sponsor_id", "")) if visible else "",
+		&"sponsor_name": str(source.get(&"sponsor_name", "")) if visible else "",
+		&"identity": str(source.get(&"identity", "")) if visible else "",
+		&"accent_hex": str(source.get(&"accent_hex", "")) if visible else "",
+		&"landmark_count": mini(
+			maxi(int(source.get(&"landmark_count", 0)), 0),
+			MAX_TRACKSIDE_LANDMARKS
+		) if visible else 0,
+		&"landmark_positions": positions if visible else [] as Array[Dictionary],
+	}
+
+
+static func _track_evolution_projection(value: Variant) -> Dictionary:
+	var source := _dictionary(value)
+	var player_line := _dictionary(source.get(&"player_line", {}))
+	var active := bool(source.get(&"active", false))
+	return {
+		&"active": active,
+		&"track_id": str(source.get(&"track_id", "")) if active else "",
+		&"surface": str(source.get(&"surface", "")) if active else "",
+		&"weather": str(source.get(&"weather", "")) if active else "",
+		&"sampled_passes": maxi(int(source.get(&"sampled_passes", 0)), 0) if active else 0,
+		&"visible_grooves": maxi(int(source.get(&"visible_grooves", 0)), 0) if active else 0,
+		&"maximum_wear": clampf(float(source.get(&"maximum_wear", 0.0)), 0.0, 1.0) if active else 0.0,
+		&"player_line": {
+			&"state": str(player_line.get(&"state", "FRESH")) if active else "FRESH",
+			&"wear": clampf(float(player_line.get(&"wear", 0.0)), 0.0, 1.0) if active else 0.0,
+			&"lane_index": maxi(int(player_line.get(&"lane_index", 0)), 0) if active else 0,
+			&"lane_center": float(player_line.get(&"lane_center", 0.0)) if active else 0.0,
+			&"grip_multiplier": clampf(
+				float(player_line.get(&"grip_multiplier", 1.0)), 0.96, 1.05
+			) if active else 1.0,
+			&"drive_multiplier": clampf(
+				float(player_line.get(&"drive_multiplier", 1.0)), 0.98, 1.025
+			) if active else 1.0,
+			&"wet_policy": bool(player_line.get(&"wet_policy", false)) if active else false,
+		},
 	}
 
 

@@ -1027,6 +1027,11 @@ func get_racecraft_snapshot() -> Dictionary:
 		&"scrub_strength": _scrub_strength,
 		&"scrub_seconds": _scrub_time,
 		&"rut": _rut_snapshot.duplicate(true),
+		&"track_evolution": (
+			(_course_racecraft_context.get(&"track_evolution", {}) as Dictionary).duplicate(true)
+			if _course_racecraft_context.get(&"track_evolution", {}) is Dictionary
+			else {}
+		),
 		&"berm_strength": clampf(float(_course_racecraft_context.get(&"berm_strength", 0.0)), 0.0, 1.0),
 		&"skill_zone": _skill_zone_id,
 		&"skill_zone_kind": StringName(_course_racecraft_context.get(&"skill_zone_kind", &"NONE")),
@@ -1586,6 +1591,11 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 				* 0.34
 			)
 			rear_longitudinal_request *= 1.0 - traction_cut
+			rear_longitudinal_request *= clampf(
+				float(_course_racecraft_context.get(&"evolution_drive_multiplier", 1.0)),
+				0.98,
+				1.025
+			)
 	if is_boosting() and _rear_contact.colliding:
 		var boost_falloff := clampf(_boost_time / 0.22, 0.15, 1.0)
 		rear_longitudinal_request += flow_boost_force * boost_falloff
@@ -1626,20 +1636,25 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 	var rail_grip := 1.16 if _active_flow_mode == RACECRAFT_RULES.FLOW_RAIL else 1.0
 	var berm_grip := 1.0 + clampf(float(_course_racecraft_context.get(&"berm_strength", 0.0)), 0.0, 1.0) * 0.15
 	var rut_grip := 1.0 + float(_rut_snapshot.get(&"capture_factor", 0.0)) * 0.10
+	var evolution_grip := clampf(
+		float(_course_racecraft_context.get(&"evolution_grip_multiplier", 1.0)),
+		0.96,
+		1.05
+	)
 	var slide_rear_grip := float(_slide_factors.get(&"grip_factor", 1.0)) if _slide_active else 1.0
 	_apply_tire_force(
 		_front_contact,
 		front_longitudinal_request,
 		wobble_grip,
 		front_longitudinal_grip_scale,
-		front_lateral_grip_scale * rail_grip * berm_grip * rut_grip
+		front_lateral_grip_scale * rail_grip * berm_grip * rut_grip * evolution_grip
 	)
 	_apply_tire_force(
 		_rear_contact,
 		rear_longitudinal_request,
 		wobble_grip,
 		rear_longitudinal_grip_scale,
-		rear_lateral_grip_scale * rail_grip * berm_grip * rut_grip * slide_rear_grip
+		rear_lateral_grip_scale * rail_grip * berm_grip * rut_grip * evolution_grip * slide_rear_grip
 	)
 	var steering_support := lerpf(0.88, 1.14, _steering_assist)
 	var stability_scale := (

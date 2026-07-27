@@ -9,6 +9,7 @@ const BIKE_TEST_RIDE_SCRIPT := preload("res://features/career/bike_test_ride.gd"
 const PROGRESSION_PAYOFF_SCRIPT := preload("res://features/career/progression_payoff.gd")
 const WEB_GAME_TEXT_STATE := preload("res://common/web_game_text_state.gd")
 const BIKE_CONDITION_FEEDBACK := preload("res://features/race/bike_condition_feedback.gd")
+const SPONSOR_TRACKSIDE_PRESENTER := preload("res://features/presentation/sponsor_trackside_presenter.gd")
 const QUARRY_SCENE := preload("res://levels/quarry/quarry.tscn")
 const PINE_RIDGE_SCENE := preload("res://levels/pine_ridge/pine_ridge.tscn")
 const MESA_MX_SCENE := preload("res://levels/mesa_mx/mesa_mx.tscn")
@@ -65,6 +66,7 @@ var _web_game_text_publish_time: float = 0.0
 var _test_ride_bike_id: StringName = &""
 var _test_ride_bike_name: String = ""
 var _test_ride_build: Dictionary = {}
+var _sponsor_trackside: SponsorTracksidePresenter
 
 
 func _ready() -> void:
@@ -96,6 +98,11 @@ func _ready() -> void:
 		_smoke_test.name = "RuntimeSmokeTest"
 		add_child(_smoke_test)
 	_initialize_career_services()
+	_sponsor_trackside = SPONSOR_TRACKSIDE_PRESENTER.new()
+	_sponsor_trackside.name = "SponsorTracksidePresenter"
+	# Keep authored decoration outside LevelRoot. That container deliberately
+	# owns exactly one streamed authoritative district at a time.
+	add_child(_sponsor_trackside)
 	# The garage is a fully covered front end, so constructing a complete district
 	# here only delays first interaction. Seed route-dependent systems from catalog
 	# data and stream the selected district after the ride transition has covered.
@@ -176,6 +183,8 @@ func _ready() -> void:
 	_ride_director.feat_unlocked.connect(_hud.show_feat)
 	_atmosphere.initialize(_bike)
 	_atmosphere.bind_environment(initial_surface_root)
+	if not _race.conditions_changed.is_connected(_on_race_conditions_changed):
+		_race.conditions_changed.connect(_on_race_conditions_changed)
 	if _smoke_test_enabled:
 		_on_ride_requested(Profile.current_setup, _get_requested_test_activity())
 		_smoke_test.call(&"initialize", _bike, _camera, _race, _freestyle, _discovery, _transition, _ride_director, _gameplay_audio)
@@ -183,6 +192,15 @@ func _ready() -> void:
 		_hud.visible = false
 		_garage.show_garage()
 		_refresh_touch_context()
+
+
+func _on_race_conditions_changed(snapshot: Dictionary) -> void:
+	if not is_instance_valid(_atmosphere):
+		return
+	_atmosphere.configure_session(
+		StringName(snapshot.get(&"weather", &"CLEAR")),
+		_race.get_session_config().track_id
+	)
 
 
 func _exit_tree() -> void:
@@ -245,6 +263,8 @@ func get_web_game_text_state_snapshot() -> Dictionary:
 		},
 		&"graphics": _race_services.get_visual_quality_snapshot(),
 		&"captions": _race_services.get_audio_caption_snapshot(),
+		&"trackside_sponsor": get_sponsor_trackside_snapshot(),
+		&"track_evolution": _race.get_track_evolution_snapshot(),
 		&"garage": {
 			&"open": _garage.is_open(),
 			&"workshop_open": bool(workshop.get(&"open", false)),
@@ -484,6 +504,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 		if session != null
 		else authoritative_route.duplicate()
 	)
+	_configure_sponsor_trackside(activity, hud_route, track_id)
 	_hud.configure_track(track_id, hud_route)
 	phase_begin_usec = _finish_profiled_activity_phase(&"hud_route", phase_begin_usec, profile_activity)
 	EventBus.activity_prepared.emit(activity)
@@ -771,6 +792,7 @@ func _restart_academy_progression() -> void:
 	_ensure_track_loaded(session.track_id)
 	var authoritative_route := get_authoritative_route(session.track_id)
 	var authoritative_surface_root := _get_track_builder(session.track_id)
+	_configure_sponsor_trackside(&"ACADEMY", authoritative_route, session.track_id)
 	_hud.configure_track(session.track_id, authoritative_route)
 	_bike.reset_equipment_wear()
 	_bike.apply_session_weather(session.weather)
@@ -786,9 +808,43 @@ func _stop_all_activities() -> void:
 		_race_services.stop_transient_presentation()
 		_race_services.clear_activity_transmission_override()
 		_race_services.clear_activity_control_response_override()
+	if is_instance_valid(_sponsor_trackside):
+		_sponsor_trackside.clear_presentation()
 	_race.enter_waiting()
 	_freestyle.enter_waiting()
 	_discovery.enter_waiting()
+
+
+func _configure_sponsor_trackside(
+	activity: StringName,
+	route: PackedVector3Array,
+	track_id: StringName
+) -> void:
+	if not is_instance_valid(_sponsor_trackside):
+		return
+	_sponsor_trackside.configure(
+		activity,
+		route,
+		CourseCatalog.get_track_width(track_id)
+	)
+
+
+func get_sponsor_trackside_snapshot() -> Dictionary:
+	return (
+		_sponsor_trackside.get_presentation_snapshot()
+		if is_instance_valid(_sponsor_trackside)
+		else {
+			&"visible": false,
+			&"activity_id": &"",
+			&"sponsor_id": &"",
+			&"sponsor_name": "",
+			&"identity": "",
+			&"accent_hex": "",
+			&"landmark_count": 0,
+			&"landmark_positions": [] as Array[Vector3],
+			&"collision_count": 0,
+		}
+	)
 
 
 func _apply_session_transmission_rule(session: RaceSessionConfig) -> void:

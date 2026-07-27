@@ -11,6 +11,8 @@ const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
 const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
 const ACADEMY_SURFACE_TRACKER_SCRIPT := preload("res://features/career/academy_surface_tracker.gd")
+const TRACK_EVOLUTION_SCRIPT := preload("res://features/environment/track_evolution.gd")
+const VARIABLE_WEATHER_POLICY := preload("res://features/environment/variable_weather_policy.gd")
 const AIRTIME_REWARD_CAP := 600
 
 signal time_updated(elapsed_usec: int, best_usec: int, checkpoint: int, total: int)
@@ -23,6 +25,7 @@ signal flag_changed(flag: StringName)
 signal classification_updated(classification: Array[Dictionary])
 signal integrity_updated(snapshot: Dictionary)
 signal session_updated(snapshot: Dictionary)
+signal conditions_changed(snapshot: Dictionary)
 signal results_ready(result: Dictionary)
 
 enum State { WAITING, STAGING, COUNTDOWN, RACING, FINISHED, RESULTS }
@@ -53,6 +56,8 @@ var _gates_enabled: bool = false
 var _split_times: Array[int] = []
 var _rival_target_usec: int = 190_000_000
 var _race_pack: RacePack
+var _track_evolution: TrackEvolution
+var _track_evolution_opponent_sample_remaining := 0.0
 var _session_config: RaceSessionConfig = RaceEventCatalog.get_session_config(&"CIRCUIT")
 var _current_lap: int = 1
 var _laps_completed: int = 0
@@ -96,9 +101,13 @@ var _academy_surface_tracker: RefCounted = ACADEMY_SURFACE_TRACKER_SCRIPT.new()
 var _race_airtime_seconds: float = 0.0
 var _race_clean_airtime_seconds: float = 0.0
 var _active_session_surface: StringName = &"PACKED"
+var _active_session_weather: StringName = &"CLEAR"
 
 
 func _ready() -> void:
+	_track_evolution = TRACK_EVOLUTION_SCRIPT.new() as TrackEvolution
+	_track_evolution.name = "TrackEvolution"
+	add_child(_track_evolution)
 	_race_pack = RacePackController.new()
 	_race_pack.name = "RacePack"
 	add_child(_race_pack)
@@ -127,6 +136,7 @@ func _physics_process(delta: float) -> void:
 			_elapsed_usec = _run_clock.advance(delta)
 			_update_academy_metrics(delta)
 			_update_integrity(delta)
+			_update_track_evolution(delta)
 			_race_pack.set_player_race_state(_laps_completed, -1, _player_penalty_usec, &"RUNNING")
 			time_updated.emit(_elapsed_usec, ghost.best_time_usec, _expected_checkpoint, _checkpoint_data.size())
 			_update_field_feedback(delta)
@@ -199,16 +209,32 @@ func configure_session(
 	_silver_usec = int(medal_times.get(&"silver", 220_000_000))
 	_bronze_usec = int(medal_times.get(&"bronze", 300_000_000))
 	_activity_id = _session_config.event_id
-	if bike != null:
-		bike.apply_session_weather(_session_config.weather)
+	_current_lap = 1
+	_laps_completed = 0
 	_competitive_signature_cache = ""
 	_competitive_signature_cache = _build_competitive_signature()
-	_active_session_surface = _surface_for_lap(1)
+	var opening_conditions := _conditions_for_lap(1)
+	_active_session_weather = StringName(opening_conditions.get(&"weather", &"CLEAR"))
+	_active_session_surface = StringName(opening_conditions.get(&"surface", &"PACKED"))
 	_rival_target_usec = CourseCatalog.get_rival_target_usec(_track_id)
 	_race_pack.configure(_track_id, _authoritative_route, _authoritative_surface_root, _session_config)
+	_race_pack.set_session_conditions(_active_session_weather, _active_session_surface)
+	if bike != null:
+		bike.apply_session_weather(_active_session_weather)
+		bike.apply_session_surface(_active_session_surface)
+	if is_instance_valid(_track_evolution):
+		_track_evolution.configure(
+			_authoritative_route,
+			CourseCatalog.get_track_width(_track_id),
+			_track_id,
+			_active_session_weather,
+			_active_session_surface,
+			_activity_id not in [&"ACADEMY", &"TEST_RIDE"]
+		)
 	_build_checkpoint_gates()
 	_set_gates_visible(false)
 	_configure_integrity_tracker()
+	conditions_changed.emit(get_conditions_snapshot())
 	if ghost != null:
 		var record_slot := CourseCatalog.get_record_slot(_track_id)
 		var competition_id := StringName(_session_config.rules.get(&"competition_id", &""))
@@ -262,7 +288,7 @@ func enter_waiting() -> void:
 	_gate_launch_evaluator.call(&"reset")
 	_gate_launch_staging_active = false
 	if bike != null:
-		_set_session_surface(_surface_for_lap(1), false)
+		_set_session_conditions(_conditions_for_lap(1), false)
 		bike.set_controls_enabled(false)
 		bike.set_motion_locked(true)
 		bike.set_gate_staging_input_enabled(false)
@@ -271,6 +297,9 @@ func enter_waiting() -> void:
 		ghost.cancel_run()
 	if _race_pack != null:
 		_race_pack.hide_pack()
+	if is_instance_valid(_track_evolution):
+		_track_evolution.reset_evolution()
+		_track_evolution.visible = false
 	_set_gates_visible(false)
 	_update_gate_visuals()
 	phase_changed.emit(&"WAITING")
@@ -301,6 +330,7 @@ func reset_run() -> void:
 	_reset_field_feedback()
 	_reset_integrity_tracker()
 	_reset_academy_metrics()
+	_track_evolution_opponent_sample_remaining = 0.0
 	_gate_launch_evaluator.call(&"reset")
 	_gate_launch_staging_active = false
 	if _activity_id in RaceEventCatalog.RACE_EVENTS:
@@ -334,10 +364,15 @@ func reset_run() -> void:
 	bike.set_controls_enabled(false)
 	bike.set_motion_locked(true)
 	bike.set_gate_staging_input_enabled(false)
-	_set_session_surface(_surface_for_lap(1), false)
+	_set_session_conditions(_conditions_for_lap(1), false)
 	bike.respawn_at(_spawn_transform)
 	ghost.cancel_run()
 	_race_pack.reset_grid()
+	if is_instance_valid(_track_evolution):
+		_track_evolution.reset_evolution()
+		_track_evolution.visible = bool(
+			_track_evolution.get_snapshot().get(&"active", false)
+		)
 	_set_gates_visible(true)
 	_update_gate_visuals()
 	EventBus.race_reset.emit()
@@ -528,8 +563,15 @@ func get_session_snapshot() -> Dictionary:
 		&"display_name": _session_config.display_name,
 		&"format": _session_config.format,
 		&"session_type": _session_config.session_type,
-		&"weather": _session_config.weather,
+		&"weather": _active_session_weather,
+		&"configured_weather": _session_config.weather,
 		&"surface": _active_session_surface,
+		&"conditions": get_conditions_snapshot(),
+		&"forecast": VARIABLE_WEATHER_POLICY.forecast(
+			_session_config.weather,
+			_session_config.surface_modifier,
+			_session_config.laps
+		),
 		&"medal_times_usec": {
 			&"gold": _gold_usec,
 			&"silver": _silver_usec,
@@ -557,9 +599,31 @@ func get_session_snapshot() -> Dictionary:
 		&"player_metrics": _player_race_metrics.get_snapshot(),
 		&"gate_launch": get_gate_launch_snapshot(),
 		&"racecraft": bike.get_racecraft_snapshot() if bike != null else {},
+		&"track_evolution": get_track_evolution_snapshot(),
 		&"transmission": bike.get_transmission_snapshot() if bike != null else {},
 		&"academy_metrics": _academy_live_metrics_snapshot(),
 	}
+
+
+func get_track_evolution_snapshot() -> Dictionary:
+	return (
+		_track_evolution.get_snapshot()
+		if is_instance_valid(_track_evolution)
+		else {
+			&"active": false,
+			&"track_id": &"",
+			&"surface": &"",
+			&"weather": &"",
+			&"route_length": 0.0,
+			&"bin_count": 0,
+			&"lane_count": 0,
+			&"sampled_passes": 0,
+			&"visible_grooves": 0,
+			&"maximum_wear": 0.0,
+			&"collision_count": 0,
+			&"player_line": {},
+		}
+	)
 
 
 func get_results_preview() -> Dictionary:
@@ -698,7 +762,7 @@ func _complete_player_lap() -> void:
 		_begin_player_finish()
 		return
 	_current_lap = _laps_completed + 1
-	_set_session_surface(_surface_for_lap(_current_lap), true)
+	_set_session_conditions(_conditions_for_lap(_current_lap), true)
 	_expected_checkpoint = 0
 	_set_flag(&"WHITE" if _current_lap == _session_config.laps else &"GREEN")
 	_set_gates_visible(true)
@@ -1434,29 +1498,74 @@ static func academy_surface_sector_for_checkpoint(
 
 
 func _surface_for_lap(lap: int) -> StringName:
-	if _session_config.weather != &"VARIABLE":
-		return _session_config.surface_modifier
-	# A deterministic six-lap grip arc makes the endurance event genuinely
-	# change under the rider while remaining replay- and competition-safe.
-	var variable_surfaces: Array[StringName] = [
-		&"PACKED", &"LOOSE_DIRT", &"PACKED", &"WET", &"RUTTED", &"PACKED",
-	]
-	return variable_surfaces[(maxi(lap, 1) - 1) % variable_surfaces.size()]
+	return StringName(_conditions_for_lap(lap).get(&"surface", &"PACKED"))
+
+
+func _conditions_for_lap(lap: int) -> Dictionary:
+	return VARIABLE_WEATHER_POLICY.conditions_for_lap(
+		_session_config.weather,
+		_session_config.surface_modifier,
+		lap,
+		_session_config.laps
+	)
+
+
+func get_conditions_snapshot() -> Dictionary:
+	var conditions := _conditions_for_lap(_current_lap)
+	conditions[&"weather"] = _active_session_weather
+	conditions[&"surface"] = _active_session_surface
+	conditions[&"configured_weather"] = _session_config.weather
+	return conditions
+
+
+func _set_session_conditions(conditions: Dictionary, announce: bool) -> void:
+	var next_weather := StringName(conditions.get(&"weather", &"CLEAR"))
+	var next_surface := StringName(conditions.get(&"surface", &"PACKED"))
+	if next_weather.is_empty():
+		next_weather = &"CLEAR"
+	if next_surface.is_empty():
+		next_surface = &"PACKED"
+	var changed := (
+		next_weather != _active_session_weather
+		or next_surface != _active_session_surface
+	)
+	_active_session_weather = next_weather
+	_active_session_surface = next_surface
+	if is_instance_valid(_track_evolution):
+		_track_evolution.set_surface(_active_session_surface, _active_session_weather)
+	if _race_pack != null:
+		_race_pack.set_session_conditions(_active_session_weather, _active_session_surface)
+	if bike != null:
+		bike.apply_session_weather(_active_session_weather)
+		bike.apply_session_surface(_active_session_surface)
+	if announce and changed:
+		race_moment.emit(
+			"CONDITIONS  //  %s  //  %s GRIP" % [
+				String(_active_session_weather).replace("_", " "),
+				String(_active_session_surface).replace("_", " "),
+			],
+			0,
+			false
+		)
+		var next_lap := int(conditions.get(&"next_lap", 0))
+		if next_lap > 0:
+			race_moment.emit(
+				"FORECAST L%d  //  %s  //  %s" % [
+					next_lap,
+					String(conditions.get(&"next_weather", &"")).replace("_", " "),
+					String(conditions.get(&"next_surface", &"")).replace("_", " "),
+				],
+				0,
+				true
+			)
+	conditions_changed.emit(get_conditions_snapshot())
 
 
 func _set_session_surface(surface: StringName, announce: bool) -> void:
-	var next_surface := surface if not surface.is_empty() else &"PACKED"
-	var changed := next_surface != _active_session_surface
-	_active_session_surface = next_surface
-	if bike != null:
-		bike.apply_session_weather(
-			&"WET"
-			if _active_session_surface in [&"WET", &"MUD"]
-			else _session_config.weather
-		)
-		bike.apply_session_surface(_active_session_surface)
-	if announce and changed:
-		race_moment.emit("GRIP CHANGE  //  %s" % String(_active_session_surface).replace("_", " "), 0, false)
+	## Compatibility adapter retained for focused probes and extension scripts.
+	var conditions := _conditions_for_lap(_current_lap)
+	conditions[&"surface"] = surface
+	_set_session_conditions(conditions, announce)
 
 
 func _emit_classification() -> void:
@@ -1588,6 +1697,19 @@ func _update_integrity(delta: float) -> void:
 				)
 
 
+func _update_track_evolution(delta: float) -> void:
+	if not is_instance_valid(_track_evolution) or bike == null:
+		return
+	var player_sample := _integrity_snapshot.duplicate(true)
+	player_sample[&"speed_mps"] = bike.get_speed_mps()
+	var opponent_samples: Array[Dictionary] = []
+	_track_evolution_opponent_sample_remaining -= maxf(delta, 0.0)
+	if _track_evolution_opponent_sample_remaining <= 0.0 and _race_pack != null:
+		opponent_samples = _race_pack.get_racer_snapshots()
+		_track_evolution_opponent_sample_remaining = 0.20
+	_track_evolution.advance(delta, player_sample, opponent_samples)
+
+
 func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
 	if _authoritative_route.size() < 3 or bike == null:
 		return {}
@@ -1627,9 +1749,21 @@ func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
 	var signed_turn := current_flat.cross(future_flat).dot(Vector3.UP)
 	var corner_strength := clampf(absf(signed_turn) / 0.42, 0.0, 1.0)
 	var signed_lateral := float(integrity.get(&"signed_lateral", 0.0))
+	var evolution := (
+		_track_evolution.sample_line(
+			float(integrity.get(&"chainage", 0.0)),
+			signed_lateral
+		)
+		if is_instance_valid(_track_evolution)
+		else {}
+	)
 	var rut_offset := 0.98 if _track_id == CourseCatalog.PINE_ID else 1.25 if _track_id == CourseCatalog.MESA_MX_ID else 1.15
 	var rut_distance := absf(absf(signed_lateral) - rut_offset)
 	var rut_strength := (1.0 - smoothstep(0.18, 0.82, rut_distance)) * lerpf(0.62, 1.0, corner_strength)
+	rut_strength = maxf(
+		rut_strength,
+		clampf(float(evolution.get(&"rut_strength", 0.0)), 0.0, 0.72)
+	)
 	var is_outside := (
 		(signed_lateral > 0.0 and signed_turn > 0.0)
 		or (signed_lateral < 0.0 and signed_turn < 0.0)
@@ -1692,6 +1826,13 @@ func _build_course_racecraft_context(integrity: Dictionary) -> Dictionary:
 		&"uphill_strength": clampf(current_tangent.y * 2.2, 0.0, 1.0),
 		&"route_alignment": route_alignment,
 		&"rut_strength": rut_strength,
+		&"track_evolution": evolution.duplicate(true),
+		&"evolution_grip_multiplier": clampf(
+			float(evolution.get(&"grip_multiplier", 1.0)), 0.96, 1.05
+		),
+		&"evolution_drive_multiplier": clampf(
+			float(evolution.get(&"drive_multiplier", 1.0)), 0.98, 1.025
+		),
 		&"berm_strength": berm_strength,
 		&"skill_zone_id": zone_id,
 		&"skill_zone_kind": zone_kind,

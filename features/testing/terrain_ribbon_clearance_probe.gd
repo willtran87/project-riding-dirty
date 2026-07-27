@@ -403,7 +403,7 @@ func _install_probe_materials(builder: Node3D, track_id: StringName) -> void:
 		keys = [&"terrain", &"trail", &"trail_edge", &"rut"]
 	else:
 		keys = [
-			&"terrain", &"ground", &"track", &"track_edge", &"rut", &"runoff",
+			&"terrain", &"ground", &"sand", &"track", &"track_edge", &"rut", &"runoff",
 			&"red", &"cream", &"cliff", &"cliff_dark", &"rock",
 		]
 	for key: StringName in keys:

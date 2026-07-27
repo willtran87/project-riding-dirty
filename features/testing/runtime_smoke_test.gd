@@ -344,6 +344,25 @@ func _run_circuit() -> void:
 	if not dirt_vfx_ready or not terrain_feedback_ready:
 		push_error("DIRT FEEDBACK SMOKE: contact/VFX stack did not activate (%s, dust=%s, roost=%s)." % [str(contact_feedback), str(trail_dust.emitting if trail_dust != null else false), str(rear_roost.emitting if rear_roost != null else false)])
 		exit_code = 1
+	var evolution_snapshot := _race.get_track_evolution_snapshot()
+	var evolution_expected := _activity != &"ACADEMY"
+	var evolution_ready := (
+		bool(evolution_snapshot.get(&"active", false))
+		and int(evolution_snapshot.get(&"sampled_passes", 0)) > 0
+		and int(evolution_snapshot.get(&"visible_grooves", 0)) > 0
+		and int(evolution_snapshot.get(&"collision_count", -1)) == 0
+	)
+	if evolution_ready != evolution_expected:
+		push_error(
+			"TRACK EVOLUTION SMOKE: session-local grooves did not match the activity contract (%s)."
+			% str(evolution_snapshot)
+		)
+		exit_code = 1
+	print("TRACK EVOLUTION RESULT: expected=%s ready=%s snapshot=%s" % [
+		str(evolution_expected),
+		str(evolution_ready),
+		str(evolution_snapshot),
+	])
 	var target_rival_expected := session.opponent_count == 0
 	var target_rival_ready := _ghost_has_rival()
 	if target_rival_ready != target_rival_expected:

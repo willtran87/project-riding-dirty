@@ -80,6 +80,16 @@ func _ready() -> void:
 			&"format": &"SPRINT",
 			&"weather": &"CLEAR",
 			&"surface": &"DIRT",
+			&"conditions": {
+				&"variable": true,
+				&"label": "DRY START",
+				&"weather": &"CLEAR",
+				&"surface": &"DIRT",
+				&"next_lap": 3,
+				&"next_weather": &"WINDY",
+				&"next_surface": &"LOOSE_DIRT",
+				&"next_label": "WIND RISING",
+			},
 			&"elapsed_usec": 12_500_000,
 			&"current_lap": 2,
 			&"total_laps": 3,
@@ -134,6 +144,37 @@ func _ready() -> void:
 			&"display_text": "[COMMENTARY]  OVERTAKE // P3",
 			&"priority": 2,
 			&"repeat_count": 1,
+		},
+		&"trackside_sponsor": {
+			&"visible": true,
+			&"activity_id": &"CIRCUIT",
+			&"sponsor_id": &"DUSTLINE",
+			&"sponsor_name": "DUSTLINE WORKS",
+			&"identity": "RACE PRECISION",
+			&"accent_hex": "FFB52D",
+			&"landmark_count": 2,
+			&"landmark_positions": [
+				Vector3(-14.0, 4.2, 8.0),
+				Vector3(16.0, 4.6, -1810.0),
+			],
+		},
+		&"track_evolution": {
+			&"active": true,
+			&"track_id": &"QUARRY",
+			&"surface": &"DIRT",
+			&"weather": &"CLEAR",
+			&"sampled_passes": 24,
+			&"visible_grooves": 7,
+			&"maximum_wear": 0.48,
+			&"player_line": {
+				&"state": &"COMPACTED",
+				&"wear": 0.42,
+				&"lane_index": 2,
+				&"lane_center": 0.0,
+				&"grip_multiplier": 1.023,
+				&"drive_multiplier": 1.011,
+				&"wet_policy": false,
+			},
 		},
 		&"garage": {&"open": false},
 		&"local_duel": {
@@ -209,6 +250,8 @@ func _ready() -> void:
 	var custom_tour := state.get(&"custom_tour", {}) as Dictionary
 	var results := state.get(&"results", {}) as Dictionary
 	var podium := results.get(&"podium", {}) as Dictionary
+	var trackside_sponsor := state.get(&"trackside_sponsor", {}) as Dictionary
+	var track_evolution := state.get(&"track_evolution", {}) as Dictionary
 	var visible_riders_include_player := false
 	for rider_value: Variant in visible_riders:
 		var rider := rider_value as Dictionary
@@ -217,10 +260,17 @@ func _ready() -> void:
 			or str(rider.get(&"name", "")) == "YOU"
 		)
 	_check(
-		int(state.get(&"schema_version", 0)) == 4
+		int(state.get(&"schema_version", 0)) == 7
 		and str(state.get(&"mode", "")) == "RACE"
 		and not str((state.get(&"coordinate_system", {}) as Dictionary).get(&"axes", "")).is_empty(),
 		"State identifies schema, mode, and world coordinates"
+	)
+	var projected_conditions := race.get(&"conditions", {}) as Dictionary
+	_check(
+		bool(projected_conditions.get(&"variable", false))
+			and str(projected_conditions.get(&"next_weather", "")) == "WINDY"
+			and str(projected_conditions.get(&"next_surface", "")) == "LOOSE_DIRT",
+		"Browser race projection omitted the deterministic weather forecast"
 	)
 	_check(
 		MAIN_SCRIPT.resolve_web_game_mode(
@@ -254,6 +304,29 @@ func _ready() -> void:
 			and str(captions.get(&"text", "")) == "OVERTAKE // P3"
 			and int(captions.get(&"priority", 0)) == 2,
 		"Browser projection omitted the visible semantic audio caption"
+	)
+	_check(
+		bool(trackside_sponsor.get(&"visible", false))
+		and str(trackside_sponsor.get(&"activity_id", "")) == "CIRCUIT"
+		and str(trackside_sponsor.get(&"sponsor_id", "")) == "DUSTLINE"
+		and str(trackside_sponsor.get(&"sponsor_name", "")) == "DUSTLINE WORKS"
+		and str(trackside_sponsor.get(&"identity", "")) == "RACE PRECISION"
+		and str(trackside_sponsor.get(&"accent_hex", "")) == "FFB52D"
+		and int(trackside_sponsor.get(&"landmark_count", 0)) == 2
+		and (trackside_sponsor.get(&"landmark_positions", []) as Array).size() == 2,
+		"Browser projection omitted the visible event-correct trackside sponsor"
+	)
+	var evolved_line := track_evolution.get(&"player_line", {}) as Dictionary
+	_check(
+		bool(track_evolution.get(&"active", false))
+			and str(track_evolution.get(&"track_id", "")) == "QUARRY"
+			and int(track_evolution.get(&"sampled_passes", 0)) == 24
+			and int(track_evolution.get(&"visible_grooves", 0)) == 7
+			and is_equal_approx(float(track_evolution.get(&"maximum_wear", 0.0)), 0.48)
+			and str(evolved_line.get(&"state", "")) == "COMPACTED"
+			and is_equal_approx(float(evolved_line.get(&"wear", 0.0)), 0.42)
+			and float(evolved_line.get(&"grip_multiplier", 1.0)) > 1.0,
+		"Browser projection omitted bounded session-local track evolution"
 	)
 	_check(
 		bool(results.get(&"visible", false))
