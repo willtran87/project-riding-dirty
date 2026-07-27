@@ -10,7 +10,7 @@ signal achievement_unlocked(achievement_id: StringName)
 const SAVE_PATH: String = "user://rider_profile.cfg"
 const WEB_SAVE_KEY: String = "rider_profile_v1"
 const ATOMIC_CONFIG_STORE := preload("res://common/atomic_config_store.gd")
-const PROFILE_SCHEMA_VERSION: int = 7
+const PROFILE_SCHEMA_VERSION: int = 10
 const COURSE_LAYOUT_VERSION: int = 4
 const MAX_CASH: int = 999_999
 const MAX_LOG_ENTRIES: int = 30
@@ -22,6 +22,13 @@ const MAX_CHALLENGE_RECORDS: int = 64
 const MAX_LEADERBOARD_SUMMARIES: int = 48
 const MAX_SAVED_BUILD_SLOTS: int = 3
 const SAVED_BUILD_SLOT_IDS: Array[StringName] = [&"BUILD_A", &"BUILD_B", &"BUILD_C"]
+const MAX_SAVED_OUTFIT_SLOTS: int = 3
+const SAVED_OUTFIT_SLOT_IDS: Array[StringName] = [&"OUTFIT_A", &"OUTFIT_B", &"OUTFIT_C"]
+const RIDER_BODY_TYPES: Array[StringName] = [&"COMPACT", &"ATHLETIC", &"POWERFUL"]
+const RIDER_SKIN_TONES: Array[StringName] = [
+	&"LIGHT", &"MEDIUM_LIGHT", &"MEDIUM", &"MEDIUM_DEEP", &"DEEP",
+]
+const RIDER_VOICES: Array[StringName] = [&"FOCUSED", &"BRIGHT", &"GROUNDED"]
 ## Setup prices follow the minimum no-medal progression path. Two distinct
 ## first-time Quarry activity clears fund Trail; Pine plus the two pre-Heat
 ## Mesa sessions fund Attack. Optional repairs and Workshop purchases can delay
@@ -46,6 +53,7 @@ const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.
 const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_catalog.gd")
 const ACTIVITY_RUN_IDENTITY_SCRIPT := preload("res://common/activity_run_identity.gd")
 const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
+const RIDER_GRAPHICS_CATALOG := preload("res://features/career/rider_graphics_catalog.gd")
 const DEFAULT_SETTINGS_REFERENCE: String = "user://settings/riding_dirty_settings.json"
 const ACHIEVEMENT_ORDER: Array[StringName] = [
 	&"FIRST_FINISH", &"FIRST_WIN", &"PODIUM_REGULAR", &"HOLESHOT_HERO",
@@ -98,6 +106,7 @@ var owned_part_ids: Array[StringName] = []
 var saved_bike_builds: Dictionary = {}
 var academy_progress: Dictionary[StringName, int] = {}
 var rider_cosmetics: Dictionary = {}
+var saved_rider_outfits: Dictionary = {}
 var race_statistics: Dictionary = {}
 var event_records: Dictionary = {}
 var challenge_records: Dictionary = {}
@@ -424,6 +433,7 @@ func get_meta_snapshot() -> Dictionary:
 		&"saved_bike_builds": saved_bike_builds.duplicate(true),
 		&"academy_progress": academy_progress.duplicate(true),
 		&"rider_cosmetics": rider_cosmetics.duplicate(true),
+		&"saved_rider_outfits": saved_rider_outfits.duplicate(true),
 		&"race_statistics": race_statistics.duplicate(true),
 		&"event_records": event_records.duplicate(true),
 		&"challenge_records": challenge_records.duplicate(true),
@@ -1078,10 +1088,105 @@ func get_rider_cosmetics() -> Dictionary:
 	return rider_cosmetics.duplicate(true)
 
 
+func get_saved_rider_outfit_snapshot(slot_id: StringName) -> Dictionary:
+	var normalized_slot := StringName(String(slot_id).strip_edges().to_upper())
+	if normalized_slot not in SAVED_OUTFIT_SLOT_IDS:
+		return {}
+	var raw: Variant = saved_rider_outfits.get(
+		normalized_slot,
+		saved_rider_outfits.get(String(normalized_slot), {})
+	)
+	return (raw as Dictionary).duplicate(true) if raw is Dictionary else {}
+
+
+func get_saved_rider_outfit_slots() -> Array[Dictionary]:
+	var output: Array[Dictionary] = []
+	for slot_index: int in SAVED_OUTFIT_SLOT_IDS.size():
+		var slot_id := SAVED_OUTFIT_SLOT_IDS[slot_index]
+		var snapshot := get_saved_rider_outfit_snapshot(slot_id)
+		output.append({
+			&"slot_id": slot_id,
+			&"slot_label": String.chr(65 + slot_index),
+			&"occupied": not snapshot.is_empty(),
+			&"outfit": snapshot,
+		})
+	return output
+
+
+func save_current_rider_outfit(slot_id: StringName, display_name: String = "") -> Dictionary:
+	var normalized_slot := StringName(String(slot_id).strip_edges().to_upper())
+	if normalized_slot not in SAVED_OUTFIT_SLOT_IDS:
+		return {&"accepted": false, &"reason": &"INVALID_SLOT", &"slot_id": normalized_slot}
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	_begin_settlement_signal_batch()
+	var resolved_name := _sanitize_saved_outfit_name(display_name)
+	if resolved_name.is_empty():
+		resolved_name = _default_saved_outfit_name(rider_cosmetics)
+	var snapshot := {
+		&"slot_id": normalized_slot,
+		&"display_name": resolved_name,
+		&"cosmetics": _sanitize_cosmetics(rider_cosmetics),
+		&"saved_unix": int(Time.get_unix_time_from_system()),
+	}
+	var sanitized_snapshot := _sanitize_saved_outfit_entry(normalized_slot, snapshot)
+	if sanitized_snapshot.is_empty():
+		_flush_settlement_signal_batch(false)
+		return {&"accepted": false, &"reason": &"OUTFIT_UNAVAILABLE", &"slot_id": normalized_slot}
+	saved_rider_outfits[normalized_slot] = sanitized_snapshot
+	if not _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration):
+		return {&"accepted": false, &"reason": &"SAVE_FAILED", &"slot_id": normalized_slot}
+	return {
+		&"accepted": true,
+		&"reason": &"SAVED",
+		&"slot_id": normalized_slot,
+		&"outfit": sanitized_snapshot.duplicate(true),
+	}
+
+
+func load_saved_rider_outfit(slot_id: StringName) -> Dictionary:
+	var normalized_slot := StringName(String(slot_id).strip_edges().to_upper())
+	if normalized_slot not in SAVED_OUTFIT_SLOT_IDS:
+		return {&"accepted": false, &"reason": &"INVALID_SLOT", &"slot_id": normalized_slot}
+	var stored := get_saved_rider_outfit_snapshot(normalized_slot)
+	if stored.is_empty():
+		return {&"accepted": false, &"reason": &"EMPTY_SLOT", &"slot_id": normalized_slot}
+	var sanitized := _sanitize_saved_outfit_entry(normalized_slot, stored)
+	if sanitized.is_empty():
+		return {&"accepted": false, &"reason": &"OUTFIT_UNAVAILABLE", &"slot_id": normalized_slot}
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	_begin_settlement_signal_batch()
+	rider_cosmetics = _sanitize_cosmetics(sanitized.get(&"cosmetics", {}) as Dictionary)
+	# Livery is the only shared cosmetic/build attribute. Keep the active bike's
+	# visual identity coherent without restoring tune, parts, wear or odometer.
+	var active_build_data := get_bike_build_snapshot(active_bike_id)
+	if not active_build_data.is_empty():
+		var active_build: Variant = BIKE_BUILD_SCRIPT.from_dictionary(active_build_data)
+		active_build.livery_id = StringName(rider_cosmetics.get(&"bike_livery", &"FACTORY"))
+		owned_bike_builds[active_bike_id] = active_build.to_dictionary()
+	if not _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration):
+		return {&"accepted": false, &"reason": &"SAVE_FAILED", &"slot_id": normalized_slot}
+	return {
+		&"accepted": true,
+		&"reason": &"LOADED",
+		&"slot_id": normalized_slot,
+		&"outfit": sanitized.duplicate(true),
+		&"cosmetics": rider_cosmetics.duplicate(true),
+	}
+
+
 func set_rider_cosmetics(changes: Dictionary) -> bool:
 	var proposed := rider_cosmetics.duplicate(true)
 	var changed := false
-	for key: StringName in [&"helmet", &"jersey", &"pants", &"boots", &"gloves", &"bike_livery", &"number_plate", &"accent_color"]:
+	for key: StringName in [
+		&"helmet", &"goggles", &"jersey", &"pants", &"boots", &"gloves",
+		&"protection", &"accessory", &"bike_livery", &"number_plate", &"accent_color",
+		&"body_type", &"skin_tone", &"voice",
+		&"team_palette", &"decal_id", &"sponsor_id", &"sponsor_placement",
+	]:
 		var value: Variant = _dictionary_value(changes, String(key), null)
 		if value != null:
 			proposed[key] = str(value).strip_edges().substr(0, 48)
@@ -1092,13 +1197,16 @@ func set_rider_cosmetics(changes: Dictionary) -> bool:
 		changed = true
 	if not changed:
 		return false
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	_begin_settlement_signal_batch()
 	rider_cosmetics = _sanitize_cosmetics(proposed)
 	var build_data := get_bike_build_snapshot(active_bike_id)
 	if not build_data.is_empty():
 		build_data[&"livery_id"] = StringName(rider_cosmetics.get(&"bike_livery", &"FACTORY"))
 		owned_bike_builds[active_bike_id] = build_data
-	_emit_meta_and_save()
-	return true
+	return _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration)
 
 
 func record_leaderboard_summary(run_signature: String, submission: Dictionary) -> bool:
@@ -1436,6 +1544,7 @@ func reset_profile_for_testing() -> void:
 	saved_bike_builds.clear()
 	academy_progress.clear()
 	rider_cosmetics = _default_cosmetics()
+	saved_rider_outfits.clear()
 	race_statistics = _default_race_statistics()
 	event_records.clear()
 	challenge_records.clear()
@@ -1991,6 +2100,7 @@ func _profile_to_dictionary() -> Dictionary:
 		"saved_bike_builds": _json_safe_copy(saved_bike_builds),
 		"academy_progress": _serialize_int_dictionary(academy_progress),
 		"rider_cosmetics": _json_safe_copy(rider_cosmetics),
+		"saved_rider_outfits": _json_safe_copy(saved_rider_outfits),
 		"race_statistics": _json_safe_copy(race_statistics),
 		"event_records": _json_safe_copy(event_records),
 		"challenge_records": _json_safe_copy(challenge_records),
@@ -2094,6 +2204,9 @@ func _apply_profile_dictionary(profile_data: Dictionary) -> void:
 	academy_progress = _sanitize_int_dictionary(_dictionary_value(profile_data, "academy_progress", {}), 64, 0, 3)
 	var cosmetics_value: Variant = _dictionary_value(profile_data, "rider_cosmetics", {})
 	rider_cosmetics = _sanitize_cosmetics(cosmetics_value as Dictionary if cosmetics_value is Dictionary else {})
+	saved_rider_outfits = _sanitize_saved_rider_outfits(
+		_dictionary_value(profile_data, "saved_rider_outfits", {})
+	)
 	var statistics_value: Variant = _dictionary_value(profile_data, "race_statistics", {})
 	race_statistics = _sanitize_statistics(statistics_value as Dictionary if statistics_value is Dictionary else {})
 	event_records = _sanitize_event_records(_dictionary_value(profile_data, "event_records", {}))
@@ -2186,14 +2299,24 @@ func _ensure_full_race_defaults() -> void:
 func _default_cosmetics() -> Dictionary:
 	return {
 		&"helmet": "CLASSIC_WHITE",
+		&"goggles": "CLEAR",
 		&"jersey": "MESA_RED",
 		&"pants": "CHARCOAL",
 		&"boots": "BLACK",
 		&"gloves": "BLACK",
+		&"protection": "ROOST_GUARD",
+		&"accessory": "NONE",
 		&"bike_livery": "FACTORY",
 		&"number_plate": "WHITE",
 		&"accent_color": "E25532",
 		&"rider_number": 17,
+		&"body_type": "ATHLETIC",
+		&"skin_tone": "MEDIUM",
+		&"voice": "FOCUSED",
+		&"team_palette": "STYLE",
+		&"decal_id": "CLEAN",
+		&"sponsor_id": "NONE",
+		&"sponsor_placement": "SHROUDS",
 	}
 
 
@@ -2347,14 +2470,98 @@ func _default_saved_build_name(bike_id: StringName, setup_id: StringName) -> Str
 
 func _sanitize_cosmetics(value: Dictionary) -> Dictionary:
 	var output := _default_cosmetics()
-	for key: StringName in [&"helmet", &"jersey", &"pants", &"boots", &"gloves", &"bike_livery", &"number_plate", &"accent_color"]:
+	for key: StringName in [
+		&"helmet", &"goggles", &"jersey", &"pants", &"boots", &"gloves",
+		&"protection", &"accessory", &"bike_livery", &"number_plate", &"accent_color",
+	]:
 		var loaded: Variant = _dictionary_value(value, String(key), null)
 		if loaded != null:
 			var text := str(loaded).strip_edges().substr(0, 48)
 			if not text.is_empty():
 				output[key] = text
+	output[&"body_type"] = _sanitize_rider_identity_choice(
+		_dictionary_value(value, "body_type", &"ATHLETIC"),
+		RIDER_BODY_TYPES,
+		&"ATHLETIC"
+	)
+	output[&"skin_tone"] = _sanitize_rider_identity_choice(
+		_dictionary_value(value, "skin_tone", &"MEDIUM"),
+		RIDER_SKIN_TONES,
+		&"MEDIUM"
+	)
+	output[&"voice"] = _sanitize_rider_identity_choice(
+		_dictionary_value(value, "voice", &"FOCUSED"),
+		RIDER_VOICES,
+		&"FOCUSED"
+	)
+	for graphics_field: StringName in [
+		&"team_palette", &"decal_id", &"sponsor_id", &"sponsor_placement",
+	]:
+		output[graphics_field] = String(RIDER_GRAPHICS_CATALOG.sanitize_field(
+			graphics_field,
+			_dictionary_value(value, String(graphics_field), output[graphics_field])
+		))
 	output[&"rider_number"] = clampi(int(_dictionary_value(value, "rider_number", 17)), 1, 999)
 	return output
+
+
+func _sanitize_rider_identity_choice(
+	value: Variant,
+	allowed: Array[StringName],
+	fallback: StringName
+) -> String:
+	var normalized := StringName(str(value).strip_edges().to_upper())
+	return String(normalized if normalized in allowed else fallback)
+
+
+func _sanitize_saved_rider_outfits(value: Variant) -> Dictionary:
+	var output: Dictionary = {}
+	if not value is Dictionary:
+		return output
+	for slot_id: StringName in SAVED_OUTFIT_SLOT_IDS:
+		if output.size() >= MAX_SAVED_OUTFIT_SLOTS:
+			break
+		var raw: Variant = (value as Dictionary).get(
+			slot_id,
+			(value as Dictionary).get(String(slot_id), {})
+		)
+		var sanitized := _sanitize_saved_outfit_entry(slot_id, raw)
+		if not sanitized.is_empty():
+			output[slot_id] = sanitized
+	return output
+
+
+func _sanitize_saved_outfit_entry(slot_id: StringName, value: Variant) -> Dictionary:
+	if slot_id not in SAVED_OUTFIT_SLOT_IDS or not value is Dictionary:
+		return {}
+	var data := value as Dictionary
+	if data.is_empty():
+		return {}
+	var raw_cosmetics: Variant = _dictionary_value(data, "cosmetics", {})
+	if not raw_cosmetics is Dictionary:
+		return {}
+	var cosmetics := _sanitize_cosmetics(raw_cosmetics as Dictionary)
+	return {
+		&"slot_id": slot_id,
+		&"display_name": _sanitize_saved_outfit_name(str(_dictionary_value(
+			data, "display_name", _default_saved_outfit_name(cosmetics)
+		))),
+		&"cosmetics": cosmetics,
+		&"saved_unix": maxi(int(_dictionary_value(data, "saved_unix", 0)), 0),
+	}
+
+
+func _sanitize_saved_outfit_name(value: String) -> String:
+	var output := value.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip_edges()
+	while output.contains("  "):
+		output = output.replace("  ", " ")
+	return output.substr(0, 40).to_upper()
+
+
+func _default_saved_outfit_name(cosmetics: Dictionary) -> String:
+	var jersey := str(cosmetics.get(&"jersey", "RACE KIT")).replace("_", " ")
+	var rider_number := clampi(int(cosmetics.get(&"rider_number", 17)), 1, 999)
+	return _sanitize_saved_outfit_name("%s // #%d" % [jersey, rider_number])
 
 
 func _sanitize_statistics(value: Dictionary) -> Dictionary:

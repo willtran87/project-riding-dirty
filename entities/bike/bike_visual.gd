@@ -3,6 +3,13 @@ extends Node3D
 
 const RIDER_TORSO_RESPONSE_HZ: float = 10.5
 const RIDER_WOBBLE_ANGULAR_SPEED: float = 25.0
+const RIDER_EQUIPMENT_WEAR := preload("res://features/race/rider_equipment_wear.gd")
+const RIDER_GRAPHICS_CATALOG := preload("res://features/career/rider_graphics_catalog.gd")
+const WEARABLE_MATERIAL_KEYS: Array[StringName] = [
+	&"red", &"cream", &"jersey", &"denim", &"helmet", &"goggles",
+	&"boots", &"gloves", &"protection", &"accessory", &"skin",
+	&"decal_primary", &"decal_secondary",
+]
 
 @export var pack_variant: bool = false
 @export var pack_bike_color: Color = Color("d93a2f")
@@ -24,7 +31,12 @@ var _right_grip_anchor: Node3D
 var _left_foot_anchor: Node3D
 var _right_foot_anchor: Node3D
 var _arm_multimesh: MultiMesh
+var _glove_multimesh: MultiMesh
 var _leg_multimesh: MultiMesh
+var _boot_multimesh: MultiMesh
+var _rider_goggles_mesh: MeshInstance3D
+var _rider_protection_mesh: MeshInstance3D
+var _rider_accessory_mesh: MeshInstance3D
 var _dust: GPUParticles3D
 var _roost: GPUParticles3D
 var _clods: GPUParticles3D
@@ -47,6 +59,17 @@ var _trick_pose_blend: float = 0.0
 var _trick_pose_strength: float = 0.0
 var _trick_pose_side: float = 0.0
 var _trick_limb_targets: Dictionary = {}
+var _rider_cosmetics: Dictionary = {}
+var _equipment_weather: StringName = &"CLEAR"
+var _equipment_wear: Dictionary = {}
+var _equipment_wear_presentation_time: float = 0.0
+var _clean_material_colors: Dictionary[StringName, Color] = {}
+var _clean_material_roughness: Dictionary[StringName, float] = {}
+var _wear_splats: Array[MeshInstance3D] = []
+var _crash_scratches: Array[MeshInstance3D] = []
+var _decal_roots: Dictionary[StringName, Node3D] = {}
+var _sponsor_roots: Dictionary[StringName, Node3D] = {}
+var _sponsor_labels: Array[Label3D] = []
 
 var _materials: Dictionary[StringName, StandardMaterial3D] = {}
 
@@ -54,6 +77,11 @@ var _materials: Dictionary[StringName, StandardMaterial3D] = {}
 func _ready() -> void:
 	_create_materials()
 	_build_bike()
+	if not pack_variant:
+		_build_custom_graphics()
+		_build_equipment_wear_overlays()
+	_capture_clean_equipment_materials()
+	reset_equipment_wear()
 	if pack_variant:
 		apply_pack_colors(pack_bike_color, pack_helmet_color)
 		if &"--smoke-test" not in OS.get_cmdline_user_args():
@@ -138,6 +166,14 @@ func update_pose(
 	)
 	if rear_contact_valid:
 		_set_dirt_emitter_transform(rear_contact_point, rear_contact_normal, rear_contact_forward)
+	advance_equipment_wear_observation({
+		&"surface": surface,
+		&"weather": _equipment_weather,
+		&"grounded": rear_contact_valid,
+		&"dust_amount": dust_amount,
+		&"roost_intensity": roost_intensity,
+		&"speed_mps": speed_mps,
+	}, delta)
 	_update_dirt_intensity(dust_amount, roost_intensity, surface)
 	_dust.emitting = rear_contact_valid and dust_amount > 0.07
 	_roost.emitting = rear_contact_valid and roost_intensity > 0.14
@@ -204,8 +240,48 @@ func reset_terrain_feedback() -> void:
 	_skid_time = 0.0
 
 
+func reset_equipment_wear() -> void:
+	_equipment_wear = RIDER_EQUIPMENT_WEAR.clean_state(_equipment_weather)
+	_equipment_wear_presentation_time = 0.0
+	_apply_equipment_wear_presentation()
+
+
+func configure_equipment_weather(weather: StringName) -> void:
+	_equipment_weather = StringName(String(weather).strip_edges().to_upper())
+	if _equipment_wear.is_empty():
+		_equipment_wear = RIDER_EQUIPMENT_WEAR.clean_state(_equipment_weather)
+	else:
+		_equipment_wear[&"weather"] = _equipment_weather
+	_apply_equipment_wear_presentation()
+
+
+func advance_equipment_wear_observation(observation: Dictionary, delta: float) -> void:
+	if pack_variant:
+		return
+	var resolved := observation.duplicate(true)
+	resolved[&"weather"] = resolved.get(&"weather", _equipment_weather)
+	_equipment_wear = RIDER_EQUIPMENT_WEAR.advance(_equipment_wear, resolved, delta)
+	_equipment_wear_presentation_time -= maxf(delta, 0.0)
+	if _equipment_wear_presentation_time <= 0.0:
+		_equipment_wear_presentation_time = 0.08
+		_apply_equipment_wear_presentation()
+
+
+func add_equipment_crash_wear(severity: float, surface: StringName) -> void:
+	if pack_variant:
+		return
+	_equipment_wear = RIDER_EQUIPMENT_WEAR.add_crash(_equipment_wear, severity, surface)
+	_equipment_wear_presentation_time = 0.08
+	_apply_equipment_wear_presentation()
+
+
+func get_equipment_wear_snapshot() -> Dictionary:
+	return _equipment_wear.duplicate(true)
+
+
 func apply_cosmetic_tier(tier: int) -> void:
 	# Keep the emission shader variant warm and only change values at runtime.
+	_restore_clean_equipment_materials()
 	_materials[&"red"].albedo_color = Color("d93a2f")
 	_materials[&"red"].emission = Color.BLACK
 	_materials[&"red"].emission_energy_multiplier = 0.0
@@ -224,6 +300,8 @@ func apply_cosmetic_tier(tier: int) -> void:
 			_materials[&"red"].emission = Color("174f61")
 			_materials[&"red"].emission_energy_multiplier = 0.32
 			_materials[&"helmet"].albedo_color = Color("ffb52d")
+	_capture_clean_equipment_materials()
+	_apply_equipment_wear_presentation()
 
 
 func apply_pack_colors(bike_color: Color, helmet_color: Color) -> void:
@@ -236,11 +314,17 @@ func apply_pack_colors(bike_color: Color, helmet_color: Color) -> void:
 	_materials[&"red"].emission_energy_multiplier = 0.0
 	_materials[&"helmet"].albedo_color = helmet_color
 	_materials[&"jersey"].albedo_color = bike_color.lightened(0.08)
+	_capture_clean_equipment_materials()
+	_apply_equipment_wear_presentation()
 
 
 func apply_rider_cosmetics(cosmetics: Dictionary) -> void:
+	_rider_cosmetics = cosmetics.duplicate(true)
 	if _materials.is_empty():
 		return
+	var body_type := StringName(cosmetics.get(&"body_type", &"ATHLETIC"))
+	if _rider_torso_root != null:
+		_rider_torso_root.scale = _body_type_scale(body_type)
 	var accent_text := str(cosmetics.get(&"accent_color", "#FFB52D")).strip_edges()
 	if not accent_text.begins_with("#"):
 		accent_text = "#" + accent_text
@@ -265,6 +349,51 @@ func apply_rider_cosmetics(cosmetics: Dictionary) -> void:
 		accent,
 		Color("f2f0df")
 	)
+	_materials[&"goggles"].albedo_color = _cosmetic_color(
+		StringName(cosmetics.get(&"goggles", &"CLEAR")),
+		accent,
+		Color("9fd7e5")
+	)
+	_materials[&"boots"].albedo_color = _cosmetic_color(
+		StringName(cosmetics.get(&"boots", &"BLACK")),
+		accent,
+		Color("171d24")
+	)
+	_materials[&"gloves"].albedo_color = _cosmetic_color(
+		StringName(cosmetics.get(&"gloves", &"BLACK")),
+		accent,
+		Color("171d24")
+	)
+	_materials[&"protection"].albedo_color = _cosmetic_color(
+		StringName(cosmetics.get(&"protection", &"ROOST_GUARD")),
+		accent,
+		Color("e3e7e8")
+	)
+	_materials[&"accessory"].albedo_color = _cosmetic_color(
+		StringName(cosmetics.get(&"accessory", &"NONE")),
+		accent,
+		Color("293842")
+	)
+	_materials[&"skin"].albedo_color = _skin_tone_color(
+		StringName(cosmetics.get(&"skin_tone", &"MEDIUM"))
+	)
+	var palette := RIDER_GRAPHICS_CATALOG.palette(cosmetics.get(&"team_palette", &"STYLE"))
+	var palette_id := StringName(palette.get(&"palette_id", &"STYLE"))
+	var primary := accent
+	var secondary := Color("f7e5b2")
+	if palette_id != &"STYLE":
+		primary = Color.from_string("#" + str(palette.get(&"primary", "E25532")), accent)
+		secondary = Color.from_string("#" + str(palette.get(&"secondary", "F7E5B2")), Color("f7e5b2"))
+		_materials[&"red"].albedo_color = primary
+		_materials[&"jersey"].albedo_color = primary.lightened(0.05)
+	_materials[&"decal_primary"].albedo_color = primary
+	_materials[&"decal_secondary"].albedo_color = secondary
+	if _rider_goggles_mesh != null:
+		_rider_goggles_mesh.visible = StringName(cosmetics.get(&"goggles", &"CLEAR")) != &"NONE"
+	if _rider_protection_mesh != null:
+		_rider_protection_mesh.visible = StringName(cosmetics.get(&"protection", &"ROOST_GUARD")) != &"NONE"
+	if _rider_accessory_mesh != null:
+		_rider_accessory_mesh.visible = StringName(cosmetics.get(&"accessory", &"NONE")) != &"NONE"
 	var plate_color := _cosmetic_color(
 		StringName(cosmetics.get(&"number_plate", &"WHITE")),
 		accent,
@@ -275,6 +404,55 @@ func apply_rider_cosmetics(cosmetics: Dictionary) -> void:
 	for label: Label3D in _number_labels:
 		label.text = str(number)
 		label.modulate = Color("10151b") if plate_color.get_luminance() > 0.45 else Color.WHITE
+	_apply_custom_graphics(cosmetics)
+	_capture_clean_equipment_materials()
+	_apply_equipment_wear_presentation()
+
+
+func get_rider_cosmetics_snapshot() -> Dictionary:
+	return _rider_cosmetics.duplicate(true)
+
+
+func get_rider_equipment_presentation_snapshot() -> Dictionary:
+	var colors: Dictionary = {}
+	for key: StringName in [
+		&"red", &"jersey", &"denim", &"helmet", &"goggles", &"boots", &"gloves",
+		&"protection", &"accessory", &"skin", &"decal_primary", &"decal_secondary",
+	]:
+		var material := _materials.get(key) as StandardMaterial3D
+		colors[key] = material.albedo_color.to_html(false) if material != null else ""
+	return {
+		&"cosmetics": get_rider_cosmetics_snapshot(),
+		&"wear": get_equipment_wear_snapshot(),
+		&"colors": colors,
+		&"visible": {
+			&"goggles": _rider_goggles_mesh != null and _rider_goggles_mesh.visible,
+			&"protection": _rider_protection_mesh != null and _rider_protection_mesh.visible,
+			&"accessory": _rider_accessory_mesh != null and _rider_accessory_mesh.visible,
+			&"decal_meshes": _visible_graphics_mesh_count(),
+			&"sponsor_marks": _visible_sponsor_mark_count(),
+		},
+		&"identity": {
+			&"body_type": str(_rider_cosmetics.get(&"body_type", "ATHLETIC")),
+			&"skin_tone": str(_rider_cosmetics.get(&"skin_tone", "MEDIUM")),
+			&"voice": str(_rider_cosmetics.get(&"voice", "FOCUSED")),
+			&"body_scale": _rider_torso_root.scale if _rider_torso_root != null else Vector3.ONE,
+		},
+		&"graphics": {
+			&"team_palette": str(_rider_cosmetics.get(&"team_palette", "STYLE")),
+			&"decal_id": str(_rider_cosmetics.get(&"decal_id", "CLEAN")),
+			&"sponsor_id": str(_rider_cosmetics.get(&"sponsor_id", "NONE")),
+			&"sponsor_placement": str(_rider_cosmetics.get(&"sponsor_placement", "SHROUDS")),
+		},
+		&"separate_surfaces": {
+			&"gloves": _glove_multimesh != null and _glove_multimesh.instance_count == 2,
+			&"boots": _boot_multimesh != null and _boot_multimesh.instance_count == 2,
+		},
+		&"overlays": {
+			&"soil_visible": _any_overlay_visible(_wear_splats),
+			&"crash_visible": _any_overlay_visible(_crash_scratches),
+		},
+	}
 
 
 func apply_pack_identity(bike_color: Color, helmet_color: Color, rider_number: int) -> void:
@@ -288,15 +466,39 @@ func _cosmetic_color(cosmetic_id: StringName, accent: Color, fallback: Color) ->
 		&"FACTORY", &"FACTORY_RED", &"MESA_RED": return Color("d93a2f")
 		&"DESERT", &"DESERT_ORANGE", &"DESERT_WORKS", &"RUST": return Color("e06d35")
 		&"DESERT_CREAM", &"MESA_SAND": return Color("d6ad6c")
-		&"AQUA", &"MESA_CYAN", &"MESA_BLUE", &"NIGHT_CYAN": return Color("279ec2")
+		&"BROWN", &"NECK_ROLL": return Color("563624")
+		&"AQUA", &"MESA_CYAN", &"MESA_BLUE", &"NIGHT_CYAN", &"CYAN", &"CYAN_LENS": return Color("279ec2")
 		&"STEALTH", &"PRO_BLACK", &"NIGHT_BLACK", &"NIGHT_RACE", &"BLACK", &"CHARCOAL": return Color("171d24")
-		&"TOUR_CHAMPION", &"CHAMPION_GOLD", &"GOLD", &"BLACK_GOLD": return Color("d8a52e")
-		&"CLASSIC_WHITE", &"WHITE": return Color("f2f0df")
+		&"TOUR_CHAMPION", &"CHAMPION_GOLD", &"GOLD", &"BLACK_GOLD", &"GOLD_MIRROR", &"CHAMPION_SASH": return Color("d8a52e")
+		&"CLASSIC_WHITE", &"WHITE", &"ROOST_GUARD": return Color("f2f0df")
+		&"CLEAR": return Color("9fd7e5")
+		&"AMBER": return Color("e49a36")
+		&"ENDURO_VEST": return Color("b47a43")
+		&"CHEST_PLATE": return Color("263742")
+		&"PRO_ARMOR": return Color("d8a52e")
+		&"HYDRATION_PACK": return Color("1d6577")
+		&"NONE": return fallback
 		&"FACTORY_YELLOW", &"YELLOW": return Color("f2b632")
 		&"DENIM": return Color("1a365d")
 		&"CREAM": return Color("f7e5b2")
 		&"ACCENT": return accent
 	return accent if not str(cosmetic_id).is_empty() else fallback
+
+
+func _body_type_scale(body_type: StringName) -> Vector3:
+	match body_type:
+		&"COMPACT": return Vector3(0.91, 0.98, 0.94)
+		&"POWERFUL": return Vector3(1.11, 1.02, 1.06)
+	return Vector3.ONE
+
+
+func _skin_tone_color(skin_tone: StringName) -> Color:
+	match skin_tone:
+		&"LIGHT": return Color("f2c7a5")
+		&"MEDIUM_LIGHT": return Color("dca47f")
+		&"MEDIUM_DEEP": return Color("8e573e")
+		&"DEEP": return Color("543224")
+	return Color("b97856")
 
 
 func update_pack_pose(
@@ -362,20 +564,137 @@ func update_pack_pose(
 
 func set_surface(surface: StringName) -> void:
 	_current_surface = surface
-	match surface:
-		&"MUD":
-			_surface_tint = Color(0.19, 0.105, 0.055, 1.0)
-		&"GRAVEL", &"ROCK":
-			_surface_tint = Color(0.42, 0.38, 0.33, 1.0)
-		&"LOOSE_DIRT":
-			_surface_tint = Color(0.51, 0.285, 0.12, 1.0)
-		_:
-			_surface_tint = Color(0.44, 0.25, 0.12, 1.0)
+	_surface_tint = surface_feedback_tint(surface)
 	_set_particle_color(_dust, 0.36)
 	_set_particle_color(_roost, 0.74)
 	if not pack_variant:
 		_set_particle_color(_clods, 1.0)
 		_set_particle_color(_landing_dust, 0.58)
+
+
+static func surface_feedback_tint(surface: Variant) -> Color:
+	match StringName(str(surface).strip_edges().to_upper().replace(" ", "_").replace("-", "_")):
+		&"MUD":
+			return Color(0.19, 0.105, 0.055, 1.0)
+		&"SAND":
+			return Color(0.72, 0.57, 0.34, 1.0)
+		&"GRASS":
+			return Color(0.28, 0.38, 0.20, 1.0)
+		&"GRAVEL":
+			return Color(0.42, 0.38, 0.33, 1.0)
+		&"ROCK":
+			return Color(0.31, 0.30, 0.29, 1.0)
+		&"LOOSE_DIRT":
+			return Color(0.51, 0.285, 0.12, 1.0)
+		&"LOAM":
+			return Color(0.30, 0.205, 0.12, 1.0)
+		&"DIRT":
+			return Color(0.39, 0.225, 0.11, 1.0)
+		_:
+			return Color(0.44, 0.25, 0.12, 1.0)
+
+
+func _build_equipment_wear_overlays() -> void:
+	var splat_specs: Array = [
+		["MudSplatBackA", 0.075, Vector3(-0.14, 1.09, 0.278), Vector3(1.35, 0.62, 0.22), _rider_torso_root],
+		["MudSplatBackB", 0.052, Vector3(0.12, 1.22, 0.275), Vector3(1.0, 0.72, 0.20), _rider_torso_root],
+		["MudSplatHelmet", 0.058, Vector3(0.13, 1.69, 0.015), Vector3(0.9, 1.3, 0.55), _rider_torso_root],
+		["MudSplatHip", 0.064, Vector3(-0.16, 0.74, 0.52), Vector3(0.82, 1.25, 0.42), _rider_torso_root],
+		["MudSplatFender", 0.07, Vector3(0.13, 0.73, 0.91), Vector3(1.2, 0.48, 1.7), self],
+		["MudSplatPlate", 0.048, Vector3(-0.41, 0.49, 0.69), Vector3(0.25, 1.35, 0.8), self],
+	]
+	for spec: Array in splat_specs:
+		var splat := _add_sphere(spec[0], spec[1], spec[2], &"wear", spec[4])
+		splat.scale = spec[3]
+		splat.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		splat.visible = false
+		_wear_splats.append(splat)
+	var scratch_specs: Array = [
+		["CrashScratchBackA", Vector3(0.24, 0.024, 0.014), Vector3(-0.055, 1.17, 0.274), Vector3(0.0, 0.0, -0.42), _rider_torso_root],
+		["CrashScratchBackB", Vector3(0.18, 0.018, 0.014), Vector3(0.075, 1.08, 0.276), Vector3(0.0, 0.0, 0.36), _rider_torso_root],
+		["CrashScratchHelmet", Vector3(0.16, 0.018, 0.014), Vector3(-0.08, 1.72, 0.012), Vector3(0.0, 0.0, -0.25), _rider_torso_root],
+		["CrashScratchFender", Vector3(0.22, 0.018, 0.025), Vector3(-0.15, 0.735, 0.93), Vector3(0.0, 0.25, 0.0), self],
+	]
+	for spec: Array in scratch_specs:
+		var scratch := _add_box(spec[0], spec[1], spec[2], &"scrape", spec[3], spec[4])
+		scratch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		scratch.visible = false
+		_crash_scratches.append(scratch)
+
+
+func _capture_clean_equipment_materials() -> void:
+	if pack_variant:
+		return
+	for key: StringName in WEARABLE_MATERIAL_KEYS:
+		var material := _materials.get(key) as StandardMaterial3D
+		if material == null:
+			continue
+		_clean_material_colors[key] = material.albedo_color
+		_clean_material_roughness[key] = material.roughness
+
+
+func _restore_clean_equipment_materials() -> void:
+	if pack_variant:
+		return
+	for key: StringName in WEARABLE_MATERIAL_KEYS:
+		var material := _materials.get(key) as StandardMaterial3D
+		if material == null or not _clean_material_colors.has(key):
+			continue
+		material.albedo_color = _clean_material_colors[key]
+		material.roughness = float(_clean_material_roughness.get(key, material.roughness))
+
+
+func _apply_equipment_wear_presentation() -> void:
+	if pack_variant or _materials.is_empty() or _clean_material_colors.is_empty():
+		return
+	var dry_dust := clampf(float(_equipment_wear.get(&"dry_dust", 0.0)), 0.0, 1.0)
+	var mud := clampf(float(_equipment_wear.get(&"mud", 0.0)), 0.0, 1.0)
+	var wetness := clampf(float(_equipment_wear.get(&"wetness", 0.0)), 0.0, 1.0)
+	var crash_wear := clampf(float(_equipment_wear.get(&"crash_wear", 0.0)), 0.0, 1.0)
+	var dust_color := Color("9b7045")
+	var mud_color := Color("352116")
+	var scrape_color := Color("161719")
+	for key: StringName in WEARABLE_MATERIAL_KEYS:
+		var material := _materials.get(key) as StandardMaterial3D
+		if material == null or not _clean_material_colors.has(key):
+			continue
+		var clean_color: Color = _clean_material_colors[key]
+		var worn_color := clean_color.lerp(dust_color, dry_dust * 0.28)
+		worn_color = worn_color.lerp(mud_color, mud * 0.54)
+		worn_color = worn_color.lerp(scrape_color, crash_wear * 0.16)
+		worn_color = worn_color.darkened(wetness * 0.11)
+		material.albedo_color = worn_color
+		var clean_roughness := float(_clean_material_roughness.get(key, material.roughness))
+		material.roughness = clampf(
+			clean_roughness + dry_dust * 0.16 + mud * 0.08 - wetness * 0.34,
+			0.08,
+			1.0
+		)
+	var soil_strength := clampf(maxf(dry_dust * 0.86, mud), 0.0, 1.0)
+	var wear_material := _materials.get(&"wear") as StandardMaterial3D
+	if wear_material != null:
+		var soil_color := dust_color.lerp(mud_color, mud / maxf(dry_dust + mud, 0.001))
+		var overlay_alpha := (
+			clampf(0.24 + soil_strength * 0.70, 0.0, 0.94)
+			if soil_strength >= 0.085 else 0.0
+		)
+		wear_material.albedo_color = Color(soil_color.r, soil_color.g, soil_color.b, overlay_alpha)
+	for splat: MeshInstance3D in _wear_splats:
+		splat.visible = soil_strength >= 0.085
+	var scrape_material := _materials.get(&"scrape") as StandardMaterial3D
+	if scrape_material != null:
+		scrape_material.albedo_color = Color(
+			scrape_color.r, scrape_color.g, scrape_color.b, crash_wear * 0.94
+		)
+	for scratch: MeshInstance3D in _crash_scratches:
+		scratch.visible = crash_wear >= 0.12
+
+
+func _any_overlay_visible(overlays: Array[MeshInstance3D]) -> bool:
+	for overlay: MeshInstance3D in overlays:
+		if is_instance_valid(overlay) and overlay.visible:
+			return true
+	return false
 
 
 func _create_materials() -> void:
@@ -388,8 +707,21 @@ func _create_materials() -> void:
 	_materials[&"jersey"] = _material(Color("d93a2f"), 0.38, 0.0)
 	_materials[&"helmet"] = _material(Color("f2b632"), 0.22, 0.0)
 	_materials[&"visor"] = _material(Color("121c24"), 0.1, 1.0)
+	_materials[&"goggles"] = _material(Color("9fd7e5"), 0.12, 0.65)
+	_materials[&"boots"] = _material(Color("171d24"), 0.72, 0.0)
+	_materials[&"gloves"] = _material(Color("171d24"), 0.56, 0.0)
+	_materials[&"protection"] = _material(Color("f2f0df"), 0.34, 0.0)
+	_materials[&"accessory"] = _material(Color("293842"), 0.62, 0.0)
+	_materials[&"skin"] = _material(Color("b97856"), 0.64, 0.0)
+	_materials[&"decal_primary"] = _material(Color("d93a2f"), 0.32, 0.0)
+	_materials[&"decal_secondary"] = _material(Color("f7e5b2"), 0.38, 0.0)
+	_materials[&"wear"] = _overlay_material(Color(0.25, 0.14, 0.07, 0.0))
+	_materials[&"scrape"] = _overlay_material(Color(0.08, 0.08, 0.09, 0.0))
 	if pack_variant:
-		for neutral_key: StringName in [&"cream", &"rubber", &"metal", &"engine", &"denim", &"visor"]:
+		for neutral_key: StringName in [
+			&"cream", &"rubber", &"metal", &"engine", &"denim", &"visor",
+			&"goggles", &"boots", &"gloves", &"protection", &"accessory", &"skin",
+		]:
 			if not _shared_pack_neutral_materials.has(neutral_key):
 				_shared_pack_neutral_materials[neutral_key] = _materials[neutral_key]
 			else:
@@ -515,20 +847,174 @@ func _build_bike() -> void:
 	_batch_capsule(rider_parts, &"jersey", 0.265, 0.7, Vector3(0.0, 1.08, 0.04), Vector3(-0.18, 0.0, 0.0), Vector3(1.0, 1.0, 0.78))
 	_batch_box(rider_parts, &"jersey", Vector3(0.5, 0.25, 0.34), Vector3(0.0, 0.82, 0.22), Vector3(-0.08, 0.0, 0.0))
 	_batch_capsule(rider_parts, &"denim", 0.2, 0.54, Vector3(0.0, 0.72, 0.32), Vector3(0.0, 0.0, PI * 0.5), Vector3(1.0, 0.86, 1.0))
-	_batch_box(rider_parts, &"cream", Vector3(0.48, 0.34, 0.07), Vector3(0.0, 1.12, -0.205), Vector3(-0.14, 0.0, 0.0))
-	_batch_box(rider_parts, &"cream", Vector3(0.42, 0.36, 0.05), Vector3(0.0, 1.08, 0.235), Vector3(-0.18, 0.0, 0.0))
 	_batch_box(rider_parts, &"jersey", Vector3(0.055, 0.24, 0.025), Vector3(-0.09, 1.08, 0.27), Vector3(-0.18, 0.0, 0.0))
 	_batch_box(rider_parts, &"jersey", Vector3(0.055, 0.24, 0.025), Vector3(0.09, 1.08, 0.27), Vector3(-0.18, 0.0, 0.0))
-	_batch_cylinder(rider_parts, &"jersey", 0.095, 0.18, Vector3(0.0, 1.38, -0.03), Vector3.ZERO, 10)
+	_batch_cylinder(rider_parts, &"skin", 0.095, 0.18, Vector3(0.0, 1.38, -0.03), Vector3.ZERO, 10)
+	_batch_box(rider_parts, &"skin", Vector3(0.23, 0.10, 0.045), Vector3(0.0, 1.54, -0.405), Vector3(-0.08, 0.0, 0.0))
 	_batch_sphere(rider_parts, &"helmet", 0.285, Vector3(0.0, 1.6, -0.17), Vector3.ONE)
 	_batch_box(rider_parts, &"helmet", Vector3(0.36, 0.19, 0.22), Vector3(0.0, 1.52, -0.39), Vector3(-0.08, 0.0, 0.0))
 	_batch_box(rider_parts, &"helmet", Vector3(0.43, 0.035, 0.28), Vector3(0.0, 1.82, -0.31), Vector3(-0.18, 0.0, 0.0))
 	_batch_box(rider_parts, &"helmet", Vector3(0.065, 0.43, 0.22), Vector3(-0.24, 1.62, -0.15), Vector3(0.0, 0.0, 0.08))
-	_batch_box(rider_parts, &"visor", Vector3(0.39, 0.13, 0.055), Vector3(0.0, 1.64, -0.445), Vector3(-0.08, 0.0, 0.0))
 	_commit_mesh_batch("RiderBodyBatch", rider_parts, _rider_torso_root)
+	var goggles_parts: Dictionary = {}
+	_batch_box(goggles_parts, &"goggles", Vector3(0.39, 0.13, 0.055), Vector3(0.0, 1.64, -0.445), Vector3(-0.08, 0.0, 0.0))
+	_commit_mesh_batch("RiderGoggles", goggles_parts, _rider_torso_root)
+	_rider_goggles_mesh = _rider_torso_root.get_node_or_null("RiderGoggles_goggles") as MeshInstance3D
+	var protection_parts: Dictionary = {}
+	_batch_box(protection_parts, &"protection", Vector3(0.48, 0.34, 0.07), Vector3(0.0, 1.12, -0.205), Vector3(-0.14, 0.0, 0.0))
+	_batch_box(protection_parts, &"protection", Vector3(0.42, 0.36, 0.05), Vector3(0.0, 1.08, 0.235), Vector3(-0.18, 0.0, 0.0))
+	_commit_mesh_batch("RiderProtection", protection_parts, _rider_torso_root)
+	_rider_protection_mesh = _rider_torso_root.get_node_or_null("RiderProtection_protection") as MeshInstance3D
+	var accessory_parts: Dictionary = {}
+	_batch_box(accessory_parts, &"accessory", Vector3(0.32, 0.4, 0.13), Vector3(0.0, 1.06, 0.33), Vector3(-0.18, 0.0, 0.0))
+	_batch_torus(accessory_parts, &"accessory", 0.16, 0.205, Vector3(0.0, 1.39, -0.02), Vector3(PI * 0.5, 0.0, 0.0), 12, 5)
+	_commit_mesh_batch("RiderAccessory", accessory_parts, _rider_torso_root)
+	_rider_accessory_mesh = _rider_torso_root.get_node_or_null("RiderAccessory_accessory") as MeshInstance3D
+	_rider_accessory_mesh.visible = false
 	_build_rider_limb_multimeshes()
 	_update_suspension_geometry(-0.39, -0.39)
 	_update_rider_limbs(0.0, 0.0, false)
+
+
+func _build_custom_graphics() -> void:
+	for decal_id: StringName in [&"CLEAN", &"SPEED_STRIPES", &"CHECKERED", &"TOPO_LINES", &"LIGHTNING"]:
+		var root := Node3D.new()
+		root.name = "Decal_%s" % String(decal_id)
+		root.visible = false
+		add_child(root)
+		_decal_roots[decal_id] = root
+
+	var stripes := _decal_roots[&"SPEED_STRIPES"]
+	for side: float in [-1.0, 1.0]:
+		for stripe_index: int in 2:
+			_add_box(
+				"SpeedStripe_%s_%d" % ["L" if side < 0.0 else "R", stripe_index],
+				Vector3(0.014, 0.052, 0.29),
+				Vector3(side * 0.306, 0.51 + stripe_index * 0.075, -0.105 + stripe_index * 0.025),
+				&"decal_secondary",
+				Vector3(-0.11, 0.0, side * 0.11),
+				stripes
+			)
+
+	var checkers := _decal_roots[&"CHECKERED"]
+	for side: float in [-1.0, 1.0]:
+		for row: int in 2:
+			for column: int in 3:
+				if (row + column) % 2 == 0:
+					_add_box(
+						"Checker_%s_%d_%d" % ["L" if side < 0.0 else "R", row, column],
+						Vector3(0.015, 0.074, 0.074),
+						Vector3(side * 0.307, 0.45 + row * 0.077, -0.18 + column * 0.078),
+						&"decal_secondary",
+						Vector3(-0.1, 0.0, side * 0.08),
+						checkers
+					)
+
+	var topo := _decal_roots[&"TOPO_LINES"]
+	for side: float in [-1.0, 1.0]:
+		for line_index: int in 4:
+			_add_box(
+				"Topo_%s_%d" % ["L" if side < 0.0 else "R", line_index],
+				Vector3(0.014, 0.018, 0.27 - line_index * 0.025),
+				Vector3(side * 0.307, 0.43 + line_index * 0.065, -0.09 + sin(float(line_index)) * 0.035),
+				&"decal_secondary",
+				Vector3(-0.1, 0.0, side * (0.05 + line_index * 0.025)),
+				topo
+			)
+
+	var lightning := _decal_roots[&"LIGHTNING"]
+	for side: float in [-1.0, 1.0]:
+		for bolt_index: int in 3:
+			_add_box(
+				"Lightning_%s_%d" % ["L" if side < 0.0 else "R", bolt_index],
+				Vector3(0.015, 0.052, 0.19),
+				Vector3(side * 0.308, 0.58 - bolt_index * 0.075, -0.17 + bolt_index * 0.115),
+				&"decal_secondary",
+				Vector3(-0.1, 0.0, side * (-0.48 if bolt_index % 2 == 0 else 0.48)),
+				lightning
+			)
+
+	for placement_id: StringName in [&"SHROUDS", &"FENDERS", &"RIDER_KIT"]:
+		var root := Node3D.new()
+		root.name = "Sponsor_%s" % String(placement_id)
+		root.visible = false
+		if placement_id == &"RIDER_KIT":
+			_rider_torso_root.add_child(root)
+		else:
+			add_child(root)
+		_sponsor_roots[placement_id] = root
+	_add_sponsor_label(_sponsor_roots[&"SHROUDS"], Vector3(-0.312, 0.50, -0.08), Vector3(0.0, -PI * 0.5, 0.0), 0.0016)
+	_add_sponsor_label(_sponsor_roots[&"SHROUDS"], Vector3(0.312, 0.50, -0.08), Vector3(0.0, PI * 0.5, 0.0), 0.0016)
+	_add_sponsor_label(_sponsor_roots[&"FENDERS"], Vector3(0.0, 0.715, 0.88), Vector3(-PI * 0.5, 0.0, 0.0), 0.0018)
+	_add_sponsor_label(_sponsor_roots[&"FENDERS"], Vector3(0.0, 0.45, -0.66), Vector3(-PI * 0.5, PI, 0.0), 0.0018)
+	_add_sponsor_label(_sponsor_roots[&"RIDER_KIT"], Vector3(0.0, 1.10, -0.245), Vector3(0.0, PI, -0.14), 0.0018)
+	_add_sponsor_label(_sponsor_roots[&"RIDER_KIT"], Vector3(0.0, 1.10, 0.278), Vector3(-0.18, 0.0, 0.0), 0.0018)
+
+
+func _add_sponsor_label(
+	parent: Node3D,
+	position: Vector3,
+	rotation: Vector3,
+	pixel_size: float
+) -> void:
+	var label := Label3D.new()
+	label.name = "SponsorMark"
+	label.text = ""
+	label.font_size = 84
+	label.outline_size = 14
+	label.pixel_size = pixel_size
+	label.position = position
+	label.rotation = rotation
+	label.modulate = Color.WHITE
+	label.outline_modulate = Color("12171b")
+	label.no_depth_test = false
+	parent.add_child(label)
+	_sponsor_labels.append(label)
+
+
+func _apply_custom_graphics(cosmetics: Dictionary) -> void:
+	if pack_variant or _decal_roots.is_empty():
+		return
+	var decal_id := RIDER_GRAPHICS_CATALOG.sanitize_field(
+		&"decal_id", cosmetics.get(&"decal_id", &"CLEAN")
+	)
+	for root: Node3D in _decal_roots.values():
+		root.visible = root == _decal_roots.get(decal_id)
+
+	var sponsor := RIDER_GRAPHICS_CATALOG.sponsor(cosmetics.get(&"sponsor_id", &"NONE"))
+	var sponsor_id := StringName(sponsor.get(&"sponsor_id", &"NONE"))
+	var placement := RIDER_GRAPHICS_CATALOG.sanitize_field(
+		&"sponsor_placement", cosmetics.get(&"sponsor_placement", &"SHROUDS")
+	)
+	var has_sponsor := sponsor_id != &"NONE"
+	for placement_id: StringName in _sponsor_roots:
+		_sponsor_roots[placement_id].visible = has_sponsor and (
+			placement == placement_id or placement == &"FULL_KIT"
+		)
+	var sponsor_color := Color.from_string("#" + str(sponsor.get(&"color", "FFFFFF")), Color.WHITE)
+	var mark := str(sponsor.get(&"short_mark", ""))
+	for label: Label3D in _sponsor_labels:
+		label.text = mark
+		label.modulate = sponsor_color
+
+
+func _visible_graphics_mesh_count() -> int:
+	var count := 0
+	for root: Node3D in _decal_roots.values():
+		if not root.visible:
+			continue
+		for child: Node in root.get_children():
+			if child is MeshInstance3D and (child as MeshInstance3D).visible:
+				count += 1
+	return count
+
+
+func _visible_sponsor_mark_count() -> int:
+	var count := 0
+	for label: Label3D in _sponsor_labels:
+		if label.is_visible_in_tree() and not label.text.is_empty():
+			count += 1
+	return count
 
 
 func _build_dust(include_player_feedback: bool = true) -> void:
@@ -926,11 +1412,26 @@ func _build_rider_limb_multimeshes() -> void:
 	_arm_multimesh = MultiMesh.new()
 	_arm_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	_arm_multimesh.mesh = arm_mesh
-	_arm_multimesh.instance_count = 8
+	_arm_multimesh.instance_count = 6
 	var arms := MultiMeshInstance3D.new()
 	arms.name = "ArticulatedArms"
 	arms.multimesh = _arm_multimesh
 	_rider_root.add_child(arms)
+
+	var glove_mesh := CylinderMesh.new()
+	glove_mesh.height = 1.0
+	glove_mesh.top_radius = 1.0
+	glove_mesh.bottom_radius = 1.0
+	glove_mesh.radial_segments = 8
+	glove_mesh.material = _materials[&"gloves"]
+	_glove_multimesh = MultiMesh.new()
+	_glove_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_glove_multimesh.mesh = glove_mesh
+	_glove_multimesh.instance_count = 2
+	var gloves := MultiMeshInstance3D.new()
+	gloves.name = "ArticulatedGloves"
+	gloves.multimesh = _glove_multimesh
+	_rider_root.add_child(gloves)
 
 	var leg_mesh := CylinderMesh.new()
 	leg_mesh.height = 1.0
@@ -941,11 +1442,26 @@ func _build_rider_limb_multimeshes() -> void:
 	_leg_multimesh = MultiMesh.new()
 	_leg_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	_leg_multimesh.mesh = leg_mesh
-	_leg_multimesh.instance_count = 10
+	_leg_multimesh.instance_count = 8
 	var legs := MultiMeshInstance3D.new()
 	legs.name = "ArticulatedLegs"
 	legs.multimesh = _leg_multimesh
 	_rider_root.add_child(legs)
+
+	var boot_mesh := CylinderMesh.new()
+	boot_mesh.height = 1.0
+	boot_mesh.top_radius = 1.0
+	boot_mesh.bottom_radius = 1.0
+	boot_mesh.radial_segments = 8
+	boot_mesh.material = _materials[&"boots"]
+	_boot_multimesh = MultiMesh.new()
+	_boot_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_boot_multimesh.mesh = boot_mesh
+	_boot_multimesh.instance_count = 2
+	var boots := MultiMeshInstance3D.new()
+	boots.name = "ArticulatedBoots"
+	boots.multimesh = _boot_multimesh
+	_rider_root.add_child(boots)
 
 
 func _update_suspension_geometry(front_wheel_y: float, rear_wheel_y: float) -> void:
@@ -960,7 +1476,7 @@ func _update_suspension_geometry(front_wheel_y: float, rear_wheel_y: float) -> v
 
 
 func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
-	if _arm_multimesh == null or _leg_multimesh == null:
+	if _arm_multimesh == null or _glove_multimesh == null or _leg_multimesh == null or _boot_multimesh == null:
 		return
 	var attack := 0.065 if boosting else 0.0
 	var lean_shift := clampf(lean, -1.0, 1.0) * 0.035
@@ -996,10 +1512,10 @@ func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
 	_arm_multimesh.set_instance_transform(1, _segment_transform(left_elbow, left_hand, 0.072))
 	_arm_multimesh.set_instance_transform(2, _segment_transform(right_shoulder, right_elbow, 0.087))
 	_arm_multimesh.set_instance_transform(3, _segment_transform(right_elbow, right_hand, 0.072))
-	_arm_multimesh.set_instance_transform(4, _segment_transform(left_hand + Vector3(-0.045, 0.0, 0.0), left_hand + Vector3(0.035, 0.0, 0.0), 0.1))
-	_arm_multimesh.set_instance_transform(5, _segment_transform(right_hand + Vector3(-0.035, 0.0, 0.0), right_hand + Vector3(0.045, 0.0, 0.0), 0.1))
-	_arm_multimesh.set_instance_transform(6, _segment_transform(left_shoulder + Vector3(0.0, -0.055, 0.0), left_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
-	_arm_multimesh.set_instance_transform(7, _segment_transform(right_shoulder + Vector3(0.0, -0.055, 0.0), right_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
+	_arm_multimesh.set_instance_transform(4, _segment_transform(left_shoulder + Vector3(0.0, -0.055, 0.0), left_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
+	_arm_multimesh.set_instance_transform(5, _segment_transform(right_shoulder + Vector3(0.0, -0.055, 0.0), right_shoulder + Vector3(0.0, 0.055, 0.0), 0.12))
+	_glove_multimesh.set_instance_transform(0, _segment_transform(left_hand + Vector3(-0.045, 0.0, 0.0), left_hand + Vector3(0.035, 0.0, 0.0), 0.1))
+	_glove_multimesh.set_instance_transform(1, _segment_transform(right_hand + Vector3(-0.035, 0.0, 0.0), right_hand + Vector3(0.045, 0.0, 0.0), 0.1))
 
 	_trick_limb_targets = {
 		&"pose_id": _active_trick_pose,
@@ -1022,12 +1538,12 @@ func _update_rider_limbs(steer: float, lean: float, boosting: bool) -> void:
 	_leg_multimesh.set_instance_transform(1, _segment_transform(left_knee, left_foot, 0.1))
 	_leg_multimesh.set_instance_transform(2, _segment_transform(right_hip, right_knee, 0.12))
 	_leg_multimesh.set_instance_transform(3, _segment_transform(right_knee, right_foot, 0.1))
-	_leg_multimesh.set_instance_transform(4, _segment_transform(left_foot + Vector3(0.0, 0.09, -0.11), left_foot + Vector3(0.0, -0.065, 0.11), 0.135))
-	_leg_multimesh.set_instance_transform(5, _segment_transform(right_foot + Vector3(0.0, 0.09, -0.11), right_foot + Vector3(0.0, -0.065, 0.11), 0.135))
-	_leg_multimesh.set_instance_transform(6, _segment_transform(left_knee + Vector3(0.0, -0.08, -0.015), left_knee + Vector3(0.0, 0.08, -0.015), 0.135))
-	_leg_multimesh.set_instance_transform(7, _segment_transform(right_knee + Vector3(0.0, -0.08, -0.015), right_knee + Vector3(0.0, 0.08, -0.015), 0.135))
-	_leg_multimesh.set_instance_transform(8, _segment_transform(left_hip + Vector3(0.0, -0.055, 0.0), left_hip + Vector3(0.0, 0.055, 0.0), 0.13))
-	_leg_multimesh.set_instance_transform(9, _segment_transform(right_hip + Vector3(0.0, -0.055, 0.0), right_hip + Vector3(0.0, 0.055, 0.0), 0.13))
+	_leg_multimesh.set_instance_transform(4, _segment_transform(left_knee + Vector3(0.0, -0.08, -0.015), left_knee + Vector3(0.0, 0.08, -0.015), 0.135))
+	_leg_multimesh.set_instance_transform(5, _segment_transform(right_knee + Vector3(0.0, -0.08, -0.015), right_knee + Vector3(0.0, 0.08, -0.015), 0.135))
+	_leg_multimesh.set_instance_transform(6, _segment_transform(left_hip + Vector3(0.0, -0.055, 0.0), left_hip + Vector3(0.0, 0.055, 0.0), 0.13))
+	_leg_multimesh.set_instance_transform(7, _segment_transform(right_hip + Vector3(0.0, -0.055, 0.0), right_hip + Vector3(0.0, 0.055, 0.0), 0.13))
+	_boot_multimesh.set_instance_transform(0, _segment_transform(left_foot + Vector3(0.0, 0.09, -0.11), left_foot + Vector3(0.0, -0.065, 0.11), 0.135))
+	_boot_multimesh.set_instance_transform(1, _segment_transform(right_foot + Vector3(0.0, 0.09, -0.11), right_foot + Vector3(0.0, -0.065, 0.11), 0.135))
 
 
 func get_trick_animation_snapshot() -> Dictionary:
@@ -1297,4 +1813,14 @@ func _material(color: Color, roughness: float, metallic: float) -> StandardMater
 	result.albedo_color = color
 	result.roughness = roughness
 	result.metallic = metallic
+	return result
+
+
+func _overlay_material(color: Color) -> StandardMaterial3D:
+	var result := StandardMaterial3D.new()
+	result.albedo_color = color
+	result.roughness = 0.92
+	result.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	result.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	result.render_priority = 1
 	return result

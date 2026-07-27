@@ -47,6 +47,15 @@ func _run() -> void:
 		and StringName(tier_five_config.rules.get(&"competition_id", &"")) == StringName(tier_five.get("competition_id", &"")),
 		"challenge session composition dropped the exact competition ID"
 	)
+	var tier_zero_context := schedule.run_context(tier_zero)
+	var forced_response := tier_zero_config.rules.get(&"forced_control_response", {}) as Dictionary
+	_assert(
+		StringName(tier_zero_context.get("transmission_mode", &"")) == &"AUTOMATIC"
+		and StringName(tier_zero_config.rules.get(&"forced_transmission_mode", &"")) == &"AUTOMATIC"
+		and str(tier_zero_context.get("control_signature", ""))
+			== InputRouter.control_response_signature(forced_response),
+		"challenge signature and runtime did not share equalized transmission/control rules"
+	)
 
 	var profile: Variant = PLAYER_PROFILE_SCRIPT.new()
 	profile.persistence_enabled = false

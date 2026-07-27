@@ -368,7 +368,7 @@ func _build_ground() -> void:
 	# A textured bedrock layer closes the entire district beneath the sculpted
 	# terrain. It is normally hidden, but makes even a collision seam landable.
 	var catch_floor := _add_static_box("PineCatchFloor", Vector3(920.0, 1.0, 820.0), Vector3(0.0, 0.0, 0.0), &"forest_floor")
-	_tag_surface(catch_floor, &"LOAM", 1.08, 1.24)
+	_tag_surface(catch_floor, &"GRASS", 0.52, 0.42)
 	_add_static_box("NorthRidge", Vector3(800.0, 34.0, 14.0), Vector3(0.0, 14.0, -356.0), &"moss", Vector3(0.0, 0.0, -0.025))
 	_add_static_box("SouthRidge", Vector3(800.0, 30.0, 14.0), Vector3(0.0, 12.0, 356.0), &"moss", Vector3(0.0, 0.0, 0.025))
 	_add_static_box("EastRidge", Vector3(14.0, 38.0, 700.0), Vector3(406.0, 16.0, 0.0), &"moss", Vector3(0.0, 0.0, 0.025))
@@ -1643,7 +1643,7 @@ func _attach_generated_terrain(data: Dictionary) -> void:
 	body.name = "GeneratedPineTerrainCollision"
 	body.collision_layer = 2
 	body.collision_mask = 1
-	_tag_surface(body, &"LOAM", 1.12, 1.38)
+	_tag_surface(body, &"GRASS", 0.52, 0.42)
 	add_child(body)
 	var shape := ConcavePolygonShape3D.new()
 	shape.backface_collision = true

@@ -84,7 +84,7 @@ func _run() -> void:
 	service.call(&"_refresh_settings_text")
 	var camera_items: Array = service.get("_settings_items") as Array
 	var expected_keys: Array[StringName] = [
-		&"visual_quality", &"mode", &"distance_scale", &"height_scale",
+		&"mode", &"distance_scale", &"height_scale",
 		&"stiffness_scale", &"look_sensitivity", &"fov_degrees", &"shake_intensity",
 	]
 	_check(camera_items.size() == expected_keys.size(), "Camera page does not expose the complete preference set")

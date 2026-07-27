@@ -118,7 +118,9 @@ func _run() -> void:
 		"Academy first pass did not credit its exact reward"
 	)
 	_check(
-		_payoff_ids(academy_payoff.get(&"unlocks", [])) == [&"TORQUE_PIPE", &"GATE_DROP", &"BERM_LINES"],
+		_payoff_ids(academy_payoff.get(&"unlocks", [])) == [
+			&"TORQUE_PIPE", &"SURFACE_READING", &"GATE_DROP", &"BERM_LINES",
+		],
 		"Academy payoff did not expose the exact part and lesson access delta"
 	)
 	var academy_repeat_before := PAYOFF_SCRIPT.capture(Profile)
@@ -160,7 +162,7 @@ func _run() -> void:
 
 	InputRouter.call(&"_set_input_mode", prior_input_mode)
 	if _failures.is_empty():
-		print("PROGRESSION PAYOFF PROBE: PASS  //  first=8+2 duplicate=empty invalid=trusted sponsor=retained academy=3 domain=events-only pine=two-clears targets=next-event results=3x175%")
+		print("PROGRESSION PAYOFF PROBE: PASS  //  first=8+2 duplicate=empty invalid=trusted sponsor=retained academy=4 domain=events-only pine=two-clears targets=next-event results=3x175%")
 		get_tree().quit(0)
 		return
 	for failure: String in _failures:

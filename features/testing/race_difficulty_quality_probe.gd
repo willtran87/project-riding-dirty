@@ -31,6 +31,13 @@ func _run() -> void:
 		str(legacy_store.get_value(&"graphics", &"visual_quality", "")) == "BALANCED",
 		"Existing riders did not default to BALANCED visual quality"
 	)
+	_check(
+		str(legacy_store.get_value(&"graphics", &"render_scale", "")) == "AUTO"
+			and str(legacy_store.get_value(&"graphics", &"shadow_quality", "")) == "AUTO"
+			and str(legacy_store.get_value(&"graphics", &"particle_density", "")) == "AUTO"
+			and str(legacy_store.get_value(&"graphics", &"weather_effects", "")) == "AUTO",
+		"Existing riders did not migrate to preset-driven graphics overrides"
+	)
 
 	var service := RaceServices.new()
 	service.settings = legacy_store
@@ -175,12 +182,21 @@ func _exercise_difficulty_inputs(service: RaceServices) -> Dictionary:
 
 
 func _exercise_quality_inputs(service: RaceServices) -> Dictionary:
-	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"CAMERA"))
+	service.set("_settings_page_index", RaceServices.SETTINGS_PAGE_IDS.find(&"GRAPHICS"))
 	service.set("_settings_index", 0)
 	service.call(&"_refresh_settings_text")
 	var items := service.get("_settings_items") as Array
+	var expected_keys: Array[StringName] = [
+		&"visual_quality", &"render_scale", &"shadow_quality", &"particle_density", &"weather_effects",
+	]
+	_check(items.size() == expected_keys.size(), "Graphics page does not expose the complete override set")
+	for row_index: int in mini(items.size(), expected_keys.size()):
+		_check(
+			StringName(items[row_index].get(&"key", &"")) == expected_keys[row_index],
+			"Graphics page order drifted at row %d" % row_index
+		)
 	var index := _find_setting_index(items, &"visual_quality")
-	_check(index >= 0, "Visual Quality is missing from the CAMERA page")
+	_check(index >= 0, "Visual Quality is missing from the GRAPHICS page")
 	if index < 0:
 		return {&"mouse": false, &"keyboard": false, &"gamepad": false}
 	service.set("_settings_index", index)
@@ -400,6 +416,13 @@ func _production_signature(session: RaceSessionConfig) -> String:
 		"bike_class": rules.get(&"competitive_bike_class", session.bike_class),
 		"difficulty": rules.get(&"competitive_difficulty", session.difficulty),
 		"assist_mode": rules.get(&"competitive_assist_mode", &"SPORT"),
+		"transmission_mode": rules.get(&"forced_transmission_mode", &"AUTOMATIC"),
+		"control_signature": (
+			InputRouter.control_response_signature(
+				rules.get(&"forced_control_response", {}) as Dictionary
+			)
+			if rules.has(&"forced_control_response") else "DEFAULT"
+		),
 		"setup_id": rules.get(&"competitive_setup_id", &"BALANCED"),
 		"weather": session.weather,
 		"surface": session.surface_modifier,

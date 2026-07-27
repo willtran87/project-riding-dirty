@@ -10,6 +10,7 @@ const REPUTATION_POLICY_SCRIPT := preload("res://features/race/race_reputation_p
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
 const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
+const ACADEMY_SURFACE_TRACKER_SCRIPT := preload("res://features/career/academy_surface_tracker.gd")
 const AIRTIME_REWARD_CAP := 600
 
 signal time_updated(elapsed_usec: int, best_usec: int, checkpoint: int, total: int)
@@ -91,6 +92,7 @@ var _academy_landing_samples: int = 0
 var _academy_clean_checkpoints: int = 0
 var _academy_racecraft_metrics: Dictionary = {}
 var _academy_transmission_tracker: RefCounted = ACADEMY_TRANSMISSION_TRACKER_SCRIPT.new()
+var _academy_surface_tracker: RefCounted = ACADEMY_SURFACE_TRACKER_SCRIPT.new()
 var _race_airtime_seconds: float = 0.0
 var _race_clean_airtime_seconds: float = 0.0
 var _active_session_surface: StringName = &"PACKED"
@@ -197,6 +199,8 @@ func configure_session(
 	_silver_usec = int(medal_times.get(&"silver", 220_000_000))
 	_bronze_usec = int(medal_times.get(&"bronze", 300_000_000))
 	_activity_id = _session_config.event_id
+	if bike != null:
+		bike.apply_session_weather(_session_config.weather)
 	_competitive_signature_cache = ""
 	_competitive_signature_cache = _build_competitive_signature()
 	_active_session_surface = _surface_for_lap(1)
@@ -230,6 +234,7 @@ func configure_session(
 			_session_config.laps,
 			_track_id == CourseCatalog.MESA_MX_ID,
 			_session_config.opponent_count == 0
+				and bool(_session_config.rules.get(&"ghost_enabled", true))
 		)
 	_emit_session_snapshot()
 
@@ -607,7 +612,10 @@ func _start_race() -> void:
 	bike.set_motion_locked(false)
 	bike.set_controls_enabled(true)
 	bike.apply_gate_launch_drive(float(gate_launch.get(&"drive_multiplier", 1.0)))
-	ghost.start_run()
+	if bool(_session_config.rules.get(&"ghost_enabled", true)):
+		ghost.start_run()
+	else:
+		ghost.cancel_run()
 	_race_pack.start_race()
 	_seed_field_feedback()
 	_set_flag(&"GREEN")
@@ -631,7 +639,11 @@ func _begin_player_finish() -> void:
 	bike.set_gate_staging_input_enabled(false)
 	bike.set_controls_enabled(false)
 	var finish_validity := _evaluate_finish_validity()
-	var finish_record_eligible := bool(finish_validity.get(&"valid", false)) and _player_penalty_usec == 0
+	var finish_record_eligible := (
+		is_session_record_eligible(_session_config)
+		and bool(finish_validity.get(&"valid", false))
+		and _player_penalty_usec == 0
+	)
 	_is_new_best = finish_record_eligible and (ghost.best_time_usec < 0 or _elapsed_usec < ghost.best_time_usec)
 	var effective_time := _elapsed_usec + _player_penalty_usec
 	var medal := _medal_for_time(effective_time)
@@ -648,6 +660,10 @@ func _begin_player_finish() -> void:
 	_emit_session_snapshot()
 	if _race_pack.all_riders_finished() or _finish_grace_remaining <= 0.0:
 		_finalize_results()
+
+
+static func is_session_record_eligible(config: RaceSessionConfig) -> bool:
+	return config != null and bool(config.rules.get(&"record_eligible", true))
 
 
 func _finalize_results(classify_survivors: bool = false) -> void:
@@ -1236,6 +1252,9 @@ func _reset_academy_metrics() -> void:
 		&"brace_saves": 0,
 	}
 	_academy_transmission_tracker.call(&"reset")
+	_academy_surface_tracker.call(&"reset")
+	if bike != null:
+		bike.clear_training_surface_override()
 
 
 func _update_academy_metrics(delta: float) -> void:
@@ -1250,6 +1269,8 @@ func _update_academy_metrics(delta: float) -> void:
 		_academy_transmission_tracker.call(
 			&"sample", delta, bike.get_transmission_snapshot()
 		)
+	elif StringName(_session_config.rules.get(&"academy_lesson_id", &"")) == &"SURFACE_READING":
+		_update_academy_surface_training(delta)
 
 
 func _on_academy_bike_landed(intensity: float) -> void:
@@ -1336,13 +1357,80 @@ func _get_academy_metrics(result: RaceResult) -> Dictionary:
 	var transmission_metrics := _academy_transmission_tracker.call(&"get_metrics") as Dictionary
 	for raw_key: Variant in transmission_metrics.keys():
 		metrics[raw_key] = transmission_metrics[raw_key]
+	var surface_metrics := _academy_surface_tracker.call(&"get_metrics") as Dictionary
+	for raw_key: Variant in surface_metrics.keys():
+		metrics[raw_key] = surface_metrics[raw_key]
 	return metrics
 
 
 func _academy_live_metrics_snapshot() -> Dictionary:
-	if StringName(_session_config.rules.get(&"academy_lesson_id", &"")) != &"MANUAL_SHIFTING":
+	match StringName(_session_config.rules.get(&"academy_lesson_id", &"")):
+		&"MANUAL_SHIFTING":
+			return (_academy_transmission_tracker.call(&"get_metrics") as Dictionary).duplicate(true)
+		&"SURFACE_READING":
+			return (_academy_surface_tracker.call(&"get_metrics") as Dictionary).duplicate(true)
+		_:
+			return {}
+
+
+func _update_academy_surface_training(delta: float) -> void:
+	var training := _session_config.rules.get(&"surface_training", []) as Array
+	var sector := academy_surface_sector_for_checkpoint(training, _expected_checkpoint)
+	if sector.is_empty():
+		return
+	var surface := StringName(sector.get(&"surface", &"PACKED"))
+	var next_surface := StringName(sector.get(&"next_surface", &""))
+	var changed := bool(_academy_surface_tracker.call(&"enter_surface", surface, next_surface))
+	if changed:
+		_active_session_surface = surface
+		bike.set_training_surface_override(surface)
+		bike.apply_session_weather(
+			&"WET" if surface == &"MUD" else _session_config.weather
+		)
+		if int((_academy_surface_tracker.call(&"get_metrics") as Dictionary).get(&"surface_sectors", 0)) > 1:
+			race_moment.emit(
+				"GRIP LAB  //  %s  //  %s" % [
+					String(surface).replace("_", " "),
+					ACADEMY_SURFACE_TRACKER_SCRIPT.get_advice(surface),
+				],
+				0,
+				true
+			)
+		_emit_session_snapshot()
+	var adapted := bool(_academy_surface_tracker.call(
+		&"sample", delta, bike.get_live_control_snapshot(), bike.get_speed_mps()
+	))
+	if adapted:
+		race_moment.emit(
+			"SURFACE ADAPTED  //  %s" % String(surface).replace("_", " "),
+			100,
+			true
+		)
+		_emit_session_snapshot()
+
+
+static func academy_surface_sector_for_checkpoint(
+	training: Array,
+	checkpoint: int
+) -> Dictionary:
+	var selected_index := -1
+	for index: int in training.size():
+		if not training[index] is Dictionary:
+			continue
+		var candidate := training[index] as Dictionary
+		if int(candidate.get(&"start_checkpoint", 0)) <= maxi(checkpoint, 0):
+			selected_index = index
+		else:
+			break
+	if selected_index < 0:
 		return {}
-	return (_academy_transmission_tracker.call(&"get_metrics") as Dictionary).duplicate(true)
+	var selected := (training[selected_index] as Dictionary).duplicate(true)
+	selected[&"next_surface"] = (
+		StringName((training[selected_index + 1] as Dictionary).get(&"surface", &""))
+		if selected_index + 1 < training.size() and training[selected_index + 1] is Dictionary
+		else &""
+	)
+	return selected
 
 
 func _surface_for_lap(lap: int) -> StringName:
@@ -1361,6 +1449,11 @@ func _set_session_surface(surface: StringName, announce: bool) -> void:
 	var changed := next_surface != _active_session_surface
 	_active_session_surface = next_surface
 	if bike != null:
+		bike.apply_session_weather(
+			&"WET"
+			if _active_session_surface in [&"WET", &"MUD"]
+			else _session_config.weather
+		)
 		bike.apply_session_surface(_active_session_surface)
 	if announce and changed:
 		race_moment.emit("GRIP CHANGE  //  %s" % String(_active_session_surface).replace("_", " "), 0, false)

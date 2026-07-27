@@ -19,7 +19,7 @@ const EVENT_ORDER: Array[StringName] = [
 	&"CIRCUIT", &"PINE_ENDURO", &"MESA_PRACTICE", &"MESA_QUALIFYING",
 	&"MESA_HEAT", &"MESA_LCQ", &"MESA_MX", &"MESA_ELIMINATION", &"MESA_RIVAL", &"MESA_ENDURANCE",
 	&"QUARRY_HILLCLIMB", &"PINE_WET", &"MESA_RHYTHM", &"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE",
-	&"ACADEMY", &"FREESTYLE", &"DISCOVERY",
+	&"ACADEMY", &"FREESTYLE", &"DISCOVERY", &"CUSTOM_TOUR",
 ]
 
 const RACE_EVENTS: Array[StringName] = [
@@ -179,6 +179,12 @@ const EVENTS: Dictionary = {
 		&"format": &"DISCOVERY", &"description": "Find six workshop caches across Red Mesa.",
 		&"meta": "6 CACHES  //  EXPLORATION", &"unlock_rep": 0,
 	},
+	&"CUSTOM_TOUR": {
+		&"event_id": &"CUSTOM_TOUR", &"track_id": &"QUARRY", &"display_name": "CUSTOM TOUR",
+		&"format": &"PLAYLIST",
+		&"description": "Build a personal two-to-five round championship from unlocked events.",
+		&"meta": "2-5 ROUNDS  //  POINTS + COUNTBACK  //  PERSISTENT", &"unlock_rep": 0,
+	},
 }
 
 ## Advisory setup plans make the physical kit/tune tradeoffs discoverable without
@@ -201,6 +207,7 @@ const EVENT_STRATEGIES: Dictionary = {
 	&"ACADEMY": {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "RIDER TECHNIQUE", &"why": "Neutral behavior keeps each lesson focused on rider technique."},
 	&"FREESTYLE": {&"setup_id": &"ATTACK", &"tune_id": &"RHYTHM", &"focus": "AIR CONTROL", &"why": "Jump support creates more controllable airtime and combo options."},
 	&"DISCOVERY": {&"setup_id": &"TRAIL", &"tune_id": &"ENDURO", &"focus": "OFF-LINE GRIP", &"why": "Forgiving traction suits off-line cache routes and rough exploration."},
+	&"CUSTOM_TOUR": {&"setup_id": &"BALANCED", &"tune_id": &"BALANCED", &"focus": "SERIES BALANCE", &"why": "A neutral build is a flexible baseline across a mixed custom calendar."},
 }
 
 const CHAMPIONSHIP_POINTS: Array[int] = [25, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9]
@@ -485,6 +492,7 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 	var target_usec := 86_000_000 * lap_count
 	var lesson_objectives := (lesson.get(&"objectives", []) as Array).duplicate(true)
 	var lesson_presentation := (lesson.get(&"presentation", {}) as Dictionary).duplicate(true)
+	var surface_training := (lesson.get(&"surface_training", []) as Array).duplicate(true)
 	var forced_transmission := StringName(lesson.get(&"forced_transmission_mode", &""))
 	var lesson_rules := {
 		&"academy": true,
@@ -495,6 +503,8 @@ static func _academy_to_event(lesson: Dictionary) -> Dictionary:
 		&"academy_objectives": lesson_objectives,
 		&"academy_presentation": lesson_presentation,
 	}
+	if not surface_training.is_empty():
+		lesson_rules[&"surface_training"] = surface_training
 	if forced_transmission in [&"AUTOMATIC", &"MANUAL"]:
 		lesson_rules[&"forced_transmission_mode"] = forced_transmission
 	return {
@@ -626,6 +636,8 @@ static func _challenge_to_event(event_id: StringName, challenge: Dictionary) -> 
 		&"competitive_difficulty": clampi(int(challenge.get("difficulty", 2)), 0, 10),
 		&"competitive_assist_mode": StringName(str(challenge.get("assist_mode", "STANDARD")).to_upper()),
 		&"competitive_setup_id": StringName(str(challenge.get("setup_id", "BALANCED")).to_upper()),
+		&"forced_transmission_mode": &"AUTOMATIC",
+		&"forced_control_response": InputRouter.sanitize_control_response({}),
 		&"starts_unix": int(challenge.get("starts_unix", 0)),
 		&"ends_unix": int(challenge.get("ends_unix", 0)),
 		&"seed": int(challenge.get("seed", 0)),

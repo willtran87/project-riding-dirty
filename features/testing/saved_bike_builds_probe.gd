@@ -91,7 +91,7 @@ func _run() -> void:
 	var restored_a: Dictionary = restored.get_saved_bike_build_snapshot(&"BUILD_A")
 	var restored_b: Dictionary = restored.get_saved_bike_build_snapshot(&"BUILD_B")
 	var restored_b_parts: Dictionary = restored_b.get(&"installed_parts", {}) as Dictionary
-	_check(restored.PROFILE_SCHEMA_VERSION == 7, "Profile schema did not include saved builds and individual assists")
+	_check(restored.PROFILE_SCHEMA_VERSION >= 7, "Profile schema did not include saved builds and individual assists")
 	_check(restored_slots.size() == 3, "Saved-build projection does not expose exactly three bounded slots")
 	_check(not restored_a.is_empty(), "Valid Build A did not survive JSON round-trip")
 	_check(not restored_b.is_empty(), "Sanitizable Build B was discarded")
@@ -111,7 +111,7 @@ func _run() -> void:
 	})
 	legacy._ensure_full_race_defaults()
 	_check(legacy.saved_bike_builds.is_empty(), "Legacy profile migration invented a saved build")
-	_check(int(legacy._profile_to_dictionary().get("profile_schema_version", 0)) == 7, "Legacy profile did not migrate to schema 7")
+	_check(int(legacy._profile_to_dictionary().get("profile_schema_version", 0)) >= 7, "Legacy profile did not migrate to the saved-build schema")
 
 	var failing: Variant = FAILING_PROFILE_SCRIPT.new()
 	failing.persistence_enabled = true

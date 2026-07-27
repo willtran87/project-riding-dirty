@@ -1,5 +1,5 @@
 extends Node
-## V24 deterministic race-retention audit. Covers the full 18-event ladder,
+## V24 deterministic race-retention audit. Covers the full 19-event ladder,
 ## gap-director fairness, final-lap fade, event casting, and airtime promises.
 
 const LEGACY_UNIQUE_DIFFICULTY_LEVELS := 1
@@ -35,6 +35,10 @@ func _audit_catalog() -> Dictionary:
 	var total_airtime_opportunities := 0
 	var replay_hooks: Dictionary[StringName, bool] = {}
 	for event_id: StringName in RaceEventCatalog.EVENT_ORDER:
+		# This card composes authored races; it is not a separately simulated
+		# route with its own pace and retention contract.
+		if event_id == &"CUSTOM_TOUR":
+			continue
 		var contract := RaceEventCatalog.get_retention_contract(event_id)
 		var event := RaceEventCatalog.get_event(event_id)
 		var rules := event.get(&"rules", {}) as Dictionary
@@ -66,7 +70,7 @@ func _audit_catalog() -> Dictionary:
 		and int(RaceEventCatalog.get_retention_contract(&"PINE_WET").get(&"difficulty", -1)) == 4
 	)
 	var passed := (
-		RaceEventCatalog.EVENT_ORDER.size() == 18
+		RaceEventCatalog.EVENT_ORDER.size() == 19
 		and complete_contracts
 		and default_tiers_match
 		and unique_difficulties.size() == 5

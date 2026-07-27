@@ -42,7 +42,7 @@ const EXPECTED_CONTEXTS: Dictionary = {
 	&"garage_right": [&"GARAGE", &"WORKSHOP"],
 	&"confirm_selection": [&"GARAGE", &"WORKSHOP", &"SETTINGS"],
 	&"open_workshop": [&"GARAGE", &"WORKSHOP"],
-	&"continue_weekend": [&"GARAGE"],
+	&"continue_weekend": [&"GARAGE", &"WORKSHOP"],
 	&"event_previous": [&"GARAGE", &"WORKSHOP", &"RESULTS", &"SETTINGS"],
 	&"event_next": [&"GARAGE", &"WORKSHOP", &"RESULTS", &"SETTINGS"],
 	&"repair_bike": [&"GARAGE", &"WORKSHOP"],

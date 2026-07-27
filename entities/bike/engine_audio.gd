@@ -13,14 +13,16 @@ const ENGINE_BASE_HZ: float = 80.0
 const SILENCE_DB: float = -80.0
 const ENGINE_BUS_NAME: StringName = &"Engine"
 const GEAR_RATIOS := [1.0, 0.78, 0.62, 0.5, 0.42]
-const SURFACE_KEYS := [&"PACKED", &"MUD", &"GRAVEL", &"ROCK", &"LOOSE_DIRT"]
+const SURFACE_KEYS := [&"PACKED", &"MUD", &"SAND", &"GRAVEL", &"GRASS", &"ROCK", &"LOOSE_DIRT"]
 const DEFAULT_BIKE_CLASS: StringName = &"SPORT_250"
 const TIMBRE_SMOOTHING_HZ: float = 5.8
 const BAKED_ENGINE_LOOP: AudioStreamWAV = preload("res://assets/generated/audio/engine_engine.res")
 const BAKED_SURFACE_LOOPS: Dictionary = {
 	&"PACKED": preload("res://assets/generated/audio/engine_packed.res"),
 	&"MUD": preload("res://assets/generated/audio/engine_mud.res"),
+	&"SAND": preload("res://assets/generated/audio/engine_sand.res"),
 	&"GRAVEL": preload("res://assets/generated/audio/engine_gravel.res"),
+	&"GRASS": preload("res://assets/generated/audio/engine_grass.res"),
 	&"ROCK": preload("res://assets/generated/audio/engine_rock.res"),
 	&"LOOSE_DIRT": preload("res://assets/generated/audio/engine_loose_dirt.res"),
 }
@@ -281,7 +283,41 @@ func _select_surface_loop(surface_key: StringName) -> void:
 
 
 func _normalized_surface(surface_key: StringName) -> StringName:
-	return surface_key if surface_key in SURFACE_KEYS else &"PACKED"
+	return normalize_surface_audio_key(surface_key)
+
+
+static func get_surface_audio_keys() -> Array[StringName]:
+	return SURFACE_KEYS.duplicate()
+
+
+static func normalize_surface_audio_key(surface_key: Variant) -> StringName:
+	var key := StringName(str(surface_key).strip_edges().to_upper().replace(" ", "_").replace("-", "_"))
+	match key:
+		&"MUD", &"SAND", &"GRAVEL", &"GRASS", &"ROCK":
+			return key
+		&"LOOSE", &"LOOSE_DIRT", &"RUTTED":
+			return &"LOOSE_DIRT"
+		_:
+			return &"PACKED"
+
+
+static func get_baked_surface_audio_contract(surface_key: Variant) -> Dictionary:
+	_ensure_shared_loops()
+	var key := normalize_surface_audio_key(surface_key)
+	var loop := _shared_surface_loops.get(key) as AudioStreamWAV
+	if loop == null:
+		return {}
+	var hashing := HashingContext.new()
+	hashing.start(HashingContext.HASH_SHA256)
+	hashing.update(loop.data)
+	return {
+		&"surface": key,
+		&"sample_bytes": loop.data.size(),
+		&"mix_rate": loop.mix_rate,
+		&"loop_begin": loop.loop_begin,
+		&"loop_end": loop.loop_end,
+		&"sha256": hashing.finish().hex_encode(),
+	}
 
 
 func _configure_spatial_player(player: AudioStreamPlayer3D) -> void:
@@ -419,8 +455,12 @@ static func _surface_sample(progress: float, surface_key: StringName) -> float:
 	match surface_key:
 		&"MUD":
 			seed = 31
+		&"SAND":
+			seed = 37
 		&"GRAVEL":
 			seed = 47
+		&"GRASS":
+			seed = 53
 		&"ROCK":
 			seed = 61
 		&"LOOSE_DIRT":
@@ -432,8 +472,16 @@ static func _surface_sample(progress: float, surface_key: StringName) -> float:
 	match surface_key:
 		&"MUD":
 			wave = low_texture * 0.72 + sin(progress * TAU * 4.0) * 0.24
+		&"SAND":
+			# A broad granular hiss with subdued tread pulses reads softer and
+			# deeper than loose soil while preserving a seamless loop boundary.
+			wave = low_texture * 0.48 + high_texture * 0.28 + tread_pulse * 0.08
 		&"GRAVEL":
 			wave = low_texture * 0.22 + high_texture * (0.22 + tread_pulse * 0.72)
+		&"GRASS":
+			# Low dry brushing plus a regular tyre swish; deliberately little
+			# high-frequency impact energy so it cannot be mistaken for gravel.
+			wave = low_texture * 0.24 + sin(progress * TAU * 7.0) * 0.12 + tread_pulse * 0.16
 		&"ROCK":
 			wave = high_texture * (0.18 + tread_pulse * 0.9) + sin(progress * TAU * 18.0) * tread_pulse * 0.18
 		&"LOOSE_DIRT":

@@ -125,7 +125,7 @@ func _test_bike_build() -> void:
 
 func _test_academy() -> void:
 	var catalog := RacingAcademyLessonCatalog.create_default()
-	_check(catalog.get_lessons().size() == 9, "academy must include the complete compact lesson chain")
+	_check(catalog.get_lessons().size() == 10, "academy must include the complete compact lesson chain")
 	var available := catalog.get_available_lessons([], 0)
 	_check(available.size() == 1 and StringName(available[0].get(&"lesson_id", &"")) == &"CONTROL_BASICS", "academy prerequisites must gate later lessons")
 	var evaluation := catalog.evaluate_lesson(&"CONTROL_BASICS", {&"gates_completed": 10, &"resets": 0})

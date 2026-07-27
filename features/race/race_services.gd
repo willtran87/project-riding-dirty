@@ -11,9 +11,12 @@ signal settings_changed(values: Dictionary)
 signal settings_visibility_changed(open: bool)
 signal spectator_changed(label: String)
 signal camera_view_changed(mode: StringName, label: String)
+signal hotseat_state_changed(snapshot: Dictionary)
+signal custom_tour_state_changed(snapshot: Dictionary)
 
 const BIKE_VISUAL_SCRIPT = preload("res://entities/bike/bike_visual.gd")
-const SETTINGS_PAGE_IDS: Array[StringName] = [&"AUDIO", &"RIDE", &"ASSISTS", &"CAMERA", &"ACCESS", &"INPUT"]
+const AUDIO_CAPTION_FEED_SCRIPT = preload("res://features/accessibility/audio_caption_feed.gd")
+const SETTINGS_PAGE_IDS: Array[StringName] = [&"AUDIO", &"RIDE", &"ASSISTS", &"GRAPHICS", &"CAMERA", &"ACCESS", &"INPUT"]
 const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const VISUAL_QUALITY_PRESETS: Dictionary = {
 	&"PERFORMANCE": {&"render_scale": 0.75, &"msaa_3d": Viewport.MSAA_DISABLED},
@@ -40,6 +43,21 @@ const QUALITY_BASE_SHADOW_ENABLED_META: StringName = &"rd_quality_base_shadow_en
 const QUALITY_BASE_SHADOW_DISTANCE_META: StringName = &"rd_quality_base_shadow_distance"
 const QUALITY_BASE_SHADOW_MODE_META: StringName = &"rd_quality_base_shadow_mode"
 const REDUCED_PARTICLE_RATIO: float = 0.25
+const RENDER_SCALE_OVERRIDES: Dictionary = {
+	&"67%": 0.67, &"80%": 0.80, &"90%": 0.90, &"100%": 1.0,
+}
+const PARTICLE_DENSITY_OVERRIDES: Dictionary = {
+	&"LOW": 0.25, &"MEDIUM": 0.55, &"FULL": 1.0,
+}
+const WEATHER_EFFECT_OVERRIDES: Dictionary = {
+	&"MINIMAL": 0.10, &"REDUCED": 0.25, &"FULL": 1.0,
+}
+const SHORT_SHADOW_DISTANCE: float = 90.0
+const HOTSEAT_STATE_PATH: String = "user://competitive/local_duel.cfg"
+const HOTSEAT_STATE_SECTION: StringName = &"local_duel"
+const CUSTOM_TOUR_STATE_SCRIPT := preload("res://features/competitive/custom_tour_state.gd")
+const CUSTOM_TOUR_STATE_PATH: String = "user://competitive/custom_tour.cfg"
+const CUSTOM_TOUR_STATE_SECTION: StringName = &"custom_tour"
 const REBINDABLE_ACTIONS: Array[StringName] = [
 	&"throttle", &"brake", &"steer_left", &"steer_right", &"lean_forward", &"lean_back",
 	&"preload", &"flow_boost", &"racecraft_technique", &"shift_down", &"shift_up",
@@ -63,6 +81,9 @@ var local_leaderboard := LocalLeaderboardProvider.new()
 var online_leaderboard := HttpLeaderboardProvider.new()
 var challenge_schedule := ChallengeSchedule.new()
 var hotseat := HotSeatChallengeState.new()
+var hotseat_state_path: String = HOTSEAT_STATE_PATH
+var custom_tour: CustomTourState = CustomTourState.new()
+var custom_tour_state_path: String = CUSTOM_TOUR_STATE_PATH
 
 var _recorder := ReplayRecorder.new()
 var _playback := ReplayPlayback.new()
@@ -108,6 +129,7 @@ var _base_camera_shake := 0.018
 var _settings_items: Array[Dictionary] = []
 var _settings_visibility_request: int = 0
 var _visual_quality_snapshot: Dictionary = {}
+var _audio_caption_feed: AudioCaptionFeed
 var _hud_input_suspended := false
 var _saved_hud_unhandled_input := true
 var _riding_camera_active := true
@@ -120,6 +142,9 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_build_settings_overlay()
 	_build_save_feedback_overlay()
+	_audio_caption_feed = AUDIO_CAPTION_FEED_SCRIPT.new()
+	_audio_caption_feed.name = "AudioCaptionFeed"
+	add_child(_audio_caption_feed)
 	if not SaveLifecycle.state_changed.is_connected(_on_save_lifecycle_changed):
 		SaveLifecycle.state_changed.connect(_on_save_lifecycle_changed)
 	var existing_save_state := SaveLifecycle.get_snapshot()
@@ -156,6 +181,8 @@ func initialize(race_controller: RaceController, player_bike: DirtBikeController
 	_snapshot_default_bindings()
 	if &"--smoke-test" not in OS.get_cmdline_user_args():
 		settings.load_from_disk()
+		_load_hotseat_state()
+		_load_custom_tour_state()
 	if (settings.values.get("bindings", {}) as Dictionary).is_empty():
 		settings.capture_input_map(REBINDABLE_ACTIONS)
 	else:
@@ -231,15 +258,144 @@ func get_weekly_challenge() -> Dictionary:
 
 func configure_hotseat(participants: Array, attempts_per_rider: int = 1, weekly: bool = false) -> Dictionary:
 	var challenge := get_weekly_challenge() if weekly else get_daily_challenge()
-	return hotseat.configure(challenge, participants, attempts_per_rider)
+	var result := hotseat.configure(challenge, participants, attempts_per_rider)
+	if not bool(result.get("ok", false)):
+		return result
+	if not _persist_hotseat_state():
+		hotseat = HotSeatChallengeState.new()
+		return {"ok": false, "error": "persistence_failed"}
+	var snapshot := get_hotseat_presentation_snapshot()
+	hotseat_state_changed.emit(snapshot)
+	result["snapshot"] = snapshot
+	return result
 
 
 func skip_hotseat_attempt(reason: String = "SKIPPED") -> Dictionary:
-	return hotseat.skip_attempt(reason)
+	var result := hotseat.skip_attempt(reason)
+	if bool(result.get("ok", false)):
+		result["persisted"] = _persist_hotseat_state()
+		var snapshot := get_hotseat_presentation_snapshot()
+		result["snapshot"] = snapshot
+		hotseat_state_changed.emit(snapshot)
+	return result
 
 
 func get_hotseat_snapshot() -> Dictionary:
 	return hotseat.to_dictionary()
+
+
+func get_hotseat_presentation_snapshot() -> Dictionary:
+	var participant := hotseat.current_participant()
+	var challenge_kind := StringName(
+		str(hotseat.challenge.get("kind", "DAILY")).to_upper()
+	)
+	var configured := hotseat.participants.size() >= 2 and not hotseat.challenge.is_empty()
+	var maximum_turns := hotseat.participants.size() * hotseat.attempts_per_participant
+	return {
+		&"configured": configured,
+		&"active": configured and not hotseat.is_complete(),
+		&"completed": configured and hotseat.is_complete(),
+		&"event_id": (
+			&"WEEKLY_CHALLENGE"
+			if challenge_kind == &"WEEKLY"
+			else &"DAILY_CHALLENGE"
+		),
+		&"challenge_id": str(hotseat.challenge.get("challenge_id", "")),
+		&"challenge_kind": challenge_kind,
+		&"current_participant": participant,
+		&"current_attempt": hotseat.current_attempt_number(),
+		&"attempts_per_participant": hotseat.attempts_per_participant if configured else 0,
+		&"participant_count": hotseat.participants.size(),
+		&"turn_index": hotseat.turn_index,
+		&"turn_number": mini(hotseat.turn_index + 1, maximum_turns) if configured else 0,
+		&"total_turns": maximum_turns,
+		&"standings": hotseat.standings(),
+	}
+
+
+func is_hotseat_active() -> bool:
+	return bool(get_hotseat_presentation_snapshot().get(&"active", false))
+
+
+func clear_hotseat() -> bool:
+	hotseat = HotSeatChallengeState.new()
+	var saved := _persist_hotseat_state()
+	hotseat_state_changed.emit(get_hotseat_presentation_snapshot())
+	return saved
+
+
+func get_custom_tour_allowed_events() -> Array[StringName]:
+	return CustomTourState.ALLOWED_EVENTS.duplicate()
+
+
+func begin_custom_tour_builder(clear_existing: bool = true) -> Dictionary:
+	var rollback := custom_tour.to_dictionary()
+	var result := custom_tour.begin_builder(clear_existing)
+	if not bool(result.get(&"ok", false)):
+		return result
+	if not _persist_custom_tour_state():
+		custom_tour = CustomTourState.from_dictionary(rollback)
+		return {&"ok": false, &"error": &"PERSISTENCE_FAILED"}
+	var snapshot := get_custom_tour_presentation_snapshot()
+	custom_tour_state_changed.emit(snapshot)
+	result[&"snapshot"] = snapshot
+	return result
+
+
+func toggle_custom_tour_event(event_id: StringName) -> Dictionary:
+	if not RaceEventCatalog.is_available_to_profile(event_id, Profile):
+		return {
+			&"ok": false,
+			&"error": &"EVENT_LOCKED",
+			&"event_id": event_id,
+		}
+	var rollback := custom_tour.to_dictionary()
+	var result := custom_tour.toggle_event(event_id)
+	if not bool(result.get(&"ok", false)):
+		return result
+	if not _persist_custom_tour_state():
+		custom_tour = CustomTourState.from_dictionary(rollback)
+		return {&"ok": false, &"error": &"PERSISTENCE_FAILED"}
+	var snapshot := get_custom_tour_presentation_snapshot()
+	custom_tour_state_changed.emit(snapshot)
+	result[&"snapshot"] = snapshot
+	return result
+
+
+func start_custom_tour() -> Dictionary:
+	var rollback := custom_tour.to_dictionary()
+	var result := custom_tour.start_tour()
+	if not bool(result.get(&"ok", false)):
+		return result
+	if not _persist_custom_tour_state():
+		custom_tour = CustomTourState.from_dictionary(rollback)
+		return {&"ok": false, &"error": &"PERSISTENCE_FAILED"}
+	var snapshot := get_custom_tour_presentation_snapshot()
+	custom_tour_state_changed.emit(snapshot)
+	result[&"snapshot"] = snapshot
+	return result
+
+
+func clear_custom_tour() -> bool:
+	var rollback := custom_tour.to_dictionary()
+	custom_tour.clear()
+	if not _persist_custom_tour_state():
+		custom_tour = CustomTourState.from_dictionary(rollback)
+		return false
+	custom_tour_state_changed.emit(get_custom_tour_presentation_snapshot())
+	return true
+
+
+func get_custom_tour_presentation_snapshot() -> Dictionary:
+	return custom_tour.presentation_snapshot()
+
+
+func is_custom_tour_active() -> bool:
+	return custom_tour.is_active()
+
+
+func get_custom_tour_last_result_event() -> StringName:
+	return custom_tour.last_result_event_id
 
 
 func get_local_board(run_signature: String, limit: int = 20) -> Dictionary:
@@ -262,6 +418,7 @@ func get_competitive_snapshot() -> Dictionary:
 		&"replay_active": _replay_active,
 		&"settings": settings.values.duplicate(true),
 		&"hotseat": hotseat.to_dictionary(),
+		&"custom_tour": custom_tour.to_dictionary(),
 	}
 
 
@@ -837,8 +994,40 @@ func _on_results_ready(result: Dictionary) -> void:
 		Profile.call(&"record_leaderboard_summary", String(result.get("signature", "")), submission)
 	if online_leaderboard.is_online_ready():
 		online_leaderboard.submit_run(entry)
+	var result_event_id := StringName(result.get(&"event_id", &""))
+	if custom_tour.is_active() and custom_tour.current_event_id() == result_event_id:
+		var tour_rollback := custom_tour.to_dictionary()
+		var classification: Array[Dictionary] = []
+		var classification_value: Variant = result.get(&"classification", [])
+		if classification_value is Array:
+			for raw_racer: Variant in classification_value:
+				if raw_racer is Dictionary:
+					classification.append((raw_racer as Dictionary).duplicate(true))
+		var tour_result := custom_tour.submit_round(result_event_id, classification)
+		if bool(tour_result.get(&"ok", false)):
+			var tour_persisted := _persist_custom_tour_state()
+			tour_result[&"persisted"] = tour_persisted
+			if not tour_persisted:
+				custom_tour = CustomTourState.from_dictionary(tour_rollback)
+				tour_result[&"ok"] = false
+				tour_result[&"error"] = &"PERSISTENCE_FAILED"
+				return
+			var tour_snapshot := get_custom_tour_presentation_snapshot()
+			custom_tour_state_changed.emit(tour_snapshot)
+			leaderboard_updated.emit({
+				&"kind": &"CUSTOM_TOUR",
+				&"event_id": result_event_id,
+				&"result": tour_result,
+				&"snapshot": tour_snapshot,
+			})
 	var hotseat_rider := hotseat.current_participant()
-	if not hotseat_rider.is_empty():
+	var result_challenge_id := str(result.get(&"challenge_id", ""))
+	var hotseat_challenge_id := str(hotseat.challenge.get("challenge_id", ""))
+	if (
+		not hotseat_rider.is_empty()
+		and not hotseat_challenge_id.is_empty()
+		and result_challenge_id == hotseat_challenge_id
+	):
 		var hotseat_entry := LeaderboardProvider.create_entry(
 			str(result.get(&"signature", "")),
 			str(hotseat_rider.get("profile_id", "")),
@@ -852,7 +1041,82 @@ func _on_results_ready(result: Dictionary) -> void:
 			}
 		)
 		var hotseat_result := hotseat.submit_attempt(hotseat_entry)
-		leaderboard_updated.emit({"kind": "HOTSEAT", "result": hotseat_result})
+		hotseat_result["persisted"] = _persist_hotseat_state()
+		var hotseat_snapshot := get_hotseat_presentation_snapshot()
+		hotseat_state_changed.emit(hotseat_snapshot)
+		leaderboard_updated.emit({
+			"kind": "HOTSEAT",
+			"result": hotseat_result,
+			"snapshot": hotseat_snapshot,
+		})
+
+
+func _load_hotseat_state() -> void:
+	var loaded := AtomicConfigStore.load_section(
+		hotseat_state_path, HOTSEAT_STATE_SECTION
+	)
+	if not bool(loaded.get("ok", false)):
+		return
+	var data := loaded.get("data", {}) as Dictionary
+	var state_value: Variant = data.get("state", {})
+	if not state_value is Dictionary:
+		return
+	var restored := HotSeatChallengeState.from_dictionary(state_value as Dictionary)
+	var ends_unix := int(restored.challenge.get("ends_unix", 0))
+	if ends_unix > 0 and ends_unix <= int(Time.get_unix_time_from_system()):
+		hotseat = HotSeatChallengeState.new()
+		_persist_hotseat_state()
+		return
+	hotseat = restored
+	if str(loaded.get("source", "")) == "backup":
+		SaveLifecycle.report_recovered(
+			&"LOCAL_DUEL", "LOCAL DUEL", bool(loaded.get("repaired", false))
+		)
+
+
+func _persist_hotseat_state() -> bool:
+	var token := SaveLifecycle.begin_save(&"LOCAL_DUEL", "LOCAL DUEL", true)
+	var result := AtomicConfigStore.save_section(
+		hotseat_state_path,
+		HOTSEAT_STATE_SECTION,
+		{&"state": hotseat.to_dictionary()}
+	)
+	return SaveLifecycle.finish_save(
+		token,
+		bool(result.get("ok", false)),
+		str(result.get("error", "write_failed"))
+	)
+
+
+func _load_custom_tour_state() -> void:
+	var loaded := AtomicConfigStore.load_section(
+		custom_tour_state_path, CUSTOM_TOUR_STATE_SECTION
+	)
+	if not bool(loaded.get("ok", false)):
+		return
+	var data := loaded.get("data", {}) as Dictionary
+	var state_value: Variant = data.get("state", {})
+	if not state_value is Dictionary:
+		return
+	custom_tour = CustomTourState.from_dictionary(state_value as Dictionary)
+	if str(loaded.get("source", "")) == "backup":
+		SaveLifecycle.report_recovered(
+			&"CUSTOM_TOUR", "CUSTOM TOUR", bool(loaded.get("repaired", false))
+		)
+
+
+func _persist_custom_tour_state() -> bool:
+	var token := SaveLifecycle.begin_save(&"CUSTOM_TOUR", "CUSTOM TOUR", true)
+	var result := AtomicConfigStore.save_section(
+		custom_tour_state_path,
+		CUSTOM_TOUR_STATE_SECTION,
+		{&"state": custom_tour.to_dictionary()}
+	)
+	return SaveLifecycle.finish_save(
+		token,
+		bool(result.get("ok", false)),
+		str(result.get("error", "write_failed"))
+	)
 
 
 func _update_replay(delta: float) -> void:
@@ -936,11 +1200,13 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	var controls := settings.values.get("controls", {}) as Dictionary
 	var interface := settings.values.get("interface", {}) as Dictionary
 	var gameplay := settings.values.get("gameplay", {}) as Dictionary
+	var graphics := settings.values.get("graphics", {}) as Dictionary
 	InputRouter.configure_controls(get_effective_control_response())
 	RaceEventCatalog.set_player_difficulty_mode(gameplay.get("race_difficulty", "STANDARD"))
 	_apply_visual_quality(
-		str(settings.get_value(&"graphics", &"visual_quality", "BALANCED")),
-		bool(interface.get("reduced_particles", false))
+		str(graphics.get("visual_quality", "BALANCED")),
+		bool(interface.get("reduced_particles", false)),
+		graphics
 	)
 	var bindings := settings.values.get("bindings", {}) as Dictionary
 	if not bindings.is_empty():
@@ -972,6 +1238,8 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 		bike.call(&"configure_transmission", get_effective_transmission_mode())
 	if hud != null and hud.has_method(&"apply_accessibility"):
 		hud.call(&"apply_accessibility", interface)
+	if is_instance_valid(_audio_caption_feed):
+		_audio_caption_feed.configure(interface)
 	get_tree().call_group(
 		&"reduced_motion_consumers", &"set_reduced_motion",
 		bool(interface.get("reduced_motion", false))
@@ -985,11 +1253,16 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 	settings_changed.emit(settings.values.duplicate(true))
 
 
-func _apply_visual_quality(requested_mode: String, reduced_particles: bool = false) -> void:
+func _apply_visual_quality(
+	requested_mode: String,
+	reduced_particles: bool = false,
+	graphics_overrides: Dictionary = {}
+) -> void:
 	var resolved := resolve_visual_quality_preset(
 		requested_mode,
 		OS.has_feature("web"),
-		reduced_particles
+		reduced_particles,
+		graphics_overrides
 	)
 	var mode := StringName(resolved[&"mode"])
 	var render_scale := float(resolved[&"render_scale"])
@@ -1008,7 +1281,8 @@ func _apply_visual_quality(requested_mode: String, reduced_particles: bool = fal
 static func resolve_visual_quality_preset(
 	requested_mode: String,
 	web_environment: bool = false,
-	reduced_particles: bool = false
+	reduced_particles: bool = false,
+	graphics_overrides: Dictionary = {}
 ) -> Dictionary:
 	var mode := StringName(requested_mode.strip_edges().to_upper())
 	if not VISUAL_QUALITY_PRESETS.has(mode):
@@ -1019,6 +1293,9 @@ static func resolve_visual_quality_preset(
 		else VISUAL_QUALITY_PRESETS[mode]
 	) as Dictionary
 	var render_scale := clampf(float(preset.get(&"render_scale", 0.90)), 0.67, 1.0)
+	var render_scale_mode := StringName(str(graphics_overrides.get("render_scale", "AUTO")).to_upper())
+	if RENDER_SCALE_OVERRIDES.has(render_scale_mode):
+		render_scale = float(RENDER_SCALE_OVERRIDES[render_scale_mode])
 	var requested_msaa := clampi(int(preset.get(&"msaa_3d", Viewport.MSAA_2X)), Viewport.MSAA_DISABLED, Viewport.MSAA_4X)
 	var native_requested_msaa := int((VISUAL_QUALITY_PRESETS[mode] as Dictionary).get(&"msaa_3d", requested_msaa))
 	var web_capped := web_environment and (
@@ -1026,17 +1303,42 @@ static func resolve_visual_quality_preset(
 		or requested_msaa != native_requested_msaa
 	)
 	var base_particle_ratio := clampf(float(preset.get(&"particle_ratio", 1.0)), 0.0, 1.0)
+	var particle_density := StringName(str(graphics_overrides.get("particle_density", "AUTO")).to_upper())
+	var selected_particle_ratio := (
+		float(PARTICLE_DENSITY_OVERRIDES[particle_density])
+		if PARTICLE_DENSITY_OVERRIDES.has(particle_density)
+		else base_particle_ratio
+	)
+	var particle_ratio := (
+		minf(selected_particle_ratio, REDUCED_PARTICLE_RATIO)
+		if reduced_particles
+		else selected_particle_ratio
+	)
+	var weather_effects := StringName(str(graphics_overrides.get("weather_effects", "AUTO")).to_upper())
+	var selected_weather_ratio := (
+		float(WEATHER_EFFECT_OVERRIDES[weather_effects])
+		if WEATHER_EFFECT_OVERRIDES.has(weather_effects)
+		else selected_particle_ratio
+	)
+	var shadow_quality := StringName(str(graphics_overrides.get("shadow_quality", "AUTO")).to_upper())
+	if shadow_quality not in [&"AUTO", &"OFF", &"SHORT", &"FULL"]:
+		shadow_quality = &"AUTO"
 	return {
 		&"mode": mode,
 		&"render_scale": render_scale,
+		&"render_scale_mode": render_scale_mode if RENDER_SCALE_OVERRIDES.has(render_scale_mode) else &"AUTO",
 		&"requested_msaa_3d": native_requested_msaa,
 		&"effective_msaa_3d": requested_msaa,
 		&"web_capped": web_capped,
 		&"web_environment": web_environment,
 		&"shadow_distance": float(preset.get(&"shadow_distance", -1.0)),
+		&"shadow_quality": shadow_quality,
 		&"base_particle_ratio": base_particle_ratio,
+		&"particle_density": particle_density if PARTICLE_DENSITY_OVERRIDES.has(particle_density) else &"AUTO",
 		&"reduced_particles": reduced_particles,
-		&"particle_ratio": minf(base_particle_ratio, REDUCED_PARTICLE_RATIO) if reduced_particles else base_particle_ratio,
+		&"particle_ratio": particle_ratio,
+		&"weather_effects": weather_effects if WEATHER_EFFECT_OVERRIDES.has(weather_effects) else &"AUTO",
+		&"weather_particle_ratio": minf(particle_ratio, selected_weather_ratio),
 	}
 
 
@@ -1055,6 +1357,7 @@ static func apply_visual_quality_to_scene(scene_root: Node, resolved: Dictionary
 	var web_environment := bool(resolved.get(&"web_environment", false))
 	var mode := StringName(resolved.get(&"mode", &"BALANCED"))
 	var shadow_distance := float(resolved.get(&"shadow_distance", -1.0))
+	var shadow_quality := StringName(resolved.get(&"shadow_quality", &"AUTO"))
 	for raw_light: Node in scene_root.find_children("*", "DirectionalLight3D", true, false):
 		var light := raw_light as DirectionalLight3D
 		if light == null:
@@ -1066,7 +1369,19 @@ static func apply_visual_quality_to_scene(scene_root: Node, resolved: Dictionary
 		var authored_enabled := bool(light.get_meta(QUALITY_BASE_SHADOW_ENABLED_META, false))
 		var authored_distance := float(light.get_meta(QUALITY_BASE_SHADOW_DISTANCE_META, light.directional_shadow_max_distance))
 		var authored_mode := int(light.get_meta(QUALITY_BASE_SHADOW_MODE_META, light.directional_shadow_mode))
-		if web_environment:
+		if shadow_quality == &"OFF":
+			light.shadow_enabled = false
+		elif shadow_quality == &"SHORT":
+			light.shadow_enabled = authored_enabled
+			if light.shadow_enabled:
+				light.directional_shadow_max_distance = minf(authored_distance, SHORT_SHADOW_DISTANCE)
+				light.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		elif shadow_quality == &"FULL":
+			light.shadow_enabled = authored_enabled
+			if light.shadow_enabled:
+				light.directional_shadow_max_distance = minf(authored_distance, 220.0) if web_environment else authored_distance
+				light.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS if web_environment else authored_mode as DirectionalLight3D.ShadowMode
+		elif web_environment:
 			light.shadow_enabled = authored_enabled and mode != &"PERFORMANCE"
 			if light.shadow_enabled:
 				light.directional_shadow_max_distance = minf(authored_distance, shadow_distance)
@@ -1077,10 +1392,11 @@ static func apply_visual_quality_to_scene(scene_root: Node, resolved: Dictionary
 			light.directional_shadow_mode = authored_mode as DirectionalLight3D.ShadowMode
 
 	var particle_ratio := float(resolved.get(&"particle_ratio", 1.0))
+	var weather_particle_ratio := float(resolved.get(&"weather_particle_ratio", particle_ratio))
 	for raw_particles: Node in scene_root.find_children("*", "GPUParticles3D", true, false):
 		var particles := raw_particles as GPUParticles3D
 		if particles != null:
-			particles.amount_ratio = particle_ratio
+			particles.amount_ratio = weather_particle_ratio if particles.is_in_group(&"weather_effects") else particle_ratio
 
 
 func get_visual_quality_snapshot() -> Dictionary:
@@ -1090,6 +1406,14 @@ func get_visual_quality_snapshot() -> Dictionary:
 		snapshot[&"viewport_render_scale"] = viewport.scaling_3d_scale
 		snapshot[&"viewport_msaa_3d"] = int(viewport.msaa_3d)
 	return snapshot
+
+
+func get_audio_caption_snapshot() -> Dictionary:
+	return (
+		_audio_caption_feed.get_snapshot()
+		if is_instance_valid(_audio_caption_feed)
+		else {}
+	)
 
 
 func _set_bus_volume(bus_name: StringName, linear: float) -> void:
@@ -1655,9 +1979,16 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_profile_assist_item(&"traction"),
 				_profile_assist_item(&"balance"),
 			])
+		&"GRAPHICS":
+			items.assign([
+				_enum_item("VISUAL QUALITY PRESET", &"graphics", &"visual_quality", SettingsStore.VISUAL_QUALITY_MODES),
+				_enum_item("3D RENDER RESOLUTION", &"graphics", &"render_scale", SettingsStore.RENDER_SCALE_MODES),
+				_enum_item("DIRECTIONAL SHADOWS", &"graphics", &"shadow_quality", SettingsStore.SHADOW_QUALITY_MODES),
+				_enum_item("EFFECT DENSITY", &"graphics", &"particle_density", SettingsStore.PARTICLE_DENSITY_MODES),
+				_enum_item("WEATHER EFFECTS", &"graphics", &"weather_effects", SettingsStore.WEATHER_EFFECT_MODES),
+			])
 		&"CAMERA":
 			items.assign([
-				_enum_item("VISUAL QUALITY", &"graphics", &"visual_quality", SettingsStore.VISUAL_QUALITY_MODES),
 				_enum_item("RIDING CAMERA", &"camera", &"mode", SettingsStore.CAMERA_MODES),
 				_value_item("CAMERA DISTANCE", &"camera", &"distance_scale", &"PERCENT", 0.05, 1.0),
 				_value_item("CAMERA HEIGHT", &"camera", &"height_scale", &"PERCENT", 0.05, 1.0),
@@ -1678,6 +2009,9 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 				_value_item("HIGH CONTRAST HUD", &"interface", &"high_contrast", &"BOOL", 1.0, false),
 				_enum_item("COLOR-SAFE MODE", &"interface", &"color_safe_mode", SettingsStore.COLOR_SAFE_MODES),
 				_enum_item("SPEED UNITS", &"interface", &"units", SettingsStore.UNIT_MODES),
+				_enum_item("AUDIO CAPTIONS", &"interface", &"caption_detail", SettingsStore.CAPTION_DETAIL_MODES),
+				_value_item("CAPTION SIZE", &"interface", &"caption_scale", &"PERCENT", 0.10, 1.0),
+				_enum_item("CAPTION BACKGROUND", &"interface", &"caption_style", SettingsStore.CAPTION_STYLE_MODES),
 				{&"kind": &"COMMAND", &"command": &"RESET_ALL", &"label": "RESTORE ALL DEFAULTS"},
 			])
 		&"INPUT":

@@ -324,6 +324,27 @@ class WebReadinessContractTests(unittest.TestCase):
         self.assertIn("event.data.type === 'engine-progress'", wrapper)
         self.assertNotIn("window.addEventListener('keydown'", wrapper)
 
+    def test_wrapper_forwards_machine_readable_game_state(self) -> None:
+        wrapper = (PROJECT_ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("window.render_game_to_text = () =>", wrapper)
+        self.assertIn("innerWindow.render_game_to_text()", wrapper)
+        self.assertIn("return wrapperTextState()", wrapper)
+        self.assertIn("coordinate_system", wrapper)
+        self.assertIn("visible_riders", wrapper)
+        self.assertIn("window.advanceTime = (milliseconds) =>", wrapper)
+        self.assertIn("innerWindow.advanceTime(milliseconds)", wrapper)
+        self.assertIn("window.requestAnimationFrame(waitFrame)", wrapper)
+
+    def test_inner_runtime_installs_text_and_time_bridge(self) -> None:
+        platform = (PROJECT_ROOT / "common" / "web_platform.gd").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("window.render_game_to_text = function ()", platform)
+        self.assertIn("window.__ridingDirtyStateJSON", platform)
+        self.assertIn("if (typeof window.advanceTime !== 'function')", platform)
+        self.assertIn("window.requestAnimationFrame(waitFrame)", platform)
+        self.assertIn("publish_game_text_state", platform)
+
     def test_inner_page_posts_ready_only_after_start_game_resolves(self) -> None:
         inner = (PROJECT_ROOT / "web" / "game" / "index.html").read_text(
             encoding="utf-8"

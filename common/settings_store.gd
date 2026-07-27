@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 13
+const SETTINGS_VERSION: int = 15
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -15,9 +15,15 @@ const TRANSMISSION_MODES: Array[String] = ["AUTOMATIC", "MANUAL"]
 const PRELOAD_BEHAVIOR_MODES: Array[String] = ["HOLD", "TOGGLE"]
 const CAMERA_MODES: Array[String] = ["CHASE", "CLOSE_CHASE", "HELMET", "FIRST_PERSON", "HANDLEBAR"]
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
+const RENDER_SCALE_MODES: Array[String] = ["AUTO", "67%", "80%", "90%", "100%"]
+const SHADOW_QUALITY_MODES: Array[String] = ["AUTO", "OFF", "SHORT", "FULL"]
+const PARTICLE_DENSITY_MODES: Array[String] = ["AUTO", "LOW", "MEDIUM", "FULL"]
+const WEATHER_EFFECT_MODES: Array[String] = ["AUTO", "MINIMAL", "REDUCED", "FULL"]
 const TOUCH_CONTROL_MODES: Array[String] = ["AUTO", "ON", "OFF"]
 const TOUCH_HANDEDNESS_MODES: Array[String] = ["RIGHT", "LEFT"]
 const HUD_DETAIL_MODES: Array[String] = ["FULL", "FOCUSED", "MINIMAL", "OFF"]
+const CAPTION_DETAIL_MODES: Array[String] = ["OFF", "IMPORTANT", "ALL"]
+const CAPTION_STYLE_MODES: Array[String] = ["STANDARD", "HIGH_CONTRAST"]
 
 const DEFAULTS: Dictionary = {
 	"controls": {
@@ -49,6 +55,10 @@ const DEFAULTS: Dictionary = {
 	},
 	"graphics": {
 		"visual_quality": "BALANCED",
+		"render_scale": "AUTO",
+		"shadow_quality": "AUTO",
+		"particle_density": "AUTO",
+		"weather_effects": "AUTO",
 	},
 	"feedback": {
 		"haptics_enabled": true,
@@ -74,6 +84,9 @@ const DEFAULTS: Dictionary = {
 		"high_contrast": false,
 		"color_safe_mode": "OFF",
 		"units": "IMPERIAL",
+		"caption_detail": "IMPORTANT",
+		"caption_scale": 1.0,
+		"caption_style": "STANDARD",
 	},
 	"bindings": {},
 }
@@ -545,10 +558,16 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var color_mode := str(interface.get("color_safe_mode", "OFF")).to_upper()
 	var unit_mode := str(interface.get("units", "IMPERIAL")).to_upper()
 	var hud_detail := str(interface.get("hud_detail", "FULL")).to_upper()
+	var caption_detail := str(interface.get("caption_detail", "IMPORTANT")).to_upper()
+	var caption_style := str(interface.get("caption_style", "STANDARD")).to_upper()
 	var race_difficulty := str(gameplay.get("race_difficulty", "STANDARD")).to_upper()
 	var transmission_mode := str(gameplay.get("transmission_mode", "AUTOMATIC")).to_upper()
 	var camera_mode := str(camera.get("mode", "CHASE")).to_upper()
 	var visual_quality := str(graphics.get("visual_quality", "BALANCED")).to_upper()
+	var render_scale := str(graphics.get("render_scale", "AUTO")).to_upper()
+	var shadow_quality := str(graphics.get("shadow_quality", "AUTO")).to_upper()
+	var particle_density := str(graphics.get("particle_density", "AUTO")).to_upper()
+	var weather_effects := str(graphics.get("weather_effects", "AUTO")).to_upper()
 	var touch_controls := str(controls.get("touch_controls", "AUTO")).to_upper()
 	var touch_handedness := str(controls.get("touch_handedness", "RIGHT")).to_upper()
 	var preload_behavior := str(controls.get("preload_behavior", "HOLD")).to_upper()
@@ -582,6 +601,10 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 		},
 		"graphics": {
 			"visual_quality": visual_quality if visual_quality in VISUAL_QUALITY_MODES else "BALANCED",
+			"render_scale": render_scale if render_scale in RENDER_SCALE_MODES else "AUTO",
+			"shadow_quality": shadow_quality if shadow_quality in SHADOW_QUALITY_MODES else "AUTO",
+			"particle_density": particle_density if particle_density in PARTICLE_DENSITY_MODES else "AUTO",
+			"weather_effects": weather_effects if weather_effects in WEATHER_EFFECT_MODES else "AUTO",
 		},
 		"feedback": {
 			"haptics_enabled": bool(feedback.get("haptics_enabled", true)),
@@ -609,6 +632,9 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 			"high_contrast": bool(interface.get("high_contrast", false)),
 			"color_safe_mode": color_mode if color_mode in COLOR_SAFE_MODES else "OFF",
 			"units": unit_mode if unit_mode in UNIT_MODES else "IMPERIAL",
+			"caption_detail": caption_detail if caption_detail in CAPTION_DETAIL_MODES else "IMPORTANT",
+			"caption_scale": clampf(float(interface.get("caption_scale", 1.0)), 0.75, 1.75),
+			"caption_style": caption_style if caption_style in CAPTION_STYLE_MODES else "STANDARD",
 		},
 		"bindings": _sanitize_bindings(raw.get("bindings", {})),
 	}

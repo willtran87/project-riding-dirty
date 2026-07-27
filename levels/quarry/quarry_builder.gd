@@ -97,6 +97,7 @@ func _create_materials() -> void:
 	_materials[&"ground"] = _material(Color("594033"), 0.96)
 	_materials[&"terrain"] = _material(Color("624431"), 1.0)
 	_materials[&"track"] = _material(Color("35261f"), 1.0)
+	_materials[&"sand"] = _material(Color("b5935f"), 0.98)
 	_materials[&"rut"] = _material(Color("281b18"), 1.0)
 	_materials[&"track_edge"] = _material(Color("806a54"), 0.94)
 	# A muted gravel tone separates the post-finish braking pad from the dark
@@ -111,6 +112,13 @@ func _create_materials() -> void:
 	_materials[&"cream"] = _material(Color("f0d58b"), 0.7)
 	_materials[&"tire"] = _material(Color("16191b"), 0.98)
 	_materials[&"scrub"] = _material(Color("71824a"), 0.95)
+	SurfaceTextureFactory.apply(
+		_materials[&"sand"],
+		PackedColorArray([Color("80643f"), Color("b18c58"), Color("d0ad72"), Color("927047")]),
+		TERRAIN_SEED + 7,
+		0.052,
+		0.72
+	)
 	SurfaceTextureFactory.apply(
 		_materials[&"track"],
 		PackedColorArray([Color("201613"), Color("39271f"), Color("60432f"), Color("2d1f19")]),
@@ -209,8 +217,10 @@ func _build_ground_and_walls() -> void:
 	)
 	_tag_surface(catch_floor, &"HARDPACK", 0.92, 0.42)
 	# Preserve the original central freestyle bowl while the race trail climbs around it.
-	var freestyle_pad := _add_static_box("QuarryFreestylePad", Vector3(168.0, 0.6, 168.0), Vector3(0.0, -0.3, 0.0), &"track")
-	_tag_surface(freestyle_pad, &"DIRT", 0.78, 1.08)
+	var freestyle_pad := _add_static_box(
+		"QuarryFreestylePad", Vector3(168.0, 0.6, 168.0), Vector3(0.0, -0.3, 0.0), &"sand"
+	)
+	_tag_surface(freestyle_pad, &"SAND", 0.58, 1.62)
 
 	# The generated terrain closes the entire expanded district around the long
 	# post-gate-8 descent. Former hard-coded Mesa/Terrace boxes ignored the route

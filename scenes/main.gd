@@ -4,7 +4,11 @@ extends Node3D
 const WEEKEND_DIRECTOR_SCRIPT := preload("res://features/career/race_weekend_director.gd")
 const CHAMPIONSHIP_SERVICE_SCRIPT := preload("res://features/career/championship_service.gd")
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
+const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.gd")
+const BIKE_TEST_RIDE_SCRIPT := preload("res://features/career/bike_test_ride.gd")
 const PROGRESSION_PAYOFF_SCRIPT := preload("res://features/career/progression_payoff.gd")
+const WEB_GAME_TEXT_STATE := preload("res://common/web_game_text_state.gd")
+const BIKE_CONDITION_FEEDBACK := preload("res://features/race/bike_condition_feedback.gd")
 const QUARRY_SCENE := preload("res://levels/quarry/quarry.tscn")
 const PINE_RIDGE_SCENE := preload("res://levels/pine_ridge/pine_ridge.tscn")
 const MESA_MX_SCENE := preload("res://levels/mesa_mx/mesa_mx.tscn")
@@ -57,6 +61,10 @@ var _pending_garage_event: StringName = &""
 var _pending_academy_settlement: Dictionary = {}
 var _pending_race_settlement: Dictionary = {}
 var _pending_close_after_save: bool = false
+var _web_game_text_publish_time: float = 0.0
+var _test_ride_bike_id: StringName = &""
+var _test_ride_bike_name: String = ""
+var _test_ride_build: Dictionary = {}
 
 
 func _ready() -> void:
@@ -64,6 +72,8 @@ func _ready() -> void:
 	get_tree().auto_accept_quit = false
 	if not SaveLifecycle.state_changed.is_connected(_on_save_lifecycle_for_pending_close):
 		SaveLifecycle.state_changed.connect(_on_save_lifecycle_for_pending_close)
+	if not Profile.meta_progress_changed.is_connected(_on_profile_meta_progress_changed):
+		Profile.meta_progress_changed.connect(_on_profile_meta_progress_changed)
 	_smoke_test_enabled = &"--smoke-test" in OS.get_cmdline_user_args()
 	if _smoke_test_enabled:
 		# Career initialization happens before the requested smoke activity. Disable
@@ -106,6 +116,7 @@ func _ready() -> void:
 	_bike.airtime_started.connect(_camera.begin_airtime)
 	_bike.pack_contacted.connect(_camera.apply_contact_kick)
 	_bike.landed.connect(_on_bike_landed)
+	_bike.automatic_recovery_requested.connect(_on_bike_automatic_recovery_requested)
 	_race.time_updated.connect(_hud.update_race_time)
 	_race.breakdown_ready.connect(_hud.show_breakdown)
 	_race.field_updated.connect(_hud.update_field)
@@ -122,6 +133,10 @@ func _ready() -> void:
 	_freestyle.hud_updated.connect(_hud.update_freestyle)
 	_discovery.hud_updated.connect(_hud.update_discovery)
 	_garage.ride_requested.connect(_on_ride_requested)
+	_garage.test_ride_requested.connect(_on_test_ride_requested)
+	_garage.workshop_visibility_changed.connect(_on_workshop_visibility_changed)
+	_garage.local_duel_requested.connect(_on_local_duel_requested)
+	_garage.event_selection_changed.connect(_on_garage_event_selection_changed)
 	_race.initialize(
 		_bike,
 		_ghost,
@@ -132,6 +147,8 @@ func _ready() -> void:
 	_race_services.initialize(_race, _bike, _camera, _hud)
 	_race_services.set_riding_camera_active(false)
 	_race_services.leaderboard_updated.connect(_hud.update_leaderboard_result)
+	_race_services.hotseat_state_changed.connect(_on_hotseat_state_changed)
+	_race_services.custom_tour_state_changed.connect(_on_custom_tour_state_changed)
 	_race_services.replay_available.connect(_hud.update_replay_available)
 	_race_services.replay_state_changed.connect(_hud.update_replay_state)
 	_race_services.replay_state_changed.connect(_on_replay_visibility_changed)
@@ -170,6 +187,135 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	ProceduralSurfaceTexture.clear_cache()
+
+
+func _on_profile_meta_progress_changed(_snapshot: Dictionary) -> void:
+	if _bike == null or not is_instance_valid(_bike):
+		return
+	_bike.apply_rider_cosmetics(Profile.get_rider_cosmetics())
+
+
+func _process(delta: float) -> void:
+	if not OS.has_feature("web"):
+		return
+	_web_game_text_publish_time -= delta
+	if _web_game_text_publish_time > 0.0:
+		return
+	_web_game_text_publish_time = 0.10
+	WebPlatform.publish_game_text_state(get_web_game_text_state_snapshot())
+
+
+func get_web_game_text_state_snapshot() -> Dictionary:
+	var workshop := _garage.get_workshop_snapshot()
+	var garage_prompts := _garage.get_input_prompt_snapshot()
+	var garage_briefing := _garage.get_event_briefing_presentation_snapshot()
+	var garage_strategy := _garage.get_event_strategy_presentation_snapshot()
+	var hud_prompts := _hud.get_control_prompt_snapshot()
+	var rider_cosmetics := Profile.get_rider_cosmetics()
+	return WEB_GAME_TEXT_STATE.build({
+		&"mode": _web_game_mode(),
+		&"activity": _current_activity,
+		&"paused": _paused,
+		&"transitioning": _transitioning,
+		&"player": {
+			&"bike_id": _test_ride_bike_id if _is_test_ride_active() else Profile.active_bike_id,
+			&"test_ride": _is_test_ride_active(),
+			&"position": _bike.global_position,
+			&"velocity": _bike.linear_velocity,
+			&"forward": -_bike.global_transform.basis.z.normalized(),
+			&"speed_mps": _bike.get_speed_mps(),
+			&"grounded": _bike.is_grounded(),
+			&"flow": _bike.get_flow(),
+			&"boosting": _bike.is_boosting(),
+			&"transmission": _bike.get_transmission_snapshot(),
+			&"controls": _bike.get_live_control_snapshot(),
+			&"contact": _bike.get_contact_feedback(),
+			&"condition": _bike.get_condition_snapshot(),
+			&"cosmetics": rider_cosmetics,
+			&"equipment_wear": _bike.get_equipment_wear_snapshot(),
+		},
+		&"session": _race.get_session_snapshot(),
+		&"hud": hud_prompts,
+		&"landing": _hud.get_landing_projection_presentation_snapshot(),
+		&"balance": _hud.get_ground_balance_presentation_snapshot(),
+		&"bike_condition": _hud.get_bike_condition_presentation_snapshot(),
+		&"camera": {
+			&"mode": _camera.get_view_mode(),
+			&"fov_degrees": _camera.get_camera_fov(),
+		},
+		&"graphics": _race_services.get_visual_quality_snapshot(),
+		&"captions": _race_services.get_audio_caption_snapshot(),
+		&"garage": {
+			&"open": _garage.is_open(),
+			&"workshop_open": bool(workshop.get(&"open", false)),
+			&"event": garage_briefing.get(&"event_id", _current_activity),
+			&"setup": garage_strategy.get(&"selected_setup", Profile.current_setup),
+			&"status": garage_prompts.get(&"status", ""),
+			&"workshop_category": workshop.get(&"category", ""),
+			&"workshop_item": workshop.get(&"workshop_item", ""),
+			&"workshop_action": workshop.get(&"workshop_action", ""),
+			&"workshop_status": workshop.get(&"workshop_status", ""),
+			&"rider_number": rider_cosmetics.get(&"rider_number", 17),
+			&"rider_number_draft": workshop.get(&"rider_number_draft", 17),
+		},
+		&"local_duel": _race_services.get_hotseat_presentation_snapshot(),
+		&"custom_tour": _race_services.get_custom_tour_presentation_snapshot(),
+		&"results": _hud.get_competition_presentation_snapshot(),
+		&"save": SaveLifecycle.get_snapshot(),
+		&"input_mode": InputRouter.input_mode,
+		&"binding_revision": InputRouter.binding_revision,
+	})
+
+
+func _web_game_mode() -> StringName:
+	var workshop_open := false
+	if _garage.is_open():
+		workshop_open = bool(_garage.get_workshop_snapshot().get(&"open", false))
+	return resolve_web_game_mode(
+		_transitioning,
+		_settings_modal_open,
+		_photo_modal_open,
+		_replay_modal_open,
+		_garage.is_open(),
+		workshop_open,
+		_hud.is_results_visible(),
+		_paused,
+		_current_activity
+	)
+
+
+static func resolve_web_game_mode(
+	transitioning: bool,
+	settings_open: bool,
+	photo_open: bool,
+	replay_open: bool,
+	garage_open: bool,
+	workshop_open: bool,
+	results_visible: bool,
+	paused: bool,
+	activity: StringName
+) -> StringName:
+	if transitioning:
+		return &"TRANSITION"
+	if settings_open:
+		return &"SETTINGS"
+	if photo_open:
+		return &"PHOTO_MODE"
+	if replay_open:
+		return &"REPLAY"
+	if garage_open:
+		return &"WORKSHOP" if workshop_open else &"GARAGE"
+	if results_visible:
+		return &"RESULTS"
+	if paused:
+		return &"PAUSED"
+	if activity == &"FREESTYLE":
+		return &"FREESTYLE"
+	if activity == &"DISCOVERY":
+		return &"DISCOVERY"
+	if activity == &"ACADEMY":
+		return &"ACADEMY"
+	return &"RACE"
 
 
 func _notification(what: int) -> void:
@@ -218,18 +364,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _paused:
 		return
 	if event.is_action_pressed(InputRouter.OPEN_GARAGE) and not event.is_echo():
-		_stop_all_activities()
-		_hud.visible = false
-		_touch_results_visible = false
-		_camera.set_composition_offset_right(GARAGE_COMPOSITION_OFFSET_METERS)
-		_race_services.set_riding_camera_active(false)
-		_camera.snap_to_target()
-		_garage.update_competition_context(_current_activity, _ghost.best_time_usec, _active_competition_id())
-		_garage.show_garage()
-		if not _pending_garage_event.is_empty():
-			_garage.focus_event_briefing(_pending_garage_event)
-		_refresh_touch_context()
-		EventBus.interface_feedback_requested.emit(&"CANCEL", &"RETURN_GARAGE")
+		_return_to_garage()
 		get_viewport().set_input_as_handled()
 		return
 	if (
@@ -247,8 +382,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		)
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.RESTART_RUN) and not event.is_echo():
-		_restart_current_activity()
-		EventBus.interface_feedback_requested.emit(&"CONFIRM", &"ACTIVITY_RESTART")
+		if _restart_current_activity():
+			EventBus.interface_feedback_requested.emit(&"CONFIRM", &"ACTIVITY_RESTART")
 		get_viewport().set_input_as_handled()
 
 
@@ -307,22 +442,38 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 			else _race_services.get_daily_challenge()
 		)
 		session = RaceEventCatalog.get_challenge_session_config(activity, _active_challenge)
+		var local_duel := _race_services.get_hotseat_presentation_snapshot()
+		if (
+			session != null
+			and bool(local_duel.get(&"active", false))
+			and StringName(local_duel.get(&"event_id", &"")) == activity
+			and str(local_duel.get(&"challenge_id", "")) == str(_active_challenge.get("challenge_id", ""))
+		):
+			var participant := local_duel.get(&"current_participant", {}) as Dictionary
+			var rider_name := str(participant.get("display_name", "RIDER")).to_upper()
+			session.display_name = "%s  //  %s" % [session.display_name, rider_name]
+			session.rules[&"local_duel"] = true
+			session.rules[&"local_duel_rider"] = rider_name
 	elif RaceEventCatalog.is_race_event(activity):
 		session = RaceEventCatalog.get_session_config(activity)
+	elif activity == BIKE_TEST_RIDE_SCRIPT.ACTIVITY_ID and _is_test_ride_active():
+		session = BIKE_TEST_RIDE_SCRIPT.create_session(_test_ride_bike_id, _test_ride_bike_name)
 	var track_id := session.track_id if session != null else RaceEventCatalog.get_track_id(activity) if RaceEventCatalog.has_event(activity) else CourseCatalog.QUARRY_ID
 	_ensure_track_loaded(track_id)
 	_gameplay_audio.finish_arrangement_prepare(activity)
 	phase_begin_usec = _finish_profiled_activity_phase(&"track_load", phase_begin_usec, profile_activity)
 	if session != null:
-		if not RaceEventCatalog.is_challenge_event(activity):
+		if not RaceEventCatalog.is_challenge_event(activity) and not _is_test_ride_active():
 			session.bike_class = Profile.selected_bike_class
-		_apply_career_session_rules(activity, session)
+			_apply_career_session_rules(activity, session)
 		var active_build: Dictionary = {}
-		if Profile.has_method(&"get_active_bike_setup_snapshot"):
+		if _is_test_ride_active():
+			active_build = _test_ride_build.duplicate(true)
+		elif Profile.has_method(&"get_active_bike_setup_snapshot"):
 			active_build = Profile.call(&"get_active_bike_setup_snapshot") as Dictionary
 		apply_career_opponent_build_match(session, active_build, setup)
 	_apply_session_transmission_rule(session)
-	_apply_session_control_response_rule()
+	_apply_session_control_response_rule(session)
 	var authoritative_route := get_authoritative_route(track_id)
 	var authoritative_surface_root := _get_track_builder(track_id)
 	# RaceController owns route preparation internally, so it still receives the
@@ -339,7 +490,8 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	if session != null and _atmosphere.has_method(&"configure_session"):
 		_atmosphere.call(&"configure_session", session.weather, session.track_id)
 	phase_begin_usec = _finish_profiled_activity_phase(&"event_and_atmosphere", phase_begin_usec, profile_activity)
-	Profile.set_current_setup(setup)
+	if not _is_test_ride_active():
+		Profile.set_current_setup(setup)
 	var effective_setup := setup
 	var effective_assist := Profile.assist_mode
 	var effective_assist_configuration := Profile.get_assist_configuration()
@@ -352,10 +504,15 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	if equalized_challenge:
 		_bike.apply_equalized_race_class(session.bike_class)
 		_bike.apply_condition(100)
+	elif _is_test_ride_active():
+		_bike.apply_racing_build(_test_ride_build)
+		_bike.apply_condition(100)
 	else:
 		if Profile.has_method(&"get_active_bike_setup_snapshot"):
 			_bike.apply_racing_build(Profile.call(&"get_active_bike_setup_snapshot") as Dictionary)
 		_bike.apply_condition(Profile.bike_condition)
+	_bike.reset_equipment_wear()
+	_bike.apply_session_weather(session.weather if session != null else &"CLEAR")
 	_bike.apply_session_surface(session.surface_modifier if session != null else &"PACKED")
 	_bike.apply_cosmetic_tier(Profile.get_cosmetic_tier())
 	if Profile.has_method(&"get_rider_cosmetics"):
@@ -382,6 +539,98 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 	_refresh_touch_context()
 
 
+func _on_test_ride_requested(bike_id: StringName, setup: StringName) -> void:
+	if _transitioning:
+		return
+	var catalog: Variant = BIKE_CATALOG_SCRIPT.create_default()
+	var bike_definition: Dictionary = catalog.get_bike(bike_id)
+	var stock_build: Dictionary = BIKE_TEST_RIDE_SCRIPT.create_stock_build(bike_id, catalog, setup)
+	if bike_definition.is_empty() or stock_build.is_empty():
+		EventBus.interface_feedback_requested.emit(&"DENIED", &"TEST_RIDE_UNAVAILABLE")
+		return
+	_test_ride_bike_id = bike_id
+	_test_ride_bike_name = str(bike_definition.get(&"display_name", bike_id))
+	_test_ride_build = stock_build
+	_on_ride_requested(setup, BIKE_TEST_RIDE_SCRIPT.ACTIVITY_ID)
+
+
+func _on_workshop_visibility_changed(open: bool) -> void:
+	if is_instance_valid(_touch_controls) and _touch_controls.has_method(&"set_workshop_open"):
+		_touch_controls.call(&"set_workshop_open", open)
+
+
+func _on_local_duel_requested(weekly: bool) -> void:
+	var result := _race_services.configure_hotseat([
+		{&"profile_id": "local_duel_rider_1", &"display_name": "RIDER 1"},
+		{&"profile_id": "local_duel_rider_2", &"display_name": "RIDER 2"},
+	], 2, weekly)
+	if not bool(result.get("ok", false)):
+		EventBus.interface_feedback_requested.emit(&"DENIED", &"LOCAL_DUEL_SAVE")
+		return
+	var snapshot := result.get("snapshot", {}) as Dictionary
+	var event_id := StringName(snapshot.get(&"event_id", &"WEEKLY_CHALLENGE" if weekly else &"DAILY_CHALLENGE"))
+	_garage.focus_event_briefing(event_id)
+	_garage.refresh_local_duel_state()
+	_on_garage_event_selection_changed(event_id)
+	_garage.start_selected_ride()
+
+
+func _on_hotseat_state_changed(_snapshot: Dictionary) -> void:
+	_garage.refresh_local_duel_state()
+	if _garage.is_open():
+		var event_id := StringName(_snapshot.get(&"event_id", &""))
+		if not event_id.is_empty():
+			_garage.focus_event_briefing(event_id)
+			_on_garage_event_selection_changed(event_id)
+
+
+func _on_custom_tour_state_changed(_snapshot: Dictionary) -> void:
+	_garage.refresh_custom_tour_state()
+	if _garage.is_open():
+		_garage.focus_event_briefing(&"CUSTOM_TOUR")
+		_on_garage_event_selection_changed(&"CUSTOM_TOUR")
+
+
+func _on_garage_event_selection_changed(activity: StringName) -> void:
+	if not is_instance_valid(_touch_controls) or not _touch_controls.has_method(&"set_garage_continue_label"):
+		return
+	var continue_label := "CONTINUE"
+	if activity == &"CUSTOM_TOUR":
+		var tour := _race_services.get_custom_tour_presentation_snapshot()
+		continue_label = (
+			"NEXT\nROUND" if bool(tour.get(&"active", false))
+			else "NEW\nTOUR" if bool(tour.get(&"completed", false))
+			else "START\nTOUR" if bool(tour.get(&"building", false))
+			else "BUILD\nTOUR"
+		)
+	elif activity in [&"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE"]:
+		continue_label = "LOCAL\nDUEL"
+	_touch_controls.call(
+		&"set_garage_continue_label",
+		continue_label
+	)
+
+
+func _is_test_ride_active() -> bool:
+	return not _test_ride_bike_id.is_empty()
+
+
+func _clear_test_ride() -> void:
+	_test_ride_bike_id = &""
+	_test_ride_bike_name = ""
+	_test_ride_build.clear()
+
+
+func _restore_career_bike_runtime() -> void:
+	_bike.apply_setup(Profile.current_setup)
+	if Profile.has_method(&"get_active_bike_setup_snapshot"):
+		_bike.apply_racing_build(Profile.call(&"get_active_bike_setup_snapshot") as Dictionary)
+	_bike.apply_condition(Profile.bike_condition)
+	_bike.apply_cosmetic_tier(Profile.get_cosmetic_tier())
+	if Profile.has_method(&"get_rider_cosmetics"):
+		_bike.apply_rider_cosmetics(Profile.call(&"get_rider_cosmetics") as Dictionary)
+
+
 func _finish_profiled_activity_phase(phase: StringName, begin_usec: int, enabled: bool) -> int:
 	var finish_usec := Time.get_ticks_usec()
 	if enabled:
@@ -389,11 +638,26 @@ func _finish_profiled_activity_phase(phase: StringName, begin_usec: int, enabled
 	return finish_usec
 
 
-func _restart_current_activity() -> void:
+func _restart_current_activity() -> bool:
 	if _retry_pending_race_settlement():
-		return
+		return false
 	if _retry_pending_activity_settlement():
-		return
+		return false
+	if _hud.is_results_visible() and _current_activity in [&"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE"]:
+		var local_duel := _race_services.get_hotseat_presentation_snapshot()
+		if (
+			bool(local_duel.get(&"configured", false))
+			and StringName(local_duel.get(&"event_id", &"")) == _current_activity
+			and str(local_duel.get(&"challenge_id", "")) == str(_active_challenge.get("challenge_id", ""))
+		):
+			_return_to_garage()
+			return false
+	if (
+		_hud.is_results_visible()
+		and _race_services.get_custom_tour_last_result_event() == _current_activity
+	):
+		_return_to_garage()
+		return false
 	_touch_results_visible = false
 	_refresh_touch_context()
 	if is_instance_valid(_race_services):
@@ -403,7 +667,7 @@ func _restart_current_activity() -> void:
 			# Recompose from the shared Academy authority. A plain reset would keep
 			# the completed lesson's old RaceSessionConfig and silently rematch it.
 			_restart_academy_progression()
-			return
+			return true
 		&"FREESTYLE":
 			_freestyle.start_session()
 		&"DISCOVERY":
@@ -411,6 +675,32 @@ func _restart_current_activity() -> void:
 		_:
 			_race.reset_run()
 	_camera.snap_to_target()
+	return true
+
+
+func _return_to_garage() -> void:
+	var completed_test_ride_name := _test_ride_bike_name
+	_stop_all_activities()
+	if _is_test_ride_active():
+		_restore_career_bike_runtime()
+		_clear_test_ride()
+	_hud.visible = false
+	_touch_results_visible = false
+	_camera.set_composition_offset_right(GARAGE_COMPOSITION_OFFSET_METERS)
+	_race_services.set_riding_camera_active(false)
+	_camera.snap_to_target()
+	_garage.update_competition_context(
+		_current_activity, _ghost.best_time_usec, _active_competition_id()
+	)
+	_garage.show_garage()
+	if not completed_test_ride_name.is_empty():
+		_garage.show_test_ride_complete(completed_test_ride_name)
+	if _race_services.get_custom_tour_last_result_event() == _current_activity:
+		_garage.focus_event_briefing(&"CUSTOM_TOUR")
+	elif not _pending_garage_event.is_empty():
+		_garage.focus_event_briefing(_pending_garage_event)
+	_refresh_touch_context()
+	EventBus.interface_feedback_requested.emit(&"CANCEL", &"RETURN_GARAGE")
 
 
 func _retry_pending_race_settlement() -> bool:
@@ -477,11 +767,13 @@ func _restart_academy_progression() -> void:
 		return
 	session.bike_class = Profile.selected_bike_class
 	_apply_session_transmission_rule(session)
-	_apply_session_control_response_rule()
+	_apply_session_control_response_rule(session)
 	_ensure_track_loaded(session.track_id)
 	var authoritative_route := get_authoritative_route(session.track_id)
 	var authoritative_surface_root := _get_track_builder(session.track_id)
 	_hud.configure_track(session.track_id, authoritative_route)
+	_bike.reset_equipment_wear()
+	_bike.apply_session_weather(session.weather)
 	_bike.apply_session_surface(session.surface_modifier)
 	_race.configure_session(session, authoritative_route, authoritative_surface_root)
 	EventBus.activity_prepared.emit(&"ACADEMY")
@@ -516,14 +808,20 @@ func _apply_session_transmission_rule(session: RaceSessionConfig) -> void:
 		)
 
 
-func _apply_session_control_response_rule() -> void:
+func _apply_session_control_response_rule(session: RaceSessionConfig) -> void:
 	if not is_instance_valid(_race_services):
 		return
 	# Deadzones, response curves, and riding sensitivities all change physical
 	# lap potential. Freeze the exact preferred values at activity composition;
 	# Settings can safely store a new preference for the next event.
+	var forced_response: Dictionary = (
+		(session.rules.get(&"forced_control_response", {}) as Dictionary).duplicate(true)
+		if session != null else {}
+	)
 	_race_services.set_activity_control_response_override(
-		_race_services.get_preferred_control_response()
+		forced_response
+		if not forced_response.is_empty()
+		else _race_services.get_preferred_control_response()
 	)
 
 
@@ -856,6 +1154,15 @@ func _on_race_results_ready(
 ) -> void:
 	_touch_results_visible = true
 	_refresh_touch_context()
+	if _current_activity == BIKE_TEST_RIDE_SCRIPT.ACTIVITY_ID and _is_test_ride_active():
+		var practice_result: Dictionary = BIKE_TEST_RIDE_SCRIPT.sanitize_result(
+			result, _test_ride_bike_id
+		)
+		_pending_garage_event = &""
+		_progression_run_baseline.clear()
+		result.clear()
+		result.merge(practice_result, true)
+		return
 	if RaceEventCatalog.is_challenge_event(_current_activity):
 		if _active_challenge.is_empty():
 			_mark_result_invalid(result, "CHALLENGE_CONTEXT_MISSING")
@@ -1129,7 +1436,7 @@ func _on_activity_completed_for_touch(summary: Dictionary) -> void:
 
 
 func _on_activity_started_capture_progression(activity: StringName) -> void:
-	if activity in [&"FREESTYLE", &"DISCOVERY"]:
+	if activity in [&"FREESTYLE", &"DISCOVERY", BIKE_TEST_RIDE_SCRIPT.ACTIVITY_ID]:
 		return
 	_progression_run_baseline = PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
 
@@ -1237,8 +1544,31 @@ func _on_race_started_apply_session_rules() -> void:
 
 
 func _on_bike_landed(intensity: float) -> void:
-	if &"--smoke-test" in OS.get_cmdline_user_args() or intensity <= 0.72:
+	if (
+		&"--smoke-test" in OS.get_cmdline_user_args()
+		or _is_test_ride_active()
+		or intensity <= 0.72
+	):
 		return
-	var damage := maxi(int(ceil((intensity - 0.72) * 18.0)), 1)
+	var damage := BIKE_CONDITION_FEEDBACK.damage_for_landing(intensity)
+	_apply_live_bike_damage(damage)
+
+
+func _on_bike_automatic_recovery_requested(reason: StringName) -> void:
+	if (
+		&"--smoke-test" in OS.get_cmdline_user_args()
+		or _is_test_ride_active()
+		or _current_activity == &"ACADEMY"
+	):
+		return
+	_apply_live_bike_damage(
+		BIKE_CONDITION_FEEDBACK.damage_for_automatic_recovery(reason)
+	)
+
+
+func _apply_live_bike_damage(damage: int) -> void:
+	if damage <= 0:
+		return
 	Profile.apply_bike_damage(damage)
 	_bike.apply_condition(Profile.bike_condition)
+	_hud.show_bike_damage(damage, _bike.get_condition_snapshot())

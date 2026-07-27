@@ -11,7 +11,7 @@ func _ready() -> void:
 	_probe_academy_flow()
 	_probe_garage_event_catalog()
 	if _failures.is_empty():
-		print("FULL GAME META PROBE: PASS  //  CHALLENGES + ACADEMY + 18 GARAGE EVENTS")
+		print("FULL GAME META PROBE: PASS  //  CHALLENGES + ACADEMY + 19 GARAGE EVENTS")
 		get_tree().quit(0)
 		return
 	for failure: String in _failures:
@@ -33,6 +33,13 @@ func _probe_rotating_challenge_signature() -> void:
 		"bike_class": rules.get(&"competitive_bike_class", config.bike_class),
 		"difficulty": rules.get(&"competitive_difficulty", config.difficulty),
 		"assist_mode": rules.get(&"competitive_assist_mode", &"STANDARD"),
+		"transmission_mode": rules.get(&"forced_transmission_mode", &"AUTOMATIC"),
+		"control_signature": (
+			InputRouter.control_response_signature(
+				rules.get(&"forced_control_response", {}) as Dictionary
+			)
+			if rules.has(&"forced_control_response") else "DEFAULT"
+		),
 		"setup_id": rules.get(&"competitive_setup_id", &"BALANCED"),
 		"tune_signature": "",
 		"weather": config.weather,
@@ -57,7 +64,7 @@ func _probe_academy_flow() -> void:
 
 
 func _probe_garage_event_catalog() -> void:
-	_check(GarageUi.EVENTS.size() == 18, "garage event roster is incomplete")
+	_check(GarageUi.EVENTS.size() == 19, "garage event roster is incomplete")
 	for event_id: StringName in GarageUi.EVENTS:
 		_check(RaceEventCatalog.has_event(event_id), "garage event %s has no catalog definition" % String(event_id))
 		if RaceEventCatalog.is_race_event(event_id):

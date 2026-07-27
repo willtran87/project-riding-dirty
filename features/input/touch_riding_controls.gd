@@ -96,6 +96,8 @@ var _handedness: StringName = HANDEDNESS_RIGHT
 var _manual_transmission: bool = false
 var _preload_toggle_mode: bool = false
 var _preload_toggle_active: bool = false
+var _workshop_open: bool = false
+var _garage_continue_label: String = "CONTINUE"
 
 var _viewport_size := Vector2.ZERO
 var _safe_rect := Rect2()
@@ -242,6 +244,25 @@ func set_context(context: StringName) -> void:
 func set_gameplay_active(active: bool) -> void:
 	## Compatibility wrapper for callers that only distinguish racing from hidden.
 	set_context(CONTEXT_RIDE if active else CONTEXT_HIDDEN)
+
+
+func set_workshop_open(open: bool) -> void:
+	if _workshop_open == open:
+		return
+	_workshop_open = open
+	if _controls.has(&"continue"):
+		var continue_spec: Dictionary = _controls[&"continue"]
+		continue_spec[&"label"] = "TEST\nRIDE" if open else _garage_continue_label
+	_request_redraw()
+
+
+func set_garage_continue_label(label: String) -> void:
+	var normalized := label.strip_edges().to_upper()
+	_garage_continue_label = normalized if not normalized.is_empty() else "CONTINUE"
+	if not _workshop_open and _controls.has(&"continue"):
+		var continue_spec: Dictionary = _controls[&"continue"]
+		continue_spec[&"label"] = _garage_continue_label
+	_request_redraw()
 
 
 func set_touchscreen_override(value: int) -> void:

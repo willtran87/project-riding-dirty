@@ -19,6 +19,10 @@ func _ready() -> void:
 	var particles := GPUParticles3D.new()
 	particles.amount = 100
 	root.add_child(particles)
+	var weather_particles := GPUParticles3D.new()
+	weather_particles.amount = 100
+	weather_particles.add_to_group(&"weather_effects")
+	root.add_child(weather_particles)
 
 	var balanced := RaceServices.resolve_visual_quality_preset("BALANCED", true)
 	RaceServices.apply_visual_quality_to_scene(root, balanced)
@@ -26,6 +30,7 @@ func _ready() -> void:
 	_check(is_equal_approx(sun.directional_shadow_max_distance, 150.0), "Balanced shadow distance is not 150 m")
 	_check(sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS, "Balanced does not use two shadow splits")
 	_check(is_equal_approx(particles.amount_ratio, 0.62), "Balanced particle ratio is incorrect")
+	_check(is_equal_approx(weather_particles.amount_ratio, 0.62), "Balanced weather ratio is incorrect")
 
 	var performance := RaceServices.resolve_visual_quality_preset("PERFORMANCE", true)
 	RaceServices.apply_visual_quality_to_scene(root, performance)
@@ -62,6 +67,51 @@ func _ready() -> void:
 		bool(accessible_quality.get(&"reduced_particles", false)),
 		"Reduced-particle accessibility is absent from the applied quality contract"
 	)
+
+	var custom := RaceServices.resolve_visual_quality_preset(
+		"BALANCED",
+		true,
+		false,
+		{
+			"render_scale": "100%",
+			"shadow_quality": "SHORT",
+			"particle_density": "FULL",
+			"weather_effects": "MINIMAL",
+		}
+	)
+	RaceServices.apply_visual_quality_to_scene(root, custom)
+	_check(is_equal_approx(float(custom.get(&"render_scale", 0.0)), 1.0), "100% render-resolution override was ignored")
+	_check(StringName(custom.get(&"render_scale_mode", &"")) == &"100%", "Render-resolution override is absent from the snapshot")
+	_check(sun.shadow_enabled, "Short shadows unexpectedly disabled the authored sun")
+	_check(is_equal_approx(sun.directional_shadow_max_distance, RaceServices.SHORT_SHADOW_DISTANCE), "Short shadows did not cap distance")
+	_check(is_equal_approx(particles.amount_ratio, 1.0), "Full effect density did not override the preset")
+	_check(is_equal_approx(weather_particles.amount_ratio, 0.10), "Minimal weather did not independently reduce weather particles")
+
+	var accessible_custom := RaceServices.resolve_visual_quality_preset(
+		"QUALITY",
+		true,
+		true,
+		{
+			"particle_density": "FULL",
+			"weather_effects": "FULL",
+			"shadow_quality": "OFF",
+		}
+	)
+	RaceServices.apply_visual_quality_to_scene(root, accessible_custom)
+	_check(not sun.shadow_enabled, "Off shadow override did not disable the authored sun")
+	_check(is_equal_approx(particles.amount_ratio, RaceServices.REDUCED_PARTICLE_RATIO), "Accessibility did not cap a full-density override")
+	_check(is_equal_approx(weather_particles.amount_ratio, RaceServices.REDUCED_PARTICLE_RATIO), "Accessibility did not cap full weather effects")
+
+	var restored_full := RaceServices.resolve_visual_quality_preset(
+		"QUALITY",
+		false,
+		false,
+		{"shadow_quality": "FULL"}
+	)
+	RaceServices.apply_visual_quality_to_scene(root, restored_full)
+	_check(sun.shadow_enabled, "Full shadows did not restore the authored sun")
+	_check(is_equal_approx(sun.directional_shadow_max_distance, 460.0), "Native full shadows did not restore authored distance")
+	_check(sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS, "Native full shadows did not restore authored splits")
 
 	_check(ENGINE_LOOP != null and ENGINE_LOOP.loop_mode == AudioStreamWAV.LOOP_FORWARD, "Baked engine loop is invalid")
 	_check(MUSIC_BASE != null and MUSIC_BASE.get_length() > 6.0, "Baked Quarry music is invalid")

@@ -3,21 +3,25 @@ class_name GarageUi
 ## Setup selection and purchase surface projected from the persistent Profile autoload.
 
 signal ride_requested(setup: StringName, activity: StringName)
+signal test_ride_requested(bike_id: StringName, setup: StringName)
 signal workshop_visibility_changed(open: bool)
 signal workshop_selection_changed(snapshot: Dictionary)
 signal workshop_action_completed(category: StringName, item_id: StringName, success: bool)
+signal local_duel_requested(weekly: bool)
+signal event_selection_changed(activity: StringName)
 
 const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.gd")
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
 const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_catalog.gd")
 const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
+const RIDER_GRAPHICS_CATALOG := preload("res://features/career/rider_graphics_catalog.gd")
 
 const SETUPS: Array[StringName] = [&"TRAIL", &"BALANCED", &"ATTACK"]
 const EVENTS: Array[StringName] = [
 	&"CIRCUIT", &"PINE_ENDURO", &"MESA_PRACTICE", &"MESA_QUALIFYING", &"MESA_HEAT", &"MESA_LCQ",
 	&"MESA_MX", &"MESA_ELIMINATION", &"MESA_RIVAL", &"MESA_ENDURANCE",
 	&"QUARRY_HILLCLIMB", &"PINE_WET", &"MESA_RHYTHM", &"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE",
-	&"ACADEMY", &"FREESTYLE", &"DISCOVERY",
+	&"ACADEMY", &"FREESTYLE", &"DISCOVERY", &"CUSTOM_TOUR",
 ]
 const INITIAL_EVENT: StringName = &"CIRCUIT"
 const CREAM := Color("f7e5b2")
@@ -25,7 +29,9 @@ const AMBER := Color("ffb52d")
 const CYAN := Color("56d6ff")
 const MUTED := Color("8b989f")
 const DARK := Color(0.025, 0.03, 0.036, 0.92)
-const WORKSHOP_CATEGORIES: Array[StringName] = [&"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE", &"BUILD"]
+const WORKSHOP_CATEGORIES: Array[StringName] = [
+	&"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE", &"GRAPHICS", &"RIDER", &"NUMBER", &"OUTFIT", &"BUILD",
+]
 const PART_SLOTS: Array[StringName] = [&"ENGINE", &"TIRES", &"SUSPENSION", &"BRAKES", &"CHASSIS"]
 const TUNE_PRESETS: Array[Dictionary] = [
 	{&"preset_id": &"BALANCED", &"display_name": "Balanced Baseline", &"description": "Neutral geometry and delivery. The clean comparison setup.", &"tune": {&"gearing": 0.0, &"tire_grip": 0.0, &"suspension_stiffness": 0.0, &"suspension_damping": 0.0, &"preload": 0.0, &"brake_bias": 0.0}},
@@ -35,10 +41,23 @@ const TUNE_PRESETS: Array[Dictionary] = [
 	{&"preset_id": &"ENDURO", &"display_name": "Enduro Control", &"description": "Plush damping, traction, and mild acceleration for long rough stages.", &"tune": {&"gearing": 0.25, &"tire_grip": 0.55, &"suspension_stiffness": -0.30, &"suspension_damping": 0.75, &"preload": 0.25, &"brake_bias": 0.25}},
 ]
 const STYLE_PRESETS: Array[Dictionary] = [
-	{&"style_id": &"FACTORY", &"display_name": "Factory Issue", &"required_tier": 0, &"description": "Classic white helmet, Mesa red kit, and factory number plate.", &"changes": {&"helmet": "CLASSIC_WHITE", &"jersey": "MESA_RED", &"pants": "CHARCOAL", &"boots": "BLACK", &"gloves": "BLACK", &"bike_livery": "FACTORY", &"number_plate": "WHITE", &"accent_color": "E25532"}},
-	{&"style_id": &"DESERT", &"display_name": "Desert Works", &"required_tier": 1, &"description": "Sand, rust, and cream colors earned through riding feats.", &"changes": {&"helmet": "DESERT_CREAM", &"jersey": "MESA_SAND", &"pants": "RUST", &"boots": "BROWN", &"gloves": "CREAM", &"bike_livery": "DESERT_WORKS", &"number_plate": "CREAM", &"accent_color": "E58A3A"}},
-	{&"style_id": &"NIGHT", &"display_name": "Night Race", &"required_tier": 2, &"description": "Dark racewear and electric cyan accents for the full gate.", &"changes": {&"helmet": "NIGHT_BLACK", &"jersey": "NIGHT_CYAN", &"pants": "BLACK", &"boots": "BLACK", &"gloves": "CYAN", &"bike_livery": "NIGHT_RACE", &"number_plate": "BLACK", &"accent_color": "56D6FF"}},
-	{&"style_id": &"CHAMPION", &"display_name": "Tour Champion", &"required_tier": 3, &"description": "Gold-accented premier kit reserved for a decorated rider.", &"changes": {&"helmet": "CHAMPION_GOLD", &"jersey": "TOUR_CHAMPION", &"pants": "BLACK_GOLD", &"boots": "GOLD", &"gloves": "GOLD", &"bike_livery": "TOUR_CHAMPION", &"number_plate": "GOLD", &"accent_color": "FFB52D"}},
+	{&"style_id": &"FACTORY", &"display_name": "Factory Issue", &"required_tier": 0, &"description": "Classic white helmet, clear lens, roost guard, and factory number plate.", &"changes": {&"helmet": "CLASSIC_WHITE", &"goggles": "CLEAR", &"jersey": "MESA_RED", &"pants": "CHARCOAL", &"boots": "BLACK", &"gloves": "BLACK", &"protection": "ROOST_GUARD", &"accessory": "NONE", &"bike_livery": "FACTORY", &"number_plate": "WHITE", &"accent_color": "E25532"}},
+	{&"style_id": &"DESERT", &"display_name": "Desert Works", &"required_tier": 1, &"description": "Amber lens, enduro vest, and neck roll in sand, rust, and cream.", &"changes": {&"helmet": "DESERT_CREAM", &"goggles": "AMBER", &"jersey": "MESA_SAND", &"pants": "RUST", &"boots": "BROWN", &"gloves": "CREAM", &"protection": "ENDURO_VEST", &"accessory": "NECK_ROLL", &"bike_livery": "DESERT_WORKS", &"number_plate": "CREAM", &"accent_color": "E58A3A"}},
+	{&"style_id": &"NIGHT", &"display_name": "Night Race", &"required_tier": 2, &"description": "Cyan lens, chest plate, and hydration pack for the full gate.", &"changes": {&"helmet": "NIGHT_BLACK", &"goggles": "CYAN_LENS", &"jersey": "NIGHT_CYAN", &"pants": "BLACK", &"boots": "BLACK", &"gloves": "CYAN", &"protection": "CHEST_PLATE", &"accessory": "HYDRATION_PACK", &"bike_livery": "NIGHT_RACE", &"number_plate": "BLACK", &"accent_color": "56D6FF"}},
+	{&"style_id": &"CHAMPION", &"display_name": "Tour Champion", &"required_tier": 3, &"description": "Gold mirror lens, pro armor, and champion sash for a decorated rider.", &"changes": {&"helmet": "CHAMPION_GOLD", &"goggles": "GOLD_MIRROR", &"jersey": "TOUR_CHAMPION", &"pants": "BLACK_GOLD", &"boots": "GOLD", &"gloves": "GOLD", &"protection": "PRO_ARMOR", &"accessory": "CHAMPION_SASH", &"bike_livery": "TOUR_CHAMPION", &"number_plate": "GOLD", &"accent_color": "FFB52D"}},
+]
+const RIDER_IDENTITY_OPTIONS: Array[Dictionary] = [
+	{&"field": &"body_type", &"choice_id": &"COMPACT", &"display_name": "Compact Frame", &"description": "A compact rider silhouette with a narrower torso and tucked stance."},
+	{&"field": &"body_type", &"choice_id": &"ATHLETIC", &"display_name": "Athletic Frame", &"description": "The balanced rider silhouette used by the default race kit."},
+	{&"field": &"body_type", &"choice_id": &"POWERFUL", &"display_name": "Powerful Frame", &"description": "A broader rider silhouette with extra visual presence on the bike."},
+	{&"field": &"skin_tone", &"choice_id": &"LIGHT", &"display_name": "Light Skin Tone", &"description": "Light skin tone visible at the neck and helmet opening."},
+	{&"field": &"skin_tone", &"choice_id": &"MEDIUM_LIGHT", &"display_name": "Medium Light Skin Tone", &"description": "Medium-light skin tone visible at the neck and helmet opening."},
+	{&"field": &"skin_tone", &"choice_id": &"MEDIUM", &"display_name": "Medium Skin Tone", &"description": "Medium skin tone visible at the neck and helmet opening."},
+	{&"field": &"skin_tone", &"choice_id": &"MEDIUM_DEEP", &"display_name": "Medium Deep Skin Tone", &"description": "Medium-deep skin tone visible at the neck and helmet opening."},
+	{&"field": &"skin_tone", &"choice_id": &"DEEP", &"display_name": "Deep Skin Tone", &"description": "Deep skin tone visible at the neck and helmet opening."},
+	{&"field": &"voice", &"choice_id": &"FOCUSED", &"display_name": "Focused Voice", &"description": "A neutral nonverbal effort voice for boosts, hard landings, and celebrations."},
+	{&"field": &"voice", &"choice_id": &"BRIGHT", &"display_name": "Bright Voice", &"description": "A brighter nonverbal effort voice with a higher vocal register."},
+	{&"field": &"voice", &"choice_id": &"GROUNDED", &"display_name": "Grounded Voice", &"description": "A grounded nonverbal effort voice with a lower vocal register."},
 ]
 
 var _root: Control
@@ -82,12 +101,16 @@ var _open: bool = false
 var _workshop_open: bool = false
 var _workshop_category_index: int = 0
 var _workshop_item_indices: Dictionary[StringName, int] = {
-	&"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0, &"BUILD": 1,
+	&"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0, &"NUMBER": 0,
+	&"GRAPHICS": 0, &"RIDER": 1, &"OUTFIT": 1, &"BUILD": 1,
 }
+var _rider_number_draft: int = 17
 var _competition_source: Object
 var _active_competition_event: StringName = &"CIRCUIT"
 var _active_competition_id: StringName = &""
 var _active_ghost_best_usec: int = -1
+var _custom_tour_builder_open: bool = false
+var _custom_tour_candidate_index: int = 0
 
 
 func _ready() -> void:
@@ -106,10 +129,21 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not _open or event.is_echo():
 		return
 	if not _workshop_open and _is_continue_weekend_input(event):
-		continue_weekend()
+		if _is_custom_tour_selected():
+			continue_custom_tour()
+		elif _is_local_duel_event_selected():
+			request_local_duel()
+		else:
+			continue_weekend()
 		get_viewport().set_input_as_handled()
 		return
 	if _is_workshop_toggle(event):
+		if _custom_tour_builder_open:
+			_custom_tour_builder_open = false
+			_refresh()
+			_emit_interface_feedback(&"CANCEL", &"CUSTOM_TOUR_BUILDER")
+			get_viewport().set_input_as_handled()
+			return
 		toggle_workshop()
 		get_viewport().set_input_as_handled()
 		return
@@ -127,6 +161,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.is_action_pressed(InputRouter.REPAIR_BIKE):
 			_attempt_repair()
 			_refresh_workshop()
+		elif _is_continue_weekend_input(event):
+			test_ride_selected_bike()
 		elif event.is_action_pressed(InputRouter.CONFIRM):
 			confirm_workshop_item()
 		else:
@@ -139,13 +175,23 @@ func _unhandled_input(event: InputEvent) -> void:
 		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_SETUP")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.EVENT_PREVIOUS):
+		if _custom_tour_builder_open:
+			cycle_custom_tour_candidate(-1)
+			get_viewport().set_input_as_handled()
+			return
 		_event_index = wrapi(_event_index - 1, 0, EVENTS.size())
 		_refresh()
+		event_selection_changed.emit(EVENTS[_event_index])
 		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_EVENT")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.EVENT_NEXT):
+		if _custom_tour_builder_open:
+			cycle_custom_tour_candidate(1)
+			get_viewport().set_input_as_handled()
+			return
 		_event_index = wrapi(_event_index + 1, 0, EVENTS.size())
 		_refresh()
+		event_selection_changed.emit(EVENTS[_event_index])
 		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_EVENT")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.REPAIR_BIKE):
@@ -164,7 +210,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_SETUP")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.CONFIRM):
-		_confirm_selection()
+		if _is_custom_tour_selected():
+			confirm_custom_tour_selection()
+		else:
+			_confirm_selection()
 		get_viewport().set_input_as_handled()
 
 
@@ -173,21 +222,36 @@ func show_garage() -> void:
 	visible = true
 	_workshop_open = false
 	_workshop_overlay.visible = false
+	workshop_visibility_changed.emit(false)
 	var current_index := SETUPS.find(Profile.current_setup)
 	_selected_index = current_index if current_index >= 0 else 1
-	_focus_continue_weekend_event()
+	if not _focus_active_local_duel_event() and not _focus_active_custom_tour():
+		_focus_continue_weekend_event()
 	_refresh()
+	event_selection_changed.emit(EVENTS[_event_index])
 
 
 func hide_garage() -> void:
+	var was_workshop_open := _workshop_open
 	_open = false
 	_workshop_open = false
 	_workshop_overlay.visible = false
 	visible = false
+	if was_workshop_open:
+		workshop_visibility_changed.emit(false)
 
 
 func is_open() -> bool:
 	return _open
+
+
+func show_test_ride_complete(bike_name: String) -> void:
+	if not _open:
+		return
+	_status_label.text = "TEST RIDE COMPLETE  //  %s  //  NO PURCHASE, WEAR, OR RECORDS" % (
+		bike_name.strip_edges().to_upper()
+	)
+	_status_label.modulate = CYAN
 
 
 func show_workshop() -> void:
@@ -260,6 +324,10 @@ func confirm_workshop_item() -> bool:
 		&"TUNE": success = _apply_tune_preset(item)
 		&"PART": success = _purchase_or_install_part(item)
 		&"STYLE": success = _apply_style_preset(item)
+		&"GRAPHICS": success = _apply_graphics_option(item)
+		&"RIDER": success = _apply_rider_identity_option(item)
+		&"NUMBER": success = _apply_rider_number_action(item)
+		&"OUTFIT": success = _apply_saved_outfit_action(item)
 		&"BUILD": success = _apply_saved_build_action(item)
 	var item_id := _workshop_item_id(category, item)
 	_refresh()
@@ -267,6 +335,28 @@ func confirm_workshop_item() -> bool:
 	workshop_action_completed.emit(category, item_id, success)
 	_emit_interface_feedback(&"CONFIRM" if success else &"DENIED", &"WORKSHOP_ACTION")
 	return success
+
+
+func test_ride_selected_bike() -> bool:
+	if not _workshop_open or WORKSHOP_CATEGORIES[_workshop_category_index] != &"BIKE":
+		_set_workshop_status("SELECT THE BIKE TAB TO TEST RIDE", false)
+		_emit_interface_feedback(&"DENIED", &"TEST_RIDE")
+		return false
+	var item := _get_selected_workshop_item(&"BIKE")
+	var bike_id := StringName(item.get(&"bike_id", &""))
+	if bike_id.is_empty():
+		_set_workshop_status("TEST BIKE UNAVAILABLE", false)
+		_emit_interface_feedback(&"DENIED", &"TEST_RIDE")
+		return false
+	_set_workshop_status(
+		"LOADING STOCK %s  //  NO PURCHASE OR PROGRESS" %
+			str(item.get(&"display_name", bike_id)).to_upper(),
+		true
+	)
+	hide_garage()
+	test_ride_requested.emit(bike_id, SETUPS[_selected_index])
+	_emit_interface_feedback(&"CONFIRM", &"TEST_RIDE")
+	return true
 
 
 func get_workshop_snapshot() -> Dictionary:
@@ -286,6 +376,8 @@ func get_workshop_snapshot() -> Dictionary:
 		&"academy_progression": get_academy_progression_snapshot(),
 		&"achievements": Profile.get_achievement_progress_snapshot(),
 		&"cosmetics": Profile.get_rider_cosmetics(),
+		&"rider_number_draft": _rider_number_draft,
+		&"saved_outfits": Profile.get_saved_rider_outfit_slots(),
 		&"saved_builds": Profile.get_saved_bike_build_slots(),
 		&"workshop_title": _workshop_title_label.text if _workshop_title_label != null else "",
 		&"workshop_item": _workshop_item_label.text if _workshop_item_label != null else "",
@@ -401,7 +493,176 @@ func focus_event_briefing(activity: StringName) -> bool:
 	_event_index = index
 	if _open:
 		_refresh()
+		event_selection_changed.emit(activity)
 	return true
+
+
+func request_local_duel() -> bool:
+	if not _open or _workshop_open or not _is_local_duel_event_selected():
+		return false
+	var activity := EVENTS[_event_index]
+	if not _is_event_unlocked(activity):
+		_status_label.text = _event_unlock_hint(activity)
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"LOCAL_DUEL")
+		return false
+	var duel := _hotseat_presentation_snapshot()
+	if (
+		bool(duel.get(&"active", false))
+		and StringName(duel.get(&"event_id", &"")) == activity
+	):
+		return start_selected_ride()
+	_status_label.text = "PREPARING LOCAL DUEL  //  TWO RIDERS  //  TWO RUNS EACH"
+	_status_label.modulate = CYAN
+	_emit_interface_feedback(&"CONFIRM", &"LOCAL_DUEL")
+	local_duel_requested.emit(activity == &"WEEKLY_CHALLENGE")
+	return true
+
+
+func start_selected_ride() -> bool:
+	if not _open or _workshop_open:
+		return false
+	_confirm_selection()
+	return not _open
+
+
+func refresh_local_duel_state() -> void:
+	if _open:
+		_refresh()
+
+
+func get_local_duel_presentation_snapshot() -> Dictionary:
+	var snapshot := _hotseat_presentation_snapshot()
+	snapshot[&"selected"] = _is_local_duel_event_selected()
+	snapshot[&"action_text"] = _weekend_action_label.text if _weekend_action_label != null else ""
+	return snapshot
+
+
+func continue_custom_tour() -> bool:
+	if not _open or _workshop_open or not _is_custom_tour_selected():
+		return false
+	var snapshot := _custom_tour_presentation_snapshot()
+	if bool(snapshot.get(&"active", false)):
+		return _launch_custom_tour_round(snapshot)
+	if bool(snapshot.get(&"completed", false)):
+		if not _competition_call_bool(&"clear_custom_tour"):
+			_set_custom_tour_status("CUSTOM TOUR COULD NOT BE RESET", false)
+			return false
+		snapshot = {}
+	if not bool(snapshot.get(&"building", false)):
+		var begin_result := _competition_call_dictionary(
+			&"begin_custom_tour_builder", [true]
+		)
+		if not bool(begin_result.get(&"ok", false)):
+			_set_custom_tour_status("CUSTOM TOUR COULD NOT BE SAVED", false)
+			return false
+		_custom_tour_builder_open = true
+		_refresh()
+		_set_custom_tour_status(
+			"TOUR BUILDER  //  CHOOSE 2-5 UNLOCKED ROUNDS",
+			true
+		)
+		_emit_interface_feedback(&"CONFIRM", &"CUSTOM_TOUR_BUILDER")
+		return true
+	if not _custom_tour_builder_open:
+		_custom_tour_builder_open = true
+		_refresh()
+		_emit_interface_feedback(&"CONFIRM", &"CUSTOM_TOUR_BUILDER")
+		return true
+	var start_result := _competition_call_dictionary(&"start_custom_tour")
+	if not bool(start_result.get(&"ok", false)):
+		var error := StringName(start_result.get(&"error", &""))
+		_set_custom_tour_status(
+			"ADD AT LEAST 2 ROUNDS" if error == &"NEED_MORE_ROUNDS" else "CUSTOM TOUR COULD NOT START",
+			false
+		)
+		return false
+	_custom_tour_builder_open = false
+	return _launch_custom_tour_round(
+		start_result.get(&"snapshot", {}) as Dictionary
+	)
+
+
+func confirm_custom_tour_selection() -> bool:
+	if not _open or not _is_custom_tour_selected():
+		return false
+	if not _custom_tour_builder_open:
+		return continue_custom_tour()
+	var candidates := _custom_tour_allowed_events()
+	if candidates.is_empty():
+		_set_custom_tour_status("NO CUSTOM TOUR EVENTS AVAILABLE", false)
+		return false
+	_custom_tour_candidate_index = wrapi(
+		_custom_tour_candidate_index, 0, candidates.size()
+	)
+	var event_id := candidates[_custom_tour_candidate_index]
+	var result := _competition_call_dictionary(
+		&"toggle_custom_tour_event", [event_id]
+	)
+	if not bool(result.get(&"ok", false)):
+		var error := StringName(result.get(&"error", &""))
+		var message := "CUSTOM TOUR ROUND UNAVAILABLE"
+		if error == &"EVENT_LOCKED":
+			message = "ROUND LOCKED  //  %s" % _event_unlock_hint(event_id)
+		elif error == &"TOUR_FULL":
+			message = "CUSTOM TOUR FULL  //  MAXIMUM 5 ROUNDS"
+		_set_custom_tour_status(message, false)
+		_emit_interface_feedback(&"DENIED", &"CUSTOM_TOUR_ROUND")
+		return false
+	_refresh()
+	_set_custom_tour_status(
+		"%s  //  %s" % [
+			"ROUND ADDED" if bool(result.get(&"added", false)) else "ROUND REMOVED",
+			str(RaceEventCatalog.get_event(event_id).get(&"display_name", event_id)).to_upper(),
+		],
+		true
+	)
+	_emit_interface_feedback(
+		&"CONFIRM" if bool(result.get(&"added", false)) else &"CANCEL",
+		&"CUSTOM_TOUR_ROUND"
+	)
+	return true
+
+
+func cycle_custom_tour_candidate(direction: int) -> bool:
+	if not _custom_tour_builder_open or not _is_custom_tour_selected():
+		return false
+	var candidates := _custom_tour_allowed_events()
+	if candidates.is_empty():
+		return false
+	_custom_tour_candidate_index = wrapi(
+		_custom_tour_candidate_index + signi(direction), 0, candidates.size()
+	)
+	_refresh()
+	_emit_interface_feedback(&"NAVIGATE", &"CUSTOM_TOUR_EVENT")
+	return true
+
+
+func refresh_custom_tour_state() -> void:
+	if _open:
+		_refresh()
+
+
+func get_custom_tour_presentation_snapshot() -> Dictionary:
+	var snapshot := _custom_tour_presentation_snapshot()
+	var candidates := _custom_tour_allowed_events()
+	var candidate_id: StringName = &""
+	if not candidates.is_empty():
+		_custom_tour_candidate_index = wrapi(
+			_custom_tour_candidate_index, 0, candidates.size()
+		)
+		candidate_id = candidates[_custom_tour_candidate_index]
+	snapshot[&"selected"] = _is_custom_tour_selected()
+	snapshot[&"builder_open"] = _custom_tour_builder_open
+	snapshot[&"candidate_event_id"] = candidate_id
+	snapshot[&"candidate_event_name"] = (
+		str(RaceEventCatalog.get_event(candidate_id).get(&"display_name", candidate_id))
+		if not candidate_id.is_empty() else ""
+	)
+	snapshot[&"action_text"] = (
+		_weekend_action_label.text if _weekend_action_label != null else ""
+	)
+	return snapshot
 
 
 func get_event_briefing_presentation_snapshot() -> Dictionary:
@@ -639,6 +900,9 @@ func continue_weekend() -> bool:
 
 
 func _confirm_selection() -> void:
+	if _is_custom_tour_selected():
+		confirm_custom_tour_selection()
+		return
 	var setup := SETUPS[_selected_index]
 	if not Profile.is_setup_unlocked(setup):
 		if not Profile.purchase_setup(setup):
@@ -1095,6 +1359,7 @@ func _set_workshop_summary_hovered(hovered: bool) -> void:
 func _refresh_workshop() -> void:
 	if not _workshop_open:
 		return
+	_refresh_static_input_prompts()
 	var category := WORKSHOP_CATEGORIES[_workshop_category_index]
 	var items := _get_workshop_items(category)
 	var selected_index := clampi(int(_workshop_item_indices.get(category, 0)), 0, maxi(items.size() - 1, 0))
@@ -1102,7 +1367,7 @@ func _refresh_workshop() -> void:
 	var tab_tokens := PackedStringArray()
 	for tab: StringName in WORKSHOP_CATEGORIES:
 		tab_tokens.append("[%s]" % String(tab) if tab == category else String(tab))
-	_workshop_tabs_label.text = "     ".join(tab_tokens)
+	_workshop_tabs_label.text = "  ".join(tab_tokens)
 	if items.is_empty():
 		_workshop_item_label.text = "NO ITEMS"
 		_workshop_detail_label.text = "Nothing is available for the active bike and profile."
@@ -1144,6 +1409,35 @@ func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 			return part_items
 		&"STYLE":
 			return STYLE_PRESETS.duplicate(true)
+		&"GRAPHICS":
+			return RIDER_GRAPHICS_CATALOG.workshop_items()
+		&"RIDER":
+			return RIDER_IDENTITY_OPTIONS.duplicate(true)
+		&"NUMBER":
+			return [
+				{&"digit_id": &"HUNDREDS", &"place": 100, &"display_name": "Hundreds Digit"},
+				{&"digit_id": &"TENS", &"place": 10, &"display_name": "Tens Digit"},
+				{&"digit_id": &"ONES", &"place": 1, &"display_name": "Ones Digit"},
+				{&"digit_id": &"APPLY", &"place": 0, &"display_name": "Apply Number"},
+			]
+		&"OUTFIT":
+			var outfit_items: Array[Dictionary] = []
+			for slot: Dictionary in Profile.get_saved_rider_outfit_slots():
+				var slot_id := StringName(slot.get(&"slot_id", &""))
+				var slot_label := str(slot.get(&"slot_label", "?"))
+				var occupied := bool(slot.get(&"occupied", false))
+				var saved: Dictionary = slot.get(&"outfit", {}) as Dictionary
+				outfit_items.append({
+					&"slot_id": slot_id, &"slot_label": slot_label,
+					&"action_id": &"LOAD", &"occupied": occupied,
+					&"saved_outfit": saved.duplicate(true),
+				})
+				outfit_items.append({
+					&"slot_id": slot_id, &"slot_label": slot_label,
+					&"action_id": &"SAVE", &"occupied": occupied,
+					&"saved_outfit": saved.duplicate(true),
+				})
+			return outfit_items
 		&"BUILD":
 			var build_items: Array[Dictionary] = []
 			for slot: Dictionary in Profile.get_saved_bike_build_slots():
@@ -1180,6 +1474,10 @@ func _workshop_item_projection(category: StringName, item: Dictionary) -> Dictio
 		&"TUNE": return _tune_projection(item)
 		&"PART": return _part_projection(item)
 		&"STYLE": return _style_projection(item)
+		&"GRAPHICS": return _graphics_projection(item)
+		&"RIDER": return _rider_identity_projection(item)
+		&"NUMBER": return _rider_number_projection(item)
+		&"OUTFIT": return _saved_outfit_projection(item)
 		&"BUILD": return _saved_build_projection(item)
 	return {}
 
@@ -1198,11 +1496,13 @@ func _bike_projection(item: Dictionary) -> Dictionary:
 		action = "LOCKED  //  REQUIRES %d RACER REP" % required_rep
 	elif not owned and Profile.cash < price:
 		action = "NEED $%d MORE" % (price - Profile.cash)
+	var test_ride_label := _any_action_label(InputRouter.CONTINUE_WEEKEND)
 	return {
 		&"title": str(item.get(&"display_name", bike_id)).to_upper(),
 		&"detail": "%s  //  %dcc  //  OWNED %s\nChoose the machine that defines your class eligibility and base handling envelope." % [str(item.get(&"manufacturer", "")).to_upper(), int(item.get(&"displacement_cc", 0)), "YES" if owned else "NO"],
 		&"build": "POWER %02d   ACCEL %02d   SPEED %02d   GRIP %02d   SUSPENSION %02d   AIR %02d" % [int(base_stats.get(&"power", 0)), int(base_stats.get(&"acceleration", 0)), int(base_stats.get(&"top_speed", 0)), int(base_stats.get(&"grip", 0)), int(base_stats.get(&"suspension", 0)), int(base_stats.get(&"air_control", 0))],
-		&"action": action, &"available": available or active,
+		&"action": "%s\n%s  TEST RIDE STOCK  //  NO PURCHASE" % [action, test_ride_label],
+		&"available": true,
 	}
 
 
@@ -1267,9 +1567,82 @@ func _style_projection(item: Dictionary) -> Dictionary:
 	return {
 		&"title": str(item.get(&"display_name", style_id)).to_upper(),
 		&"detail": str(item.get(&"description", "")).to_upper(),
-		&"build": "HELMET %s   //   JERSEY %s   //   LIVERY %s   //   STYLE TIER %d / %d" % [str(changes.get(&"helmet", "")).replace("_", " "), str(changes.get(&"jersey", "")).replace("_", " "), str(changes.get(&"bike_livery", "")).replace("_", " "), Profile.get_cosmetic_tier(), required_tier],
+		&"build": "HELMET %s + %s   //   ARMOR %s   //   ACCESSORY %s\nJERSEY %s   //   LIVERY %s   //   STYLE TIER %d / %d" % [
+			str(changes.get(&"helmet", "")).replace("_", " "),
+			str(changes.get(&"goggles", "")).replace("_", " "),
+			str(changes.get(&"protection", "")).replace("_", " "),
+			str(changes.get(&"accessory", "")).replace("_", " "),
+			str(changes.get(&"jersey", "")).replace("_", " "),
+			str(changes.get(&"bike_livery", "")).replace("_", " "),
+			Profile.get_cosmetic_tier(), required_tier,
+		],
 		&"action": "ACTIVE STYLE" if active else "%s  EQUIP STYLE" % _any_action_label(InputRouter.CONFIRM) if available else "LOCKED  //  EARN RIDING FEATS FOR STYLE TIER %d" % required_tier,
 		&"available": available,
+	}
+
+
+func _rider_identity_projection(item: Dictionary) -> Dictionary:
+	var field := StringName(item.get(&"field", &""))
+	var choice_id := StringName(item.get(&"choice_id", &""))
+	var cosmetics := Profile.get_rider_cosmetics()
+	var active := StringName(cosmetics.get(field, &"")) == choice_id
+	var field_label := (
+		"BODY TYPE" if field == &"body_type"
+		else "SKIN TONE" if field == &"skin_tone"
+		else "VOICE"
+	)
+	return {
+		&"title": str(item.get(&"display_name", choice_id)).to_upper(),
+		&"detail": "%s\nIdentity choices are cosmetic only and are included in every saved outfit." % str(
+			item.get(&"description", "")
+		),
+		&"build": "BODY %s   //   SKIN %s   //   VOICE %s\nPERFORMANCE EFFECT NONE" % [
+			str(cosmetics.get(&"body_type", "ATHLETIC")).replace("_", " "),
+			str(cosmetics.get(&"skin_tone", "MEDIUM")).replace("_", " "),
+			str(cosmetics.get(&"voice", "FOCUSED")).replace("_", " "),
+		],
+		&"action": (
+			"ACTIVE %s" % field_label
+			if active
+			else "%s  APPLY %s  //  %s" % [
+				_any_action_label(InputRouter.CONFIRM), field_label,
+				"HEAR PREVIEW" if field == &"voice" else "VISIBLE IMMEDIATELY",
+			]
+		),
+		&"available": true,
+	}
+
+
+func _graphics_projection(item: Dictionary) -> Dictionary:
+	var field := StringName(item.get(&"graphics_field", &""))
+	var choice_id := StringName(item.get(&"choice_id", &""))
+	var cosmetics := Profile.get_rider_cosmetics()
+	var active := StringName(cosmetics.get(field, &"")) == choice_id
+	var field_label := (
+		"TEAM COLOR" if field == &"team_palette"
+		else "DECAL" if field == &"decal_id"
+		else "SPONSOR" if field == &"sponsor_id"
+		else "PLACEMENT"
+	)
+	return {
+		&"title": str(item.get(&"display_name", choice_id)).to_upper(),
+		&"detail": ("%s\nGraphics are cosmetic only, visible on the bike or rider, and included in saved outfits." % str(
+			item.get(&"description", "")
+		)).to_upper(),
+		&"build": "TEAM %s   //   DECAL %s\nSPONSOR %s   //   PLACEMENT %s\nPERFORMANCE EFFECT NONE" % [
+			str(cosmetics.get(&"team_palette", "STYLE")).replace("_", " "),
+			str(cosmetics.get(&"decal_id", "CLEAN")).replace("_", " "),
+			str(cosmetics.get(&"sponsor_id", "NONE")).replace("_", " "),
+			str(cosmetics.get(&"sponsor_placement", "SHROUDS")).replace("_", " "),
+		],
+		&"action": (
+			"ACTIVE %s" % field_label
+			if active
+			else "%s  APPLY %s  //  VISIBLE IMMEDIATELY" % [
+				_any_action_label(InputRouter.CONFIRM), field_label,
+			]
+		),
+		&"available": true,
 	}
 
 
@@ -1313,6 +1686,121 @@ func _saved_build_projection(item: Dictionary) -> Dictionary:
 		&"action": "%s  %s BUILD %s" % [confirm_label, "OVERWRITE" if occupied else "SAVE", slot_label],
 		&"available": true,
 	}
+
+
+func _saved_outfit_projection(item: Dictionary) -> Dictionary:
+	var action_id := StringName(item.get(&"action_id", &""))
+	var slot_label := str(item.get(&"slot_label", "?"))
+	var occupied := bool(item.get(&"occupied", false))
+	var saved: Dictionary = item.get(&"saved_outfit", {}) as Dictionary
+	var confirm_label := _any_action_label(InputRouter.CONFIRM)
+	if action_id == &"LOAD":
+		if not occupied or saved.is_empty():
+			return {
+				&"title": "LOAD OUTFIT %s" % slot_label,
+				&"detail": "EMPTY SLOT  //  EQUIP A STYLE, THEN SAVE IT HERE.",
+				&"build": "Outfits preserve body type, skin tone, voice, helmet, goggles, kit, gloves, boots, armor, accessory, livery, plate, accent, and rider number.",
+				&"action": "EMPTY  //  SELECT SAVE OUTFIT %s" % slot_label,
+				&"available": false,
+			}
+		var cosmetics: Dictionary = saved.get(&"cosmetics", {}) as Dictionary
+		return {
+			&"title": "LOAD OUTFIT %s" % slot_label,
+			&"detail": "%s  //  READY TO EQUIP\nOutfits change rider identity only. Tune, parts, condition, and career progress stay live." % str(saved.get(&"display_name", "SAVED OUTFIT")),
+			&"build": _outfit_summary(cosmetics),
+			&"action": "%s  LOAD OUTFIT" % confirm_label,
+			&"available": true,
+		}
+	var current := Profile.get_rider_cosmetics()
+	return {
+		&"title": "SAVE CURRENT  //  OUTFIT %s" % slot_label,
+		&"detail": "%s\n%s" % [
+			_default_outfit_display_name(current),
+			"Replace this slot with the complete current rider identity."
+			if occupied else "Keep this identity ready for one-step reuse.",
+		],
+		&"build": _outfit_summary(current),
+		&"action": "%s  %s OUTFIT %s" % [confirm_label, "OVERWRITE" if occupied else "SAVE", slot_label],
+		&"available": true,
+	}
+
+
+func _rider_number_projection(item: Dictionary) -> Dictionary:
+	var digit_id := StringName(item.get(&"digit_id", &""))
+	var current_number := clampi(
+		int(Profile.get_rider_cosmetics().get(&"rider_number", 17)), 1, 999
+	)
+	var preview := "%03d" % _rider_number_draft
+	var plate := str(Profile.get_rider_cosmetics().get(&"number_plate", "WHITE")).replace("_", " ")
+	if digit_id == &"APPLY":
+		var valid := _rider_number_draft > 0
+		return {
+			&"title": "APPLY RIDER NUMBER  //  #%s" % preview,
+			&"detail": "CURRENT #%03d  //  DRAFT #%s\nThe number is cosmetic only and will be included in every outfit you save." % [
+				current_number, preview,
+			],
+			&"build": "NUMBER PLATE %s   //   PERFORMANCE EFFECT NONE" % plate,
+			&"action": (
+				"%s  APPLY #%s" % [_any_action_label(InputRouter.CONFIRM), preview]
+				if valid else "NUMBER 000 IS NOT VALID  //  EDIT A DIGIT"
+			),
+			&"available": valid,
+		}
+	var place := maxi(int(item.get(&"place", 1)), 1)
+	var digit := floori(float(_rider_number_draft) / float(place)) % 10
+	var marked_preview := _marked_number_preview(place)
+	return {
+		&"title": "%s  //  #%s" % [
+			str(item.get(&"display_name", digit_id)).to_upper(), marked_preview,
+		],
+		&"detail": "CURRENT #%03d  //  DRAFT #%s\nHighlight each digit, then press Confirm to cycle it from 0 through 9." % [
+			current_number, preview,
+		],
+		&"build": "SELECTED %s = %d   //   NUMBER PLATE %s" % [
+			String(digit_id), digit, plate,
+		],
+		&"action": "%s  CYCLE %s DIGIT" % [
+			_any_action_label(InputRouter.CONFIRM), String(digit_id),
+		],
+		&"available": true,
+	}
+
+
+func _marked_number_preview(place: int) -> String:
+	var digits := "%03d" % clampi(_rider_number_draft, 0, 999)
+	var marked_index := 0 if place == 100 else 1 if place == 10 else 2
+	return "%s[%s]%s" % [
+		digits.substr(0, marked_index),
+		digits.substr(marked_index, 1),
+		digits.substr(marked_index + 1),
+	]
+
+
+func _outfit_summary(cosmetics: Dictionary) -> String:
+	return "BODY %s   //   SKIN %s   //   VOICE %s\nHELMET %s + %s   //   KIT %s + %s   //   PLATE %s #%03d\nBOOTS %s   //   GLOVES %s   //   ARMOR %s   //   ACCESSORY %s\nLIVERY %s   //   ACCENT #%s" % [
+		str(cosmetics.get(&"body_type", "ATHLETIC")).replace("_", " "),
+		str(cosmetics.get(&"skin_tone", "MEDIUM")).replace("_", " "),
+		str(cosmetics.get(&"voice", "FOCUSED")).replace("_", " "),
+		str(cosmetics.get(&"helmet", "CLASSIC_WHITE")).replace("_", " "),
+		str(cosmetics.get(&"goggles", "CLEAR")).replace("_", " "),
+		str(cosmetics.get(&"jersey", "MESA_RED")).replace("_", " "),
+		str(cosmetics.get(&"pants", "CHARCOAL")).replace("_", " "),
+		str(cosmetics.get(&"number_plate", "WHITE")).replace("_", " "),
+		clampi(int(cosmetics.get(&"rider_number", 17)), 1, 999),
+		str(cosmetics.get(&"boots", "BLACK")).replace("_", " "),
+		str(cosmetics.get(&"gloves", "BLACK")).replace("_", " "),
+		str(cosmetics.get(&"protection", "ROOST_GUARD")).replace("_", " "),
+		str(cosmetics.get(&"accessory", "NONE")).replace("_", " "),
+		str(cosmetics.get(&"bike_livery", "FACTORY")).replace("_", " "),
+		str(cosmetics.get(&"accent_color", "E25532")).to_upper(),
+	]
+
+
+func _default_outfit_display_name(cosmetics: Dictionary) -> String:
+	return "%s // #%d" % [
+		str(cosmetics.get(&"jersey", "RACE KIT")).replace("_", " "),
+		clampi(int(cosmetics.get(&"rider_number", 17)), 1, 999),
+	]
 
 
 func _activate_or_purchase_bike(item: Dictionary) -> bool:
@@ -1389,6 +1877,45 @@ func _apply_style_preset(item: Dictionary) -> bool:
 	return true
 
 
+func _apply_rider_identity_option(item: Dictionary) -> bool:
+	var field := StringName(item.get(&"field", &""))
+	var choice_id := StringName(item.get(&"choice_id", &""))
+	if (
+		(field == &"body_type" and choice_id not in Profile.RIDER_BODY_TYPES)
+		or (field == &"skin_tone" and choice_id not in Profile.RIDER_SKIN_TONES)
+		or (field == &"voice" and choice_id not in Profile.RIDER_VOICES)
+		or field not in [&"body_type", &"skin_tone", &"voice"]
+	):
+		_set_workshop_status("RIDER IDENTITY OPTION IS UNAVAILABLE", false)
+		return false
+	if not Profile.set_rider_cosmetics({field: choice_id}):
+		_set_workshop_status("RIDER IDENTITY SAVE FAILED  //  NO CHANGES APPLIED", false)
+		return false
+	var label := str(item.get(&"display_name", choice_id)).to_upper()
+	if field == &"voice":
+		EventBus.rider_voice_preview_requested.emit(choice_id)
+		_set_workshop_status("%s APPLIED  //  VOICE PREVIEW" % label, true)
+	else:
+		_set_workshop_status("%s APPLIED  //  VISIBLE ON RIDER" % label, true)
+	return true
+
+
+func _apply_graphics_option(item: Dictionary) -> bool:
+	var field := StringName(item.get(&"graphics_field", &""))
+	var choice_id := StringName(item.get(&"choice_id", &""))
+	var sanitized := RIDER_GRAPHICS_CATALOG.sanitize_field(field, choice_id)
+	if field not in [&"team_palette", &"decal_id", &"sponsor_id", &"sponsor_placement"] or sanitized != choice_id:
+		_set_workshop_status("GRAPHICS OPTION IS UNAVAILABLE", false)
+		return false
+	if not Profile.set_rider_cosmetics({field: choice_id}):
+		_set_workshop_status("GRAPHICS SAVE FAILED  //  NO CHANGES APPLIED", false)
+		return false
+	_set_workshop_status("%s APPLIED  //  VISIBLE ON RACE KIT" % str(
+		item.get(&"display_name", choice_id)
+	).to_upper(), true)
+	return true
+
+
 func _apply_saved_build_action(item: Dictionary) -> bool:
 	var action_id := StringName(item.get(&"action_id", &""))
 	var slot_id := StringName(item.get(&"slot_id", &""))
@@ -1419,12 +1946,71 @@ func _apply_saved_build_action(item: Dictionary) -> bool:
 	return false
 
 
+func _apply_saved_outfit_action(item: Dictionary) -> bool:
+	var action_id := StringName(item.get(&"action_id", &""))
+	var slot_id := StringName(item.get(&"slot_id", &""))
+	var slot_label := str(item.get(&"slot_label", "?"))
+	var result: Dictionary
+	if action_id == &"SAVE":
+		result = Profile.save_current_rider_outfit(
+			slot_id, _default_outfit_display_name(Profile.get_rider_cosmetics())
+		)
+		if bool(result.get(&"accepted", false)):
+			_set_workshop_status("OUTFIT %s SAVED  //  %s" % [
+				slot_label, str((result.get(&"outfit", {}) as Dictionary).get(&"display_name", "READY")),
+			], true)
+			return true
+	else:
+		result = Profile.load_saved_rider_outfit(slot_id)
+		if bool(result.get(&"accepted", false)):
+			_sync_workshop_selection()
+			_set_workshop_status("OUTFIT %s LOADED  //  %s" % [
+				slot_label, str((result.get(&"outfit", {}) as Dictionary).get(&"display_name", "READY")),
+			], true)
+			return true
+	var reason := StringName(result.get(&"reason", &"OUTFIT_UNAVAILABLE"))
+	var failure_text := "EMPTY OUTFIT SLOT" if reason == &"EMPTY_SLOT" else (
+		"OUTFIT SAVE FAILED" if reason == &"SAVE_FAILED" else "OUTFIT IS NO LONGER AVAILABLE"
+	)
+	_set_workshop_status("%s  //  NO CHANGES APPLIED" % failure_text, false)
+	return false
+
+
+func _apply_rider_number_action(item: Dictionary) -> bool:
+	var digit_id := StringName(item.get(&"digit_id", &""))
+	if digit_id == &"APPLY":
+		if _rider_number_draft <= 0:
+			_set_workshop_status("NUMBER 000 IS INVALID  //  EDIT A DIGIT", false)
+			return false
+		if not Profile.set_rider_cosmetics({&"rider_number": _rider_number_draft}):
+			_set_workshop_status("RIDER NUMBER SAVE FAILED  //  NO CHANGES APPLIED", false)
+			return false
+		_set_workshop_status("RIDER NUMBER #%03d APPLIED  //  OUTFITS WILL INCLUDE IT" % _rider_number_draft, true)
+		return true
+	var place := maxi(int(item.get(&"place", 0)), 0)
+	if place not in [1, 10, 100]:
+		_set_workshop_status("NUMBER DIGIT IS UNAVAILABLE", false)
+		return false
+	var current_digit := floori(float(_rider_number_draft) / float(place)) % 10
+	var next_digit := (current_digit + 1) % 10
+	_rider_number_draft = clampi(
+		_rider_number_draft + ((next_digit - current_digit) * place), 0, 999
+	)
+	_set_workshop_status("%s DIGIT %d  //  DRAFT #%03d" % [
+		String(digit_id), next_digit, _rider_number_draft,
+	], true)
+	return true
+
+
 func _set_workshop_status(message: String, success: bool) -> void:
 	_workshop_status_label.text = message
 	_workshop_status_label.modulate = CYAN if success else Color("ff806b")
 
 
 func _sync_workshop_selection() -> void:
+	_rider_number_draft = clampi(
+		int(Profile.get_rider_cosmetics().get(&"rider_number", 17)), 1, 999
+	)
 	_set_workshop_index_for_id(&"BIKE", &"bike_id", Profile.active_bike_id)
 	_set_workshop_index_for_id(&"CLASS", &"class_id", Profile.selected_bike_class)
 	var build: Dictionary = Profile.get_bike_build_snapshot(Profile.active_bike_id)
@@ -1438,6 +2024,25 @@ func _sync_workshop_selection() -> void:
 		var preset_livery := StringName((STYLE_PRESETS[index].get(&"changes", {}) as Dictionary).get(&"bike_livery", &""))
 		if preset_livery == livery:
 			_workshop_item_indices[&"STYLE"] = index
+			break
+	var body_type := StringName(Profile.get_rider_cosmetics().get(&"body_type", &"ATHLETIC"))
+	for index: int in RIDER_IDENTITY_OPTIONS.size():
+		var identity_option := RIDER_IDENTITY_OPTIONS[index]
+		if (
+			StringName(identity_option.get(&"field", &"")) == &"body_type"
+			and StringName(identity_option.get(&"choice_id", &"")) == body_type
+		):
+			_workshop_item_indices[&"RIDER"] = index
+			break
+	var team_palette := StringName(Profile.get_rider_cosmetics().get(&"team_palette", &"STYLE"))
+	var graphics_items := RIDER_GRAPHICS_CATALOG.workshop_items()
+	for index: int in graphics_items.size():
+		var graphics_option := graphics_items[index]
+		if (
+			StringName(graphics_option.get(&"graphics_field", &"")) == &"team_palette"
+			and StringName(graphics_option.get(&"choice_id", &"")) == team_palette
+		):
+			_workshop_item_indices[&"GRAPHICS"] = index
 			break
 
 
@@ -1456,6 +2061,16 @@ func _workshop_item_id(category: StringName, item: Dictionary) -> StringName:
 		&"TUNE": return StringName(item.get(&"preset_id", &""))
 		&"PART": return StringName(item.get(&"part_id", &""))
 		&"STYLE": return StringName(item.get(&"style_id", &""))
+		&"GRAPHICS": return StringName("%s_%s" % [
+			String(item.get(&"graphics_field", &"")), String(item.get(&"choice_id", &"")),
+		])
+		&"RIDER": return StringName("%s_%s" % [
+			String(item.get(&"field", &"")), String(item.get(&"choice_id", &"")),
+		])
+		&"NUMBER": return StringName(item.get(&"digit_id", &""))
+		&"OUTFIT": return StringName("%s_%s" % [
+			String(item.get(&"slot_id", &"")), String(item.get(&"action_id", &"")),
+		])
 		&"BUILD": return StringName("%s_%s" % [
 			String(item.get(&"slot_id", &"")), String(item.get(&"action_id", &"")),
 		])
@@ -1589,10 +2204,19 @@ func _refresh_static_input_prompts() -> void:
 	if _workshop_hint_label != null:
 		_workshop_hint_label.text = "%s  OPEN" % _any_action_label(InputRouter.OPEN_WORKSHOP)
 	if _workshop_controls_label != null:
-		_workshop_controls_label.text = "%s  CATEGORY     %s  ITEM     %s  APPLY     %s  REPAIR     %s  CLOSE" % [
+		var test_ride_hint := (
+			"     %s  TEST RIDE" % _any_action_label(InputRouter.CONTINUE_WEEKEND)
+			if (
+				_workshop_open
+				and WORKSHOP_CATEGORIES[_workshop_category_index] == &"BIKE"
+			)
+			else ""
+		)
+		_workshop_controls_label.text = "%s  CATEGORY     %s  ITEM     %s  APPLY%s     %s  REPAIR     %s  CLOSE" % [
 			_any_action_pair_label(InputRouter.GARAGE_LEFT, InputRouter.GARAGE_RIGHT),
 			_any_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT),
 			_any_action_label(InputRouter.CONFIRM),
+			test_ride_hint,
 			_any_action_label(InputRouter.REPAIR_BIKE),
 			_workshop_close_label(),
 		]
@@ -1640,8 +2264,189 @@ func _focus_continue_weekend_event() -> void:
 		_event_index = index
 
 
+func _focus_active_local_duel_event() -> bool:
+	var snapshot := _hotseat_presentation_snapshot()
+	if not bool(snapshot.get(&"active", false)):
+		return false
+	var activity := StringName(snapshot.get(&"event_id", &""))
+	var index := EVENTS.find(activity)
+	if index < 0:
+		return false
+	_event_index = index
+	return true
+
+
+func _focus_active_custom_tour() -> bool:
+	var snapshot := _custom_tour_presentation_snapshot()
+	if (
+		not bool(snapshot.get(&"active", false))
+		and not bool(snapshot.get(&"completed", false))
+	):
+		return false
+	var index := EVENTS.find(&"CUSTOM_TOUR")
+	if index < 0:
+		return false
+	_event_index = index
+	return true
+
+
+func _hotseat_presentation_snapshot() -> Dictionary:
+	if (
+		_competition_source == null
+		or not _competition_source.has_method(&"get_hotseat_presentation_snapshot")
+	):
+		return {}
+	var value: Variant = _competition_source.call(&"get_hotseat_presentation_snapshot")
+	return (value as Dictionary).duplicate(true) if value is Dictionary else {}
+
+
+func _custom_tour_presentation_snapshot() -> Dictionary:
+	if (
+		_competition_source == null
+		or not _competition_source.has_method(&"get_custom_tour_presentation_snapshot")
+	):
+		return {}
+	var value: Variant = _competition_source.call(
+		&"get_custom_tour_presentation_snapshot"
+	)
+	return (value as Dictionary).duplicate(true) if value is Dictionary else {}
+
+
+func _custom_tour_allowed_events() -> Array[StringName]:
+	var output: Array[StringName] = []
+	if (
+		_competition_source == null
+		or not _competition_source.has_method(&"get_custom_tour_allowed_events")
+	):
+		return output
+	var value: Variant = _competition_source.call(&"get_custom_tour_allowed_events")
+	if value is Array or value is PackedStringArray:
+		for raw_event: Variant in value:
+			var event_id := StringName(raw_event)
+			if not event_id.is_empty() and not output.has(event_id):
+				output.append(event_id)
+	return output
+
+
+func _competition_call_dictionary(
+	method: StringName,
+	arguments: Array = []
+) -> Dictionary:
+	if _competition_source == null or not _competition_source.has_method(method):
+		return {&"ok": false, &"error": &"SERVICE_UNAVAILABLE"}
+	var value: Variant = _competition_source.callv(method, arguments)
+	return (value as Dictionary).duplicate(true) if value is Dictionary else {}
+
+
+func _competition_call_bool(method: StringName, arguments: Array = []) -> bool:
+	if _competition_source == null or not _competition_source.has_method(method):
+		return false
+	return bool(_competition_source.callv(method, arguments))
+
+
+func _launch_custom_tour_round(snapshot: Dictionary) -> bool:
+	if snapshot.is_empty():
+		snapshot = _custom_tour_presentation_snapshot()
+	var event_id := StringName(snapshot.get(&"next_event_id", &""))
+	if event_id.is_empty() or not RaceEventCatalog.is_race_event(event_id):
+		_set_custom_tour_status("CUSTOM TOUR HAS NO PLAYABLE NEXT ROUND", false)
+		return false
+	if not _is_event_unlocked(event_id):
+		_set_custom_tour_status(
+			"NEXT ROUND LOCKED  //  %s" % _event_unlock_hint(event_id),
+			false
+		)
+		return false
+	var setup := SETUPS[_selected_index]
+	if not Profile.is_setup_unlocked(setup):
+		_set_custom_tour_status("INSTALL THIS KIT BEFORE STARTING THE ROUND", false)
+		return false
+	Profile.set_current_setup(setup)
+	_custom_tour_builder_open = false
+	hide_garage()
+	_emit_interface_feedback(&"CONFIRM", &"CUSTOM_TOUR_START")
+	ride_requested.emit(setup, event_id)
+	return true
+
+
+func _set_custom_tour_status(message: String, success: bool) -> void:
+	if _status_label == null:
+		return
+	_status_label.text = message
+	_status_label.modulate = CYAN if success else Color("ff6f5e")
+
+
+func _is_local_duel_event_selected() -> bool:
+	if _event_index < 0 or _event_index >= EVENTS.size():
+		return false
+	return EVENTS[_event_index] in [&"DAILY_CHALLENGE", &"WEEKLY_CHALLENGE"]
+
+
+func _is_custom_tour_selected() -> bool:
+	return (
+		_event_index >= 0
+		and _event_index < EVENTS.size()
+		and EVENTS[_event_index] == &"CUSTOM_TOUR"
+	)
+
+
 func _refresh_weekend_action() -> void:
 	if _weekend_action_label == null:
+		return
+	if _is_custom_tour_selected():
+		var tour := _custom_tour_presentation_snapshot()
+		var action_label := _any_action_label(InputRouter.CONTINUE_WEEKEND)
+		if bool(tour.get(&"active", false)):
+			_weekend_action_label.text = "%s  NEXT ROUND  //  %d / %d  //  %s" % [
+				action_label,
+				int(tour.get(&"current_round", 1)),
+				int(tour.get(&"round_count", 0)),
+				str(tour.get(&"next_event_name", "CUSTOM TOUR")).to_upper(),
+			]
+		elif bool(tour.get(&"completed", false)):
+			_weekend_action_label.text = "%s  CUSTOM TOUR COMPLETE  //  BUILD NEW TOUR" % action_label
+		elif _custom_tour_builder_open:
+			var count := int(tour.get(&"round_count", 0))
+			_weekend_action_label.text = (
+				"%s  START %d-ROUND TOUR"
+				% [action_label, count]
+				if count >= int(tour.get(&"minimum_rounds", 2))
+				else "%s  ADD %d MORE ROUND%s" % [
+					action_label,
+					int(tour.get(&"minimum_rounds", 2)) - count,
+					"" if int(tour.get(&"minimum_rounds", 2)) - count == 1 else "S",
+				]
+			)
+		else:
+			_weekend_action_label.text = "%s  BUILD CUSTOM TOUR  //  2-5 ROUNDS" % action_label
+		_weekend_action_label.visible = true
+		_set_label_color(_weekend_action_label, CYAN)
+		return
+	if _is_local_duel_event_selected():
+		var selected_event := EVENTS[_event_index]
+		var duel := _hotseat_presentation_snapshot()
+		var matching := (
+			bool(duel.get(&"configured", false))
+			and StringName(duel.get(&"event_id", &"")) == selected_event
+		)
+		var action_label := _any_action_label(InputRouter.CONTINUE_WEEKEND)
+		if matching and bool(duel.get(&"active", false)):
+			var participant := duel.get(&"current_participant", {}) as Dictionary
+			_weekend_action_label.text = (
+				"%s  LOCAL DUEL  //  PASS TO %s  //  ATTEMPT %d / %d"
+				% [
+					action_label,
+					str(participant.get("display_name", "NEXT RIDER")).to_upper(),
+					int(duel.get(&"current_attempt", 1)),
+					int(duel.get(&"attempts_per_participant", 2)),
+				]
+			)
+		elif matching and bool(duel.get(&"completed", false)):
+			_weekend_action_label.text = "%s  LOCAL DUEL COMPLETE  //  START NEW DUEL" % action_label
+		else:
+			_weekend_action_label.text = "%s  LOCAL DUEL  //  2 RIDERS  //  2 RUNS EACH" % action_label
+		_weekend_action_label.visible = true
+		_set_label_color(_weekend_action_label, CYAN)
 		return
 	var action := get_continue_weekend_snapshot()
 	var action_text := str(action.get(&"action_text", ""))
@@ -1719,6 +2524,9 @@ func _refresh_event() -> void:
 			_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
 	var data := RaceEventCatalog.get_event(activity)
 	_refresh_garage_context(activity, data)
+	if activity == &"CUSTOM_TOUR":
+		_refresh_custom_tour_event()
+		return
 	_event_label.text = "%s   //   EVENT %02d / %02d   //   %s" % [
 		str(data.get(&"display_name", String(activity))), _event_index + 1, EVENTS.size(),
 		StringName(data.get(&"format", activity)),
@@ -1738,6 +2546,127 @@ func _refresh_event() -> void:
 	if not is_unlocked and Profile.is_setup_unlocked(SETUPS[_selected_index]):
 		_status_label.text = "LOCKED   //   %s" % _event_unlock_hint(activity)
 		_status_label.modulate = Color("ff6f5e")
+
+
+func _refresh_custom_tour_event() -> void:
+	var snapshot := get_custom_tour_presentation_snapshot()
+	var phase := StringName(snapshot.get(&"phase", &"EMPTY"))
+	var round_count := int(snapshot.get(&"round_count", 0))
+	_event_accent.color = CYAN
+	_event_label.text = "CUSTOM TOUR   //   EVENT %02d / %02d   //   %s" % [
+		_event_index + 1,
+		EVENTS.size(),
+		phase,
+	]
+	_tour_label.text = "PLAYER-BUILT SERIES  //  POINTS + COUNTBACK  //  AUTOSAVED"
+	_event_competition_label.visible = true
+	var standings_text := _custom_tour_standings_text(
+		snapshot.get(&"standings", []) as Array
+	)
+	if _custom_tour_builder_open:
+		var candidate_id := StringName(snapshot.get(&"candidate_event_id", &""))
+		var candidate := RaceEventCatalog.get_event(candidate_id)
+		var selected := (snapshot.get(&"draft_events", []) as Array).has(candidate_id)
+		var unlocked := _is_event_unlocked(candidate_id)
+		_event_description.text = "Choose unlocked rounds, then start a persistent points championship."
+		_event_meta_label.text = "CANDIDATE  %s  //  %s  //  %d / %d ROUNDS" % [
+			str(candidate.get(&"display_name", candidate_id)).to_upper(),
+			"ADDED" if selected else "READY" if unlocked else "LOCKED",
+			round_count,
+			int(snapshot.get(&"maximum_rounds", 5)),
+		]
+		_event_competition_label.text = "%s / %s  EVENT   //   %s  ADD / REMOVE   //   TAB CANCEL\n%s" % [
+			_any_action_label(InputRouter.EVENT_PREVIOUS),
+			_any_action_label(InputRouter.EVENT_NEXT),
+			_any_action_label(InputRouter.CONFIRM),
+			_custom_tour_calendar_text(snapshot.get(&"draft_items", []) as Array),
+		]
+		_status_label.text = "TOUR BUILDER  //  %s TOGGLE ROUND  //  %s START WHEN READY" % [
+			_any_action_label(InputRouter.CONFIRM),
+			_any_action_label(InputRouter.CONTINUE_WEEKEND),
+		]
+		_set_label_color(
+			_event_meta_label,
+			CYAN if selected else CREAM if unlocked else Color("ff6f5e")
+		)
+		_strategy_label.text = "ROUND PLAN  //  %s  //  %s" % [
+			str(candidate.get(&"meta", "RACE SESSION")),
+			str(RaceEventCatalog.get_event_strategy(candidate_id).get(&"focus", "READABLE PACE")),
+		]
+		return
+	if bool(snapshot.get(&"active", false)):
+		_event_description.text = "Continue the authored calendar; every classified round scores the same fair points table."
+		_event_meta_label.text = "ROUND %d / %d  //  NEXT  %s  //  AUTOSAVED" % [
+			int(snapshot.get(&"current_round", 1)),
+			round_count,
+			str(snapshot.get(&"next_event_name", "")).to_upper(),
+		]
+		_event_competition_label.text = "%s\n%s" % [
+			_custom_tour_calendar_text(snapshot.get(&"calendar", []) as Array),
+			standings_text,
+		]
+		_strategy_label.text = "SERIES PLAN  //  CHOOSE THE KIT FOR THE NEXT ROUND  //  RESULTS CARRY FORWARD"
+		_status_label.text = "%s  START NEXT ROUND  //  %s WORKSHOP  //  %s / %s SETUP" % [
+			_any_action_label(InputRouter.CONTINUE_WEEKEND),
+			_any_action_label(InputRouter.OPEN_WORKSHOP),
+			_any_action_label(InputRouter.GARAGE_LEFT),
+			_any_action_label(InputRouter.GARAGE_RIGHT),
+		]
+	elif bool(snapshot.get(&"completed", false)):
+		var champion := snapshot.get(&"champion", {}) as Dictionary
+		_event_description.text = "Tour complete. Final standings are retained until you choose a new calendar."
+		_event_meta_label.text = "CHAMPION  %s  //  %d PTS  //  %d ROUNDS COMPLETE" % [
+			str(champion.get(&"display_name", "UNCLASSIFIED")).to_upper(),
+			int(champion.get(&"points", 0)),
+			round_count,
+		]
+		_event_competition_label.text = standings_text
+		_strategy_label.text = "SERIES COMPLETE  //  BUILD A DIFFERENT MIX FOR A NEW OUTCOME"
+		_status_label.text = "%s  BUILD NEW CUSTOM TOUR" % _any_action_label(
+			InputRouter.CONTINUE_WEEKEND
+		)
+	else:
+		_event_description.text = "Build a personal two-to-five round championship from events you have unlocked."
+		_event_meta_label.text = "2-5 ROUNDS  //  25-22-20 POINTS  //  DETERMINISTIC COUNTBACK"
+		_event_competition_label.text = "MIX TRACKS, WEATHER, FORMATS, AND BIKE SETUPS\nYOUR CALENDAR PERSISTS BETWEEN SESSIONS"
+		_strategy_label.text = "SERIES PLAN  //  BALANCE SPECIALISTS WITH A VERSATILE BUILD"
+		_status_label.text = "%s  OPEN CUSTOM TOUR BUILDER" % _any_action_label(
+			InputRouter.CONTINUE_WEEKEND
+		)
+	_set_label_color(_event_meta_label, CYAN)
+	_set_label_color(_status_label, Color("9dadb6"))
+
+
+func _custom_tour_calendar_text(items: Array) -> String:
+	var names := PackedStringArray()
+	for index: int in items.size():
+		var raw_item: Variant = items[index]
+		if not raw_item is Dictionary:
+			continue
+		var item := raw_item as Dictionary
+		var status := StringName(item.get(&"status", &""))
+		names.append("%d %s%s" % [
+			index + 1,
+			str(item.get(&"display_name", item.get(&"event_id", "ROUND"))).to_upper(),
+			" [DONE]" if status == &"COMPLETE" else "",
+		])
+	return "CALENDAR  //  " + ("  >  ".join(names) if not names.is_empty() else "NO ROUNDS YET")
+
+
+func _custom_tour_standings_text(standings: Array) -> String:
+	if standings.is_empty():
+		return "STANDINGS  //  FIRST ROUND PENDING"
+	var rows := PackedStringArray()
+	for raw_entry: Variant in standings.slice(0, mini(standings.size(), 3)):
+		if not raw_entry is Dictionary:
+			continue
+		var entry := raw_entry as Dictionary
+		rows.append("P%d %s %dPTS" % [
+			int(entry.get(&"championship_position", rows.size() + 1)),
+			str(entry.get(&"display_name", "RIDER")).to_upper(),
+			int(entry.get(&"points", 0)),
+		])
+	return "STANDINGS  //  " + "  //  ".join(rows)
 
 
 func _refresh_event_strategy() -> void:
@@ -1769,6 +2698,9 @@ func _refresh_garage_context(activity: StringName, event_data: Dictionary) -> vo
 		return
 	if activity == &"ACADEMY":
 		_garage_context_label.text = "RIDING ACADEMY  //  OPTIONAL SKILLS COACHING"
+		return
+	if activity == &"CUSTOM_TOUR":
+		_garage_context_label.text = "CUSTOM TOUR  //  BUILD THE CALENDAR  //  CHASE THE TITLE"
 		return
 	var track_id := StringName(event_data.get(&"track_id", &""))
 	var district_name := "BACKCOUNTRY TOUR"
@@ -2072,6 +3004,8 @@ func _event_color(activity: StringName) -> Color:
 			return Color("7bd66f")
 		&"DISCOVERY":
 			return Color("d8b35a")
+		&"CUSTOM_TOUR":
+			return CYAN
 		_:
 			return AMBER
 

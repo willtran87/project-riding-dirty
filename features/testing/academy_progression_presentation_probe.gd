@@ -7,6 +7,7 @@ const HUD_SCENE := preload("res://features/hud/race_hud.tscn")
 const RIDE_DIRECTOR_SCRIPT := preload("res://features/ride/ride_director.gd")
 const LESSON_ORDER: Array[StringName] = [
 	&"CONTROL_BASICS",
+	&"SURFACE_READING",
 	&"GATE_DROP",
 	&"MANUAL_SHIFTING",
 	&"BERM_LINES",
@@ -18,6 +19,7 @@ const LESSON_ORDER: Array[StringName] = [
 ]
 const EXPECTED_COACH_TOKENS: Dictionary = {
 	&"CONTROL_BASICS": ["{THROTTLE}", "{STEER}", "{BRAKE}", "{RESET}"],
+	&"SURFACE_READING": ["{THROTTLE}", "{STEER}"],
 	&"GATE_DROP": ["{THROTTLE}", "{BRAKE}"],
 	&"MANUAL_SHIFTING": ["{SHIFT_UP}", "{SHIFT_DOWN}"],
 	&"BERM_LINES": ["{STEER}", "{BRAKE}", "{THROTTLE}"],
@@ -29,6 +31,7 @@ const EXPECTED_COACH_TOKENS: Dictionary = {
 }
 const EXPECTED_COACH_ACTIONS: Dictionary = {
 	&"CONTROL_BASICS": [&"throttle", &"steer_left", &"steer_right", &"brake", &"reset_bike"],
+	&"SURFACE_READING": [&"throttle", &"steer_left", &"steer_right"],
 	&"GATE_DROP": [&"throttle", &"brake"],
 	&"MANUAL_SHIFTING": [&"shift_up", &"shift_down"],
 	&"BERM_LINES": [&"steer_left", &"steer_right", &"brake", &"throttle"],
@@ -40,6 +43,7 @@ const EXPECTED_COACH_ACTIONS: Dictionary = {
 }
 const EXPECTED_RACECRAFT_FOCUS: Dictionary = {
 	&"CONTROL_BASICS": &"NONE",
+	&"SURFACE_READING": &"NONE",
 	&"GATE_DROP": &"NONE",
 	&"MANUAL_SHIFTING": &"NONE",
 	&"BERM_LINES": &"CORNERING",
@@ -67,7 +71,7 @@ func _run() -> void:
 	await _probe_live_and_result_presentation()
 	RaceEventCatalog.clear_academy_lesson_override()
 	if _failures.is_empty():
-		print("ACADEMY PROGRESSION PRESENTATION PROBE: PASS  //  onboarding=failed+invalid+dnf+pass+skip grades=3 lessons=9 rematch=true garage=true hud_objectives=2 coach=9x3 focus=9 recovery=coached+zero-time ordinary_overlays=true rebind=true scale=1.75")
+		print("ACADEMY PROGRESSION PRESENTATION PROBE: PASS  //  onboarding=failed+invalid+dnf+pass+skip grades=3 lessons=10 rematch=true garage=true hud_objectives=2 coach=10x3 focus=10 surface=live recovery=coached+zero-time ordinary_overlays=true rebind=true scale=1.75")
 		get_tree().quit(0)
 		return
 	for failure: String in _failures:
@@ -256,7 +260,7 @@ func _probe_bronze_silver_gold_advancement() -> void:
 		_check(bool(evaluation.get(&"new_best", false)), "grade %d first pass was not marked as a new best" % grade)
 		_check(bool(evaluation.get(&"first_completion", false)), "grade %d first pass was not marked as first completion" % grade)
 		_check((evaluation.get(&"objective_results", []) as Array).size() == 2, "grade %d omitted objective grading" % grade)
-		_check_authority(&"GATE_DROP", &"NEXT", "grade %d advancement" % grade)
+		_check_authority(&"SURFACE_READING", &"NEXT", "grade %d advancement" % grade)
 
 
 func _probe_all_lessons_advance() -> void:
@@ -276,7 +280,7 @@ func _probe_all_lessons_advance() -> void:
 		)
 		if index + 1 < LESSON_ORDER.size():
 			_check_authority(LESSON_ORDER[index + 1], &"NEXT", "%s advancement" % String(lesson_id))
-	_check(Profile.get_completed_academy_lessons().size() == LESSON_ORDER.size(), "the full Academy did not retain all nine passed lessons")
+	_check(Profile.get_completed_academy_lessons().size() == LESSON_ORDER.size(), "the full Academy did not retain all ten passed lessons")
 	_check_authority(&"PASSING_RACECRAFT", &"REPLAY", "all-lessons-complete fallback")
 
 
@@ -343,13 +347,13 @@ func _probe_explicit_rematch_authority() -> void:
 	_check(int(silver_credit.get(&"cash", -1)) == 0 and int(silver_credit.get(&"reputation", -1)) == 0, "silver rematch duplicated the lesson reward")
 	_check_authority(&"CONTROL_BASICS", &"REMATCH", "rematch remains explicit")
 	RaceEventCatalog.clear_academy_lesson_override()
-	_check_authority(&"GATE_DROP", &"NEXT", "cleared rematch")
+	_check_authority(&"SURFACE_READING", &"NEXT", "cleared rematch")
 
 	_check(RaceEventCatalog.request_academy_rematch(&"CONTROL_BASICS"), "completed lesson could not be selected for gold rematch")
 	var gold := Profile.record_academy_result(&"CONTROL_BASICS", _metrics_for_grade(lesson, 3))
 	_check(int(gold.get(&"previous_stars", 0)) == 2 and int(gold.get(&"best_stars", 0)) == 3, "gold rematch did not advance the best grade")
 	RaceEventCatalog.clear_academy_lesson_override()
-	_check_authority(&"GATE_DROP", &"NEXT", "post-gold progression")
+	_check_authority(&"SURFACE_READING", &"NEXT", "post-gold progression")
 
 	_check(RaceEventCatalog.request_academy_rematch(&"CONTROL_BASICS"), "stale-rematch setup was rejected")
 	Profile.reset_profile_for_testing()
@@ -492,6 +496,39 @@ func _probe_live_and_result_presentation() -> void:
 			and manual_objectives[1].contains("PASS"),
 		"Manual Shift Rhythm omitted live clean-shift or over-rev grading"
 	)
+	hud.configure_academy_lesson(catalog.get_lesson(&"SURFACE_READING"))
+	hud.update_session({
+		&"event_id": &"ACADEMY",
+		&"display_name": "ACADEMY: SURFACE READING AND GRIP",
+		&"phase": &"RACING",
+		&"current_lap": 1,
+		&"total_laps": 1,
+		&"current_checkpoint": 3,
+		&"checkpoint_count": 10,
+		&"academy_metrics": {
+			&"surface_sectors": 2,
+			&"adapted_entries": 1,
+			&"current_surface": &"SAND",
+			&"next_surface": &"GRASS",
+			&"surface_adapted": true,
+		},
+	})
+	var surface_focus := hud.get_academy_presentation_snapshot()
+	var surface_coach := str(surface_focus.get(&"coach", ""))
+	var surface_objectives := surface_focus.get(&"objectives", PackedStringArray()) as PackedStringArray
+	_check(
+		surface_coach.contains("SAND")
+			and surface_coach.contains("KEEP MOMENTUM")
+			and surface_coach.contains("NEXT  //  GRASS")
+			and surface_coach.contains("ADAPTED"),
+		"Surface Reading omitted current/next terrain coaching or adaptation feedback"
+	)
+	_check(
+		surface_objectives.size() == 2
+			and surface_objectives[0].contains("LIVE 2")
+			and surface_objectives[1].contains("LIVE 1"),
+		"Surface Reading omitted live sector or adapted-entry grading"
+	)
 
 	EventBus.activity_prepared.emit(&"CIRCUIT")
 	hud.update_line("CLEAN LANDING", 2, 1.25, 400, 3.5)
@@ -615,8 +652,8 @@ func _probe_live_and_result_presentation() -> void:
 		&"player_time_usec": 75_000_000,
 		&"classification": [],
 		&"academy_evaluation": evaluation,
-		&"academy_next_lesson_id": &"GATE_DROP",
-		&"academy_next_lesson_name": "GATE DROP AND HOLESHOT",
+		&"academy_next_lesson_id": &"SURFACE_READING",
+		&"academy_next_lesson_name": "SURFACE READING AND GRIP",
 		&"rewards": {&"cash": 500, &"reputation": 5},
 	})
 	var results := hud.get_academy_presentation_snapshot()

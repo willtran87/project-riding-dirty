@@ -12,6 +12,9 @@ const FLOW_DENIED_CUE_VOLUME_DB := -3.5
 const INTERFACE_FEEDBACK_COOLDOWN_USEC := 32_000
 const COMMENTARY_FEEDBACK_COOLDOWN_USEC := 520_000
 const CROWD_FEEDBACK_COOLDOWN_USEC := 860_000
+const RIDER_VOICE_FEEDBACK_COOLDOWN_USEC := 1_150_000
+const CAPTION_PRIORITY_ALL: int = 1
+const CAPTION_PRIORITY_IMPORTANT: int = 2
 const MUSIC_BUS_NAME: StringName = &"Music"
 const SFX_BUS_NAME: StringName = &"SFX"
 const ENGINE_BUS_NAME: StringName = &"Engine"
@@ -112,6 +115,32 @@ const SPONSOR_FEEDBACK_CONTRACT := {
 		&"volume_db": 1.0,
 	},
 }
+const LANDING_PREDICTION_FEEDBACK_CONTRACT := {
+	&"DANGER": {
+		&"cue": &"landing_danger", &"start_hz": 520.0, &"end_hz": 170.0,
+		&"duration": 0.18, &"amplitude": 0.25, &"harmonic": 0.14,
+		&"pitch": 1.0, &"volume_db": -2.0,
+	},
+	&"RECOVERED": {
+		&"cue": &"landing_recovered", &"start_hz": 330.0, &"end_hz": 690.0,
+		&"duration": 0.14, &"amplitude": 0.22, &"harmonic": 0.20,
+		&"pitch": 1.0, &"volume_db": -3.5,
+	},
+}
+const RIDER_VOICE_PROFILES := {
+	&"FOCUSED": {
+		&"pitch": 1.0, &"volume_db": -4.0,
+		&"description": "Neutral nonverbal effort voice.",
+	},
+	&"BRIGHT": {
+		&"pitch": 1.18, &"volume_db": -4.5,
+		&"description": "Higher-register nonverbal effort voice.",
+	},
+	&"GROUNDED": {
+		&"pitch": 0.84, &"volume_db": -3.5,
+		&"description": "Lower-register nonverbal effort voice.",
+	},
+}
 
 const MUSIC_STEMS: Array[StringName] = [&"BASE", &"DRIVE", &"TENSION", &"RESULTS"]
 const MUSIC_STATE_MIXES := {
@@ -184,6 +213,8 @@ var _commentary_feedback_suppressed_count: int = 0
 var _last_commentary_feedback_usec: int = -1_000_000
 var _last_commentary_feedback_kind: StringName = &""
 var _last_commentary_feedback_context: String = ""
+var _last_integrity_audio_warning: StringName = &""
+var _integrity_audio_transition_count: int = 0
 var _crowd_feedback_count: int = 0
 var _crowd_feedback_suppressed_count: int = 0
 var _last_crowd_feedback_usec: int = -1_000_000
@@ -212,6 +243,15 @@ var _last_sponsor_feedback_id: StringName = &""
 var _last_sponsor_feedback_cue: StringName = &""
 var _freestyle_feedback_count: int = 0
 var _last_freestyle_feedback: Dictionary = {}
+var _landing_prediction_feedback_count: int = 0
+var _last_landing_prediction_kind: StringName = &""
+var _last_landing_prediction_snapshot: Dictionary = {}
+var _rider_voice_feedback_count: int = 0
+var _rider_voice_feedback_suppressed_count: int = 0
+var _last_rider_voice_usec: int = -2_000_000
+var _last_rider_voice_id: StringName = &""
+var _last_rider_voice_context: StringName = &""
+var _last_rider_voice_pitch: float = 1.0
 var _shut_down: bool = false
 var _audio_enabled: bool = false
 var _race_snapshot_source: Node
@@ -246,6 +286,8 @@ func initialize(bike: DirtBikeController, ride_director: RideDirector) -> void:
 		bike.boost_activated.connect(_on_boost_activated)
 	if not bike.landed.is_connected(_on_bike_landed):
 		bike.landed.connect(_on_bike_landed)
+	if not bike.landing_projection_event.is_connected(_on_landing_projection_event):
+		bike.landing_projection_event.connect(_on_landing_projection_event)
 	if not bike.trick_landed.is_connected(_on_bike_trick_landed):
 		bike.trick_landed.connect(_on_bike_trick_landed)
 	if not bike.automatic_recovery_requested.is_connected(_on_bike_recovery_requested):
@@ -406,6 +448,35 @@ static func get_flow_denied_audio_contract() -> Dictionary:
 	}
 
 
+static func get_landing_prediction_audio_contract() -> Dictionary:
+	return {
+		&"bus": SFX_BUS_NAME,
+		&"pooled_voices": VOICE_COUNT,
+		&"kinds": LANDING_PREDICTION_FEEDBACK_CONTRACT.duplicate(true),
+	}
+
+
+static func get_rider_voice_audio_contract() -> Dictionary:
+	return {
+		&"bus": COMMENTARY_BUS_NAME,
+		&"cue": &"rider_exertion",
+		&"cooldown_usec": RIDER_VOICE_FEEDBACK_COOLDOWN_USEC,
+		&"profiles": RIDER_VOICE_PROFILES.duplicate(true),
+	}
+
+
+func get_rider_voice_feedback_snapshot() -> Dictionary:
+	return {
+		&"count": _rider_voice_feedback_count,
+		&"suppressed_count": _rider_voice_feedback_suppressed_count,
+		&"last_voice_id": _last_rider_voice_id,
+		&"last_context": _last_rider_voice_context,
+		&"last_pitch": _last_rider_voice_pitch,
+		&"cue_ready": _cues.has(&"rider_exertion"),
+		&"contract": get_rider_voice_audio_contract(),
+	}
+
+
 static func get_interface_feedback_contract() -> Dictionary:
 	return {
 		&"bus": INTERFACE_BUS_NAME,
@@ -451,6 +522,11 @@ func get_sponsor_feedback_snapshot() -> Dictionary:
 
 
 func get_racecraft_audio_feedback_snapshot() -> Dictionary:
+	var landing_cues_ready: Dictionary[StringName, bool] = {}
+	for raw_kind: Variant in LANDING_PREDICTION_FEEDBACK_CONTRACT:
+		var spec := LANDING_PREDICTION_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		var cue := StringName(spec.get(&"cue", &""))
+		landing_cues_ready[StringName(raw_kind)] = not cue.is_empty() and _cues.has(cue)
 	return {
 		&"flow_denied_cue_count": _flow_denied_cue_count,
 		&"flow_denied_suppressed_count": _flow_denied_suppressed_count,
@@ -459,6 +535,10 @@ func get_racecraft_audio_feedback_snapshot() -> Dictionary:
 		&"freestyle_feedback_count": _freestyle_feedback_count,
 		&"last_freestyle_feedback": _last_freestyle_feedback.duplicate(true),
 		&"freestyle_cue_ready": _cues.has(&"racecraft"),
+		&"landing_prediction_feedback_count": _landing_prediction_feedback_count,
+		&"last_landing_prediction_kind": _last_landing_prediction_kind,
+		&"last_landing_prediction_snapshot": _last_landing_prediction_snapshot.duplicate(true),
+		&"landing_prediction_cues_ready": landing_cues_ready,
 	}
 
 
@@ -496,6 +576,8 @@ func get_competition_feedback_snapshot() -> Dictionary:
 		&"commentary_suppressed_count": _commentary_feedback_suppressed_count,
 		&"last_commentary_kind": _last_commentary_feedback_kind,
 		&"last_commentary_context": _last_commentary_feedback_context,
+		&"integrity_transition_count": _integrity_audio_transition_count,
+		&"last_integrity_warning": _last_integrity_audio_warning,
 		&"crowd_count": _crowd_feedback_count,
 		&"crowd_suppressed_count": _crowd_feedback_suppressed_count,
 		&"last_crowd_kind": _last_crowd_feedback_kind,
@@ -545,6 +627,8 @@ func shutdown() -> void:
 func _connect_event_bus() -> void:
 	if not EventBus.interface_feedback_requested.is_connected(_on_interface_feedback_requested):
 		EventBus.interface_feedback_requested.connect(_on_interface_feedback_requested)
+	if not EventBus.rider_voice_preview_requested.is_connected(_on_rider_voice_preview_requested):
+		EventBus.rider_voice_preview_requested.connect(_on_rider_voice_preview_requested)
 	if not EventBus.race_countdown_changed.is_connected(_on_countdown_changed):
 		EventBus.race_countdown_changed.connect(_on_countdown_changed)
 	if not EventBus.checkpoint_passed.is_connected(_on_checkpoint_passed):
@@ -579,6 +663,7 @@ func _connect_race_snapshot_source(bike: Node) -> void:
 	_connect_source_signal(source, &"field_updated", Callable(self, &"_on_field_updated"))
 	_connect_source_signal(source, &"lap_completed", Callable(self, &"_on_lap_completed"))
 	_connect_source_signal(source, &"race_moment", Callable(self, &"_on_race_moment"))
+	_connect_source_signal(source, &"integrity_updated", Callable(self, &"_on_integrity_updated"))
 	_connect_source_signal(source, &"results_ready", Callable(self, &"_on_source_results_ready"))
 
 
@@ -623,6 +708,15 @@ func _build_cues() -> void:
 			float(crowd_spec.get(&"brightness", 0.55)),
 			float(crowd_spec.get(&"rise_ratio", 0.2))
 		)
+	for raw_kind: Variant in LANDING_PREDICTION_FEEDBACK_CONTRACT:
+		var landing_spec := LANDING_PREDICTION_FEEDBACK_CONTRACT[raw_kind] as Dictionary
+		_cues[StringName(landing_spec.get(&"cue", &""))] = _make_sweep(
+			float(landing_spec.get(&"start_hz", 420.0)),
+			float(landing_spec.get(&"end_hz", 240.0)),
+			float(landing_spec.get(&"duration", 0.16)),
+			float(landing_spec.get(&"amplitude", 0.22)),
+			float(landing_spec.get(&"harmonic", 0.16))
+		)
 	_cues[&"count"] = _make_sweep(390.0, 390.0, 0.09, 0.34, 0.12)
 	_cues[&"go"] = _make_sweep(520.0, 880.0, 0.20, 0.38, 0.18)
 	_cues[&"gate"] = _make_sweep(660.0, 920.0, 0.13, 0.32, 0.16)
@@ -633,6 +727,9 @@ func _build_cues() -> void:
 	_cues[&"contract"] = _make_sweep(440.0, 1180.0, 0.48, 0.38, 0.30)
 	_cues[&"landing"] = _make_sweep(118.0, 48.0, 0.24, 0.46, 0.42)
 	_cues[&"racecraft"] = _make_sweep(185.0, 640.0, 0.18, 0.32, 0.28)
+	# A short voiced effort contour. Its profile-specific pitch is selected at
+	# playback, so identity previews and riding reactions use one pooled sample.
+	_cues[&"rider_exertion"] = _make_sweep(172.0, 122.0, 0.23, 0.22, 0.68)
 	# A brief descending, lower-level refusal cue. It is deliberately unlike the
 	# rising racecraft success sound so an unaffordable press cannot read as a win.
 	_cues[&"flow_denied"] = _make_sweep(
@@ -1167,6 +1264,23 @@ func _play(
 	voice.play()
 
 
+func _request_audio_caption(source: StringName, text: String, priority: int) -> void:
+	if text.is_empty():
+		return
+	EventBus.audio_caption_requested.emit(
+		source,
+		text,
+		clampi(priority, CAPTION_PRIORITY_ALL, CAPTION_PRIORITY_IMPORTANT)
+	)
+
+
+static func _caption_context(value: Variant) -> String:
+	var caption := str(value).strip_edges().replace("_", " ").replace("\n", " ").to_upper()
+	while caption.contains("  "):
+		caption = caption.replace("  ", " ")
+	return caption.left(88)
+
+
 func _on_interface_feedback_requested(kind: StringName, context: StringName) -> void:
 	var normalized_kind := StringName(String(kind).to_upper())
 	if not INTERFACE_FEEDBACK_CONTRACT.has(normalized_kind):
@@ -1189,6 +1303,56 @@ func _on_interface_feedback_requested(kind: StringName, context: StringName) -> 
 		float(spec.get(&"volume_db", 0.0)),
 		INTERFACE_BUS_NAME
 	)
+	# Routine navigation already has an exact visible selection/receipt. Repeating
+	# it in the caption layer adds no audio-only meaning and can cover the control
+	# being edited. Denials carry information that may otherwise be audio-only.
+	if normalized_kind == &"DENIED":
+		_request_audio_caption(
+			&"INTERFACE",
+			"ACTION UNAVAILABLE  //  %s" % _caption_context(context),
+			CAPTION_PRIORITY_IMPORTANT
+		)
+
+
+func _on_rider_voice_preview_requested(voice_id: StringName) -> void:
+	_play_rider_voice(&"PREVIEW", voice_id, true)
+
+
+func _play_rider_voice(
+	context: StringName,
+	requested_voice: StringName = &"",
+	force: bool = false
+) -> void:
+	var voice_id := requested_voice
+	if not RIDER_VOICE_PROFILES.has(voice_id):
+		voice_id = StringName(Profile.get_rider_cosmetics().get(&"voice", &"FOCUSED"))
+	if not RIDER_VOICE_PROFILES.has(voice_id):
+		voice_id = &"FOCUSED"
+	var now := Time.get_ticks_usec()
+	if not force and now - _last_rider_voice_usec < RIDER_VOICE_FEEDBACK_COOLDOWN_USEC:
+		_rider_voice_feedback_suppressed_count += 1
+		return
+	var spec := RIDER_VOICE_PROFILES[voice_id] as Dictionary
+	_last_rider_voice_usec = now
+	_last_rider_voice_id = voice_id
+	_last_rider_voice_context = context
+	_last_rider_voice_pitch = float(spec.get(&"pitch", 1.0))
+	_rider_voice_feedback_count += 1
+	_play(
+		&"rider_exertion",
+		_last_rider_voice_pitch,
+		float(spec.get(&"volume_db", -4.0)),
+		COMMENTARY_BUS_NAME
+	)
+	_request_audio_caption(
+		&"RIDER",
+		"%s  //  %s VOICE" % [_caption_context(context), String(voice_id).replace("_", " ")],
+		(
+			CAPTION_PRIORITY_IMPORTANT
+			if context in [&"HEAVY_LANDING", &"FINISH"]
+			else CAPTION_PRIORITY_ALL
+		)
+	)
 
 
 func _play_commentary_feedback(kind: StringName, context: String) -> void:
@@ -1209,6 +1373,7 @@ func _play_commentary_feedback(kind: StringName, context: String) -> void:
 		float(spec.get(&"volume_db", 0.0)),
 		COMMENTARY_BUS_NAME
 	)
+	_request_audio_caption(&"COMMENTARY", _caption_context(context), CAPTION_PRIORITY_IMPORTANT)
 
 
 func _play_crowd_feedback(kind: StringName, context: String) -> void:
@@ -1238,6 +1403,32 @@ func _on_race_moment(label: String, points: int, positive: bool) -> void:
 	var crowd_kind := _crowd_kind_for_race_moment(label, points, positive)
 	if not crowd_kind.is_empty():
 		_play_crowd_feedback(crowd_kind, label)
+
+
+func _on_integrity_updated(snapshot: Dictionary) -> void:
+	var warning := StringName(str(snapshot.get(&"warning", &"")).to_upper())
+	if warning in [&"", &"NONE", &"CLEAR"]:
+		warning = &""
+	if warning == _last_integrity_audio_warning:
+		return
+	if warning.is_empty():
+		var previous_warning := _last_integrity_audio_warning
+		_last_integrity_audio_warning = &""
+		if not previous_warning.is_empty():
+			_integrity_audio_transition_count += 1
+			_play_commentary_feedback(&"POSITIVE", "COURSE CLEAR")
+		return
+	var warning_text := ""
+	match warning:
+		&"WRONG_WAY": warning_text = "WRONG WAY  //  TURN AROUND"
+		&"OFF_COURSE": warning_text = "OFF COURSE  //  RETURN TO THE RIBBON"
+		&"CUT", &"CUT_DETECTED": warning_text = "COURSE CUT  //  PENALTY APPLIED"
+		&"STUCK": warning_text = "BIKE STUCK  //  RESET AVAILABLE"
+		&"MANUAL_RESET": warning_text = "RESET  //  PENALTY APPLIED"
+		_: return
+	_last_integrity_audio_warning = warning
+	_integrity_audio_transition_count += 1
+	_play_commentary_feedback(&"WARNING", warning_text)
 
 
 static func _commentary_kind_for_race_moment(
@@ -1316,6 +1507,11 @@ func _on_countdown_changed(value: int) -> void:
 	_session_phase = &"COUNTDOWN"
 	_set_music_state(STATE_RACING if value == 0 else STATE_STAGING)
 	_play(&"go" if value == 0 else &"count", 1.0 + float(3 - value) * 0.04)
+	_request_audio_caption(
+		&"RACE CONTROL",
+		"GO" if value == 0 else str(maxi(value, 0)),
+		CAPTION_PRIORITY_IMPORTANT
+	)
 
 
 func _on_checkpoint_passed(index: int, total: int, _split_usec: int) -> void:
@@ -1323,9 +1519,15 @@ func _on_checkpoint_passed(index: int, total: int, _split_usec: int) -> void:
 		_is_final_lap = true
 		_refresh_competition_state()
 	_play(&"gate")
+	_request_audio_caption(
+		&"RACE CONTROL",
+		"GATE %02d / %02d" % [index + 1, maxi(total, 0)],
+		CAPTION_PRIORITY_ALL
+	)
 
 
 func _on_race_reset() -> void:
+	_last_integrity_audio_warning = &""
 	_session_phase = &"STAGING"
 	_close_battle = false
 	_is_final_lap = false
@@ -1343,6 +1545,7 @@ func _on_race_finished(_time_usec: int, medal: StringName, is_new_best: bool) ->
 	var finish_context := "NEW BEST" if is_new_best else "FINISH %s" % String(medal)
 	_play_commentary_feedback(&"MILESTONE", finish_context)
 	_play_crowd_feedback(&"ROAR", finish_context)
+	_play_rider_voice(&"FINISH")
 
 
 func _on_race_results_ready(_result: Dictionary) -> void:
@@ -1376,6 +1579,7 @@ func _on_flow_gained(amount: float) -> void:
 
 func _on_boost_activated(_flow_remaining: float) -> void:
 	_play(&"boost", 1.0, 1.5)
+	_play_rider_voice(&"BOOST")
 
 
 func _on_bike_racecraft_event(kind: StringName, payload: Dictionary) -> void:
@@ -1394,6 +1598,8 @@ func _on_bike_racecraft_event(kind: StringName, payload: Dictionary) -> void:
 		&"DAB", &"FLOW_BRACE": pitch = 0.78
 		&"PUMP", &"RUT_RAIL": pitch = 0.94
 		&"CLUTCH_POP", &"CONTROLLED_SLIDE": pitch = 1.08
+		&"WHEELIE": pitch = 1.14
+		&"STOPPIE": pitch = 1.24
 		&"FLOW_RAIL", &"DRAFT_SLINGSHOT": pitch = 1.18
 		&"FLOW_COMPOSE", &"COMPOSE_SAVE": pitch = 1.28
 		&"SKILL_LINE": pitch = 1.36 if StringName(payload.get(&"outcome", &"")) == &"MASTERED" else 1.12
@@ -1412,11 +1618,37 @@ func _on_flow_denied(payload: Dictionary) -> void:
 	var available := maxf(float(payload.get(&"available", 0.0)), 0.0)
 	var shortage_ratio := clampf((required - available) / maxf(required, 1.0), 0.0, 1.0)
 	_play(&"flow_denied", lerpf(1.04, 0.90, shortage_ratio), FLOW_DENIED_CUE_VOLUME_DB)
+	_request_audio_caption(
+		&"BIKE",
+		"BOOST NOT READY  //  NEED %.0f FLOW" % required,
+		CAPTION_PRIORITY_IMPORTANT
+	)
+
+
+func _on_landing_projection_event(kind: StringName, snapshot: Dictionary) -> void:
+	if not LANDING_PREDICTION_FEEDBACK_CONTRACT.has(kind):
+		return
+	_landing_prediction_feedback_count += 1
+	_last_landing_prediction_kind = kind
+	_last_landing_prediction_snapshot = snapshot.duplicate(true)
+	var spec := LANDING_PREDICTION_FEEDBACK_CONTRACT[kind] as Dictionary
+	_play(
+		StringName(spec.get(&"cue", &"landing_danger")),
+		float(spec.get(&"pitch", 1.0)),
+		float(spec.get(&"volume_db", -3.0))
+	)
+	_request_audio_caption(
+		&"LANDING",
+		_caption_context(str(snapshot.get(&"text", snapshot.get(&"instruction", kind)))),
+		CAPTION_PRIORITY_IMPORTANT
+	)
 
 
 func _on_bike_landed(intensity: float) -> void:
 	var weight := clampf(intensity, 0.0, 1.0)
 	_play(&"landing", lerpf(1.12, 0.72, weight), lerpf(-7.0, 1.5, weight))
+	if weight >= 0.68:
+		_play_rider_voice(&"HEAVY_LANDING")
 
 
 func _on_bike_trick_landed(
@@ -1436,6 +1668,7 @@ func _on_bike_trick_landed(
 	if clean and landing_intensity <= 0.65:
 		_play_commentary_feedback(&"POSITIVE", context)
 		_play_crowd_feedback(&"CHEER", context)
+		_play_rider_voice(&"CLEAN_TRICK")
 	else:
 		_play_commentary_feedback(&"WARNING", context)
 		_play_crowd_feedback(&"GASP", context)
@@ -1479,8 +1712,9 @@ func _on_line_updated(_label: String, chain: int, _multiplier: float, _score: in
 		_play(&"flow", 0.9 + float(mini(chain, 8)) * 0.045, -5.0)
 
 
-func _on_route_discovered(_title: String) -> void:
+func _on_route_discovered(title: String) -> void:
 	_play(&"route", 1.0, 0.5)
+	_request_audio_caption(&"ROUTE", _caption_context(title), CAPTION_PRIORITY_ALL)
 
 
 func _on_contract_updated(

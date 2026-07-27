@@ -8,6 +8,10 @@ const VISIBILITY_STATE := preload("res://common/web_visibility_state.gd")
 
 var _visibility_callback: JavaScriptObject
 var _visibility_state: WebVisibilityState = VISIBILITY_STATE.new()
+var _last_game_text_state: Dictionary = {
+	&"schema_version": 1,
+	&"mode": "LOADING",
+}
 
 
 func _ready() -> void:
@@ -16,6 +20,53 @@ func _ready() -> void:
 		return
 	_install_input_guard()
 	_install_visibility_handler()
+	_install_game_test_bridge()
+
+
+func publish_game_text_state(snapshot: Dictionary) -> void:
+	_last_game_text_state = snapshot.duplicate(true)
+	if not OS.has_feature("web"):
+		return
+	var encoded := JSON.stringify(_last_game_text_state)
+	JavaScriptBridge.eval(
+		"window.__ridingDirtyStateJSON = %s;" % JSON.stringify(encoded)
+	)
+
+
+func get_game_text_state_snapshot() -> Dictionary:
+	return _last_game_text_state.duplicate(true)
+
+
+static func get_game_test_bridge_script() -> String:
+	return """
+		(function () {
+			window.__ridingDirtyStateJSON = window.__ridingDirtyStateJSON
+				|| '{"schema_version":1,"mode":"LOADING"}';
+			window.render_game_to_text = function () {
+				return window.__ridingDirtyStateJSON;
+			};
+			if (typeof window.advanceTime !== 'function') {
+				window.advanceTime = function (milliseconds) {
+					const duration = Math.max(0, Number(milliseconds) || 0);
+					return new Promise(function (resolve) {
+						const start = performance.now();
+						function waitFrame(now) {
+							if (now - start >= duration) {
+								resolve();
+								return;
+							}
+							window.requestAnimationFrame(waitFrame);
+						}
+						window.requestAnimationFrame(waitFrame);
+					});
+				};
+			}
+			window.__ridingDirtyTestBridge = {
+				schemaVersion: 1,
+				timeMode: window.__vt_pending ? 'injected' : 'requestAnimationFrame',
+			};
+		})();
+	"""
 
 
 func save_json(key: String, value: Variant) -> bool:
@@ -130,6 +181,11 @@ func _install_input_guard() -> void:
 			}
 		}, { passive: false });
 	""")
+
+
+func _install_game_test_bridge() -> void:
+	JavaScriptBridge.eval(get_game_test_bridge_script())
+	publish_game_text_state(_last_game_text_state)
 
 
 func _install_visibility_handler() -> void:

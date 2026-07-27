@@ -78,7 +78,7 @@ func _run() -> void:
 	var hud_detail_index := _find_setting_index(access_items, &"hud_detail")
 	var hud_scale_index := _find_setting_index(access_items, &"hud_scale")
 	var hud_safe_area_index := _find_setting_index(access_items, &"hud_safe_area")
-	_check(access_items.size() == 11, "Accessibility page does not include the complete eleven-row option set")
+	_check(access_items.size() == 14, "Accessibility page does not include the complete fourteen-row option set")
 	_check(
 		hud_detail_index == 1 and hud_scale_index == 2 and hud_safe_area_index == 3,
 		"HUD detail, size, and safe area are not presented directly after global text scale"

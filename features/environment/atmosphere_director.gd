@@ -292,6 +292,7 @@ func _configure_free_roam_activity(activity: StringName) -> void:
 func _build_weather() -> void:
 	_weather = GPUParticles3D.new()
 	_weather.name = "DistrictWeather"
+	_weather.add_to_group(&"weather_effects")
 	_weather.amount = 92
 	_weather.lifetime = 2.8
 	_weather.local_coords = true

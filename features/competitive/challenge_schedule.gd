@@ -66,6 +66,8 @@ func run_context(challenge: Dictionary) -> Dictionary:
 		"bike_class": challenge.get("bike_class", "OPEN"),
 		"difficulty": int(challenge.get("difficulty", 2)),
 		"assist_mode": challenge.get("assist_mode", "STANDARD"),
+		"transmission_mode": "AUTOMATIC",
+		"control_signature": InputRouter.control_response_signature({}),
 		"setup_id": challenge.get("setup_id", "BALANCED"),
 		"weather": challenge.get("weather", "CLEAR"),
 		"surface": challenge.get("surface", "PACKED"),

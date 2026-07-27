@@ -401,6 +401,14 @@ func _disable_contract() -> void:
 
 
 static func get_activity_presentation_policy(activity: StringName) -> Dictionary:
+	if activity == &"TEST_RIDE":
+		# A Workshop preview is deliberately outside career authority. Suppress
+		# every run-scoped system that can alter physics or settle rewards/feats.
+		return {
+			&"show_line_feedback": false,
+			&"show_sponsor_contract": false,
+			&"show_daily_modifier": false,
+		}
 	if activity != &"ACADEMY":
 		return {
 			&"show_line_feedback": true,

@@ -8,6 +8,9 @@ signal hud_action_requested(action: StringName)
 
 const CourseMapControl = preload("res://features/hud/course_minimap.gd")
 const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
+const ACADEMY_SURFACE_TRACKER_SCRIPT := preload("res://features/career/academy_surface_tracker.gd")
+const PODIUM_CEREMONY_SCRIPT := preload("res://features/hud/podium_ceremony.gd")
+const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
 
 const CREAM := Color("f7e5b2")
 const AMBER := Color("ffb52d")
@@ -30,10 +33,14 @@ var _speed_label: Label
 var _speed_units_label: Label
 var _gear_label: Label
 var _assist_label: Label
+var _condition_panel: ColorRect
+var _condition_label: Label
 var _speed_bar: ProgressBar
 var _flow_label: Label
 var _flow_bar: ProgressBar
 var _racecraft_label: Label
+var _landing_projection_label: Label
+var _landing_projection_bar: ProgressBar
 var _countdown_label: Label
 var _message_label: Label
 var _gate_launch_label: Label
@@ -70,6 +77,8 @@ var _results_margin: MarginContainer
 var _results_stack: VBoxContainer
 var _results_title: Label
 var _results_summary: Label
+var _results_podium: Control
+var _results_recap: Label
 var _results_payoff_panel: PanelContainer
 var _results_payoff_flow: HFlowContainer
 var _results_payout_label: Label
@@ -124,6 +133,8 @@ var _academy_transmission_snapshot: Dictionary = {}
 var _last_academy_evaluation: Dictionary = {}
 var _last_result: Dictionary = {}
 var _last_leaderboard_result: Dictionary = {}
+var _last_hotseat_result: Dictionary = {}
+var _last_custom_tour_result: Dictionary = {}
 var _replay_summary: Dictionary = {}
 var _replay_available: bool = false
 var _replay_hid_results: bool = false
@@ -138,11 +149,14 @@ var _transmission_snapshot: Dictionary = {
 var _assist_snapshot: Dictionary = {}
 var _flow_denied_feedback_time: float = 0.0
 var _last_flow_denied_feedback: Dictionary = {}
+var _landing_projection_snapshot: Dictionary = {}
+var _ground_balance_snapshot: Dictionary = {}
 var _completion_message_prefix: String = ""
 var _academy_layout_refresh_queued: bool = false
 var _results_layout_refresh_queued: bool = false
 var _last_career_payoff: Dictionary = {}
 var _last_freestyle_trick: Dictionary = {}
+var _condition_snapshot: Dictionary = {}
 
 
 func _ready() -> void:
@@ -186,8 +200,30 @@ func initialize(
 		var callback := Callable(self, &"update_transmission")
 		if not player_bike.is_connected(&"transmission_changed", callback):
 			player_bike.connect(&"transmission_changed", callback)
+	if player_bike != null and player_bike.has_signal(&"landing_projection_changed"):
+		var landing_callback := Callable(self, &"update_landing_projection")
+		if not player_bike.is_connected(&"landing_projection_changed", landing_callback):
+			player_bike.connect(&"landing_projection_changed", landing_callback)
+	if player_bike != null and player_bike.has_signal(&"ground_balance_changed"):
+		var balance_callback := Callable(self, &"update_ground_balance")
+		if not player_bike.is_connected(&"ground_balance_changed", balance_callback):
+			player_bike.connect(&"ground_balance_changed", balance_callback)
+	if player_bike != null and player_bike.has_signal(&"condition_changed"):
+		var condition_callback := Callable(self, &"update_bike_condition")
+		if not player_bike.is_connected(&"condition_changed", condition_callback):
+			player_bike.connect(&"condition_changed", condition_callback)
 	if player_bike != null and player_bike.has_method(&"get_transmission_snapshot"):
 		update_transmission(player_bike.call(&"get_transmission_snapshot") as Dictionary)
+	if player_bike != null and player_bike.has_method(&"get_landing_projection_snapshot"):
+		update_landing_projection(
+			player_bike.call(&"get_landing_projection_snapshot") as Dictionary
+		)
+	if player_bike != null and player_bike.has_method(&"get_ground_balance_snapshot"):
+		update_ground_balance(
+			player_bike.call(&"get_ground_balance_snapshot") as Dictionary
+		)
+	if player_bike != null and player_bike.has_method(&"get_condition_snapshot"):
+		update_bike_condition(player_bike.call(&"get_condition_snapshot") as Dictionary)
 	configure_track(initial_track_id, authoritative_route)
 
 
@@ -392,6 +428,8 @@ func show_results(result: Dictionary) -> void:
 	)
 	if result_identity_changed:
 		_last_leaderboard_result.clear()
+		_last_hotseat_result.clear()
+		_last_custom_tour_result.clear()
 		_replay_summary.clear()
 		_replay_available = false
 	_last_result = result.duplicate(true)
@@ -407,8 +445,21 @@ func show_results(result: Dictionary) -> void:
 		update_classification(classification_value as Array)
 	_results_title.text = _results_heading(result)
 	_results_summary.text = _results_summary_text(result)
+	var academy_results := not _last_academy_evaluation.is_empty()
+	_results_podium.visible = not academy_results
+	_results_recap.visible = not academy_results
+	if academy_results:
+		_results_podium.call(&"clear")
+		_results_recap.text = ""
+	else:
+		_results_podium.call(&"present", _classification, result, Profile.get_rider_cosmetics())
+		_results_recap.text = _results_event_recap_text(result)
 	_refresh_results_payoff(result)
-	_results_competition.visible = _last_academy_evaluation.is_empty()
+	_results_competition.visible = (
+		_last_academy_evaluation.is_empty()
+		and InputRouter.input_mode != InputRouter.INPUT_MODE_TOUCH
+		and _text_scale <= 1.35
+	)
 	_refresh_results_competition()
 	if not _last_academy_evaluation.is_empty():
 		_results_heading_label.text = "OBJECTIVE  //  MEASURED RESULT  //  BRONZE / SILVER / GOLD"
@@ -589,9 +640,36 @@ func get_academy_presentation_snapshot() -> Dictionary:
 
 
 func update_leaderboard_result(result: Dictionary) -> void:
-	## RaceServices emits this after the official result. Ignore hot-seat payloads
-	## and stale boards so a prior event can never decorate the current result.
-	if result.has("kind") or _last_result.is_empty():
+	## RaceServices emits this after the official result. Keep local-board and
+	## local-duel payloads identity-bound so stale competition data cannot decorate
+	## another event's official result.
+	if _last_result.is_empty():
+		return
+	if StringName(result.get("kind", &"")) == &"HOTSEAT":
+		var snapshot_value: Variant = result.get("snapshot", {})
+		if not snapshot_value is Dictionary:
+			return
+		var snapshot := snapshot_value as Dictionary
+		if str(snapshot.get(&"challenge_id", "")) != str(_last_result.get(&"challenge_id", "")):
+			return
+		_last_hotseat_result = result.duplicate(true)
+		_refresh_results_competition()
+		_refresh_results_footer(str(_last_result.get(&"next_event_name", "")).strip_edges())
+		return
+	if StringName(result.get("kind", &"")) == &"CUSTOM_TOUR":
+		var tour_snapshot_value: Variant = result.get("snapshot", {})
+		if not tour_snapshot_value is Dictionary:
+			return
+		var tour_snapshot := tour_snapshot_value as Dictionary
+		if StringName(result.get(&"event_id", &"")) != StringName(_last_result.get(&"event_id", &"")):
+			return
+		if StringName(tour_snapshot.get(&"last_result_event_id", &"")) != StringName(_last_result.get(&"event_id", &"")):
+			return
+		_last_custom_tour_result = result.duplicate(true)
+		_refresh_results_competition()
+		_refresh_results_footer(str(_last_result.get(&"next_event_name", "")).strip_edges())
+		return
+	if result.has("kind"):
 		return
 	var entry_value: Variant = result.get("entry", {})
 	if not entry_value is Dictionary:
@@ -638,11 +716,18 @@ func get_competition_presentation_snapshot() -> Dictionary:
 		&"visible": _results_competition != null and _results_competition.visible,
 		&"title": _results_title.text if _results_title != null else "",
 		&"summary": _results_summary.text if _results_summary != null else "",
+		&"podium": (
+			_results_podium.call(&"get_presentation_snapshot")
+			if _results_podium != null else {}
+		),
+		&"event_recap": _results_recap.text if _results_recap != null else "",
 		&"text": _results_competition.text if _results_competition != null else "",
 		&"footer": _results_footer.text if _results_footer != null else "",
 		&"replay_available": _replay_available,
 		&"replay": _replay_summary.duplicate(true),
 		&"leaderboard": _last_leaderboard_result.duplicate(true),
+		&"local_duel": _last_hotseat_result.duplicate(true),
+		&"custom_tour": _last_custom_tour_result.duplicate(true),
 		&"result_event": StringName(_last_result.get(&"event_id", &"")),
 		&"result_challenge_id": StringName(_last_result.get(&"challenge_id", &"")),
 		&"result_competition_id": StringName(_last_result.get(&"competition_id", &"")),
@@ -817,6 +902,14 @@ func get_control_prompt_snapshot() -> Dictionary:
 		&"racecraft": _racecraft_label.text if _racecraft_label != null else "",
 		&"paused": _paused_label.text if _paused_label != null else "",
 		&"message": _message_label.text if _message_label != null else "",
+		&"line": (
+			_line_label.text
+			if _line_label != null and _line_label.visible else ""
+		),
+		&"line_score": (
+			_line_score_label.text
+			if _line_score_label != null and _line_score_label.visible else ""
+		),
 		&"results_footer": _results_footer.text if _results_footer != null else "",
 		&"results_competition": _results_competition.text if _results_competition != null else "",
 	}
@@ -894,6 +987,152 @@ func update_telemetry(speed_mph: float, _throttle: float, grounded: bool) -> voi
 	_speed_label.modulate = AMBER if grounded else CYAN
 
 
+func update_bike_condition(snapshot: Dictionary) -> void:
+	_condition_snapshot = snapshot.duplicate(true)
+	if _condition_panel == null or _condition_label == null:
+		return
+	var visible := bool(snapshot.get(&"visible", false))
+	_condition_panel.visible = visible
+	_condition_label.visible = visible
+	if not visible:
+		_condition_label.text = ""
+		return
+	var condition := clampi(int(snapshot.get(&"condition_percent", 100)), 0, 100)
+	var status := StringName(snapshot.get(&"status", &"READY"))
+	var label := str(snapshot.get(&"label", status)).to_upper()
+	_condition_label.text = "BIKE %s  //  %d%%" % [label, condition]
+	_condition_label.modulate = WARNING if status in [&"DAMAGED", &"CRITICAL"] else AMBER
+
+
+func show_bike_damage(damage: int, snapshot: Dictionary) -> void:
+	update_bike_condition(snapshot)
+	if damage <= 0:
+		return
+	var condition := clampi(int(snapshot.get(&"condition_percent", 100)), 0, 100)
+	var label := str(snapshot.get(&"label", "WORN")).to_upper()
+	_message_label.text = "BIKE DAMAGE  -%d  //  %d%%  //  %s" % [
+		damage, condition, label,
+	]
+	_message_label.modulate = WARNING
+	_message_time = 2.4
+	_pulse_warning()
+
+
+func get_bike_condition_presentation_snapshot() -> Dictionary:
+	return {
+		&"condition": _condition_snapshot.duplicate(true),
+		&"text": _condition_label.text if _condition_label != null else "",
+		&"visible": (
+			_condition_label != null
+			and _condition_label.visible
+			and _live_hud_root != null
+			and _live_hud_root.visible
+		),
+		&"message": _message_label.text if _message_label != null else "",
+		&"warning_polarity": (
+			_message_label != null and _message_label.modulate.is_equal_approx(WARNING)
+		),
+	}
+
+
+func update_landing_projection(snapshot: Dictionary) -> void:
+	_landing_projection_snapshot = snapshot.duplicate(true)
+	if _landing_projection_label == null or _landing_projection_bar == null:
+		return
+	var visible := bool(snapshot.get(&"visible", false))
+	_landing_projection_label.visible = visible
+	_landing_projection_bar.visible = visible
+	if not visible:
+		_landing_projection_label.text = ""
+		_landing_projection_bar.value = 0.0
+		return
+	var state := StringName(snapshot.get(&"state", &"SEARCH"))
+	var color := (
+		CYAN
+		if state == &"SET"
+		else WARNING
+		if state == &"DANGER"
+		else AMBER
+		if state == &"ADJUST"
+		else CREAM
+	)
+	_landing_projection_label.text = str(
+		snapshot.get(&"text", "LANDING // SCAN RECEIVER")
+	)
+	_landing_projection_label.modulate = color
+	_landing_projection_bar.value = clampf(
+		float(snapshot.get(&"confidence_percent", 0.0)),
+		0.0,
+		100.0
+	)
+	_landing_projection_bar.modulate = color
+
+
+func get_landing_projection_presentation_snapshot() -> Dictionary:
+	return {
+		&"projection": _landing_projection_snapshot.duplicate(true),
+		&"text": (
+			_landing_projection_label.text
+			if _landing_projection_label != null else ""
+		),
+		&"visible": (
+			_landing_projection_label != null
+			and _landing_projection_label.visible
+			and _live_hud_root != null
+			and _live_hud_root.visible
+		),
+		&"confidence": (
+			_landing_projection_bar.value
+			if _landing_projection_bar != null else 0.0
+		),
+		&"rect": (
+			_landing_projection_label.get_global_rect()
+			if _landing_projection_label != null else Rect2()
+		),
+	}
+
+
+func update_ground_balance(snapshot: Dictionary) -> void:
+	_ground_balance_snapshot = snapshot.duplicate(true)
+	if _landing_projection_label == null or _landing_projection_bar == null:
+		return
+	var visible := bool(snapshot.get(&"active", false))
+	_landing_projection_label.visible = visible
+	_landing_projection_bar.visible = visible
+	if not visible:
+		_landing_projection_label.text = ""
+		_landing_projection_bar.value = 0.0
+		return
+	var state := StringName(snapshot.get(&"state", &"IDLE"))
+	var color := AMBER if state == &"LOAD_FRONT" else CYAN
+	_landing_projection_label.text = str(snapshot.get(&"text", ""))
+	_landing_projection_label.modulate = color
+	_landing_projection_bar.value = (
+		clampf(float(snapshot.get(&"progress", 0.0)), 0.0, 1.0) * 100.0
+	)
+	_landing_projection_bar.modulate = color
+
+
+func get_ground_balance_presentation_snapshot() -> Dictionary:
+	return {
+		&"projection": _ground_balance_snapshot.duplicate(true),
+		&"text": (
+			_landing_projection_label.text
+			if _landing_projection_label != null else ""
+		),
+		&"visible": (
+			_landing_projection_label != null
+			and _landing_projection_label.visible
+			and _live_hud_root != null
+			and _live_hud_root.visible
+		),
+		&"progress": (
+			float(_landing_projection_bar.value) / 100.0
+			if _landing_projection_bar != null else 0.0
+		),
+	}
+
+
 func update_transmission(snapshot: Dictionary) -> void:
 	_transmission_snapshot = snapshot.duplicate(true)
 	if _gear_label == null:
@@ -951,6 +1190,8 @@ func apply_accessibility(interface: Dictionary) -> void:
 	_hud_scale = clampf(float(interface.get("hud_scale", 1.0)), 0.75, 1.0)
 	_hud_safe_area = clampf(float(interface.get("hud_safe_area", 0.0)), 0.0, 0.10)
 	_reduced_flashes = bool(interface.get("reduced_flashes", false))
+	if _results_podium != null:
+		_results_podium.call(&"set_reduced_motion", _reduced_flashes)
 	if _reduced_flashes:
 		if _highlight_tween != null:
 			_highlight_tween.kill()
@@ -1288,8 +1529,14 @@ func update_contract(
 	reputation_reward: int = 35
 ) -> void:
 	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_sponsor_contract", false)):
+		_contract_label.visible = false
 		_contract_label.text = ""
 		return
+	if title.strip_edges().is_empty() or target <= 0:
+		_contract_label.visible = false
+		_contract_label.text = ""
+		return
+	_contract_label.visible = true
 	var outcome := "COMPLETE +$%d +%dREP +1 TOKEN" % [cash_reward, reputation_reward]
 	if not completed:
 		outcome = "%d/%d  //  $%d +%dREP +1 TOKEN" % [current, target, cash_reward, reputation_reward]
@@ -1299,8 +1546,14 @@ func update_contract(
 
 func update_modifier(title: String, description: String) -> void:
 	if _activity == &"ACADEMY" and not bool(_academy_presentation.get(&"show_daily_modifier", false)):
+		_modifier_label.visible = false
 		_modifier_label.text = ""
 		return
+	if title.strip_edges().is_empty():
+		_modifier_label.visible = false
+		_modifier_label.text = ""
+		return
+	_modifier_label.visible = true
 	_modifier_label.text = "DAILY: %s   //   %s" % [title, description]
 
 
@@ -1519,12 +1772,59 @@ func _build_hud() -> void:
 	_flow_bar.add_theme_stylebox_override(&"fill", flow_fill)
 	root.add_child(_flow_bar)
 
+	_condition_panel = ColorRect.new()
+	_condition_panel.name = "BikeConditionPanel"
+	_condition_panel.color = Color(0.12, 0.045, 0.035, 0.92)
+	_condition_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_anchor_rect(_condition_panel, Vector2.ONE, Rect2(-235.0, -37.0, 205.0, 30.0))
+	_condition_panel.visible = false
+	root.add_child(_condition_panel)
+	_condition_label = _make_label(root, "", 14, AMBER)
+	_condition_label.name = "BikeConditionLabel"
+	_condition_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_condition_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_anchor_rect(_condition_label, Vector2.ONE, Rect2(-225.0, -36.0, 185.0, 28.0))
+	_condition_label.visible = false
+
 	_racecraft_label = _make_label(_focused_hud_layer, "", 14, CREAM)
 	_racecraft_label.name = "RacecraftStatusLabel"
 	_racecraft_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_racecraft_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_racecraft_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_anchor_rect(_racecraft_label, Vector2.ONE, Rect2(-560.0, -92.0, 315.0, 58.0))
+
+	_landing_projection_label = _make_label(root, "", 17, CREAM)
+	_landing_projection_label.name = "LandingProjectionLabel"
+	_landing_projection_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_landing_projection_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_landing_projection_label.add_theme_constant_override(&"outline_size", 4)
+	_anchor_rect(
+		_landing_projection_label,
+		Vector2(0.5, 0.0),
+		Rect2(-350.0, 192.0, 700.0, 32.0)
+	)
+	_landing_projection_label.visible = false
+	_landing_projection_bar = ProgressBar.new()
+	_landing_projection_bar.name = "LandingProjectionConfidence"
+	_landing_projection_bar.min_value = 0.0
+	_landing_projection_bar.max_value = 100.0
+	_landing_projection_bar.value = 0.0
+	_landing_projection_bar.show_percentage = false
+	_landing_projection_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_anchor_rect(
+		_landing_projection_bar,
+		Vector2(0.5, 0.0),
+		Rect2(-150.0, 226.0, 300.0, 7.0)
+	)
+	_landing_projection_bar.add_theme_stylebox_override(
+		&"background",
+		bar_background.duplicate()
+	)
+	var landing_fill := bar_fill.duplicate() as StyleBoxFlat
+	landing_fill.bg_color = Color.WHITE
+	_landing_projection_bar.add_theme_stylebox_override(&"fill", landing_fill)
+	_landing_projection_bar.visible = false
+	root.add_child(_landing_projection_bar)
 
 	_controls_panel = ColorRect.new()
 	_controls_panel.name = "ControlHintsPanel"
@@ -1733,6 +2033,17 @@ func _build_results_panel(root: Control) -> void:
 	_results_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_results_summary.clip_text = false
 
+	_results_podium = PODIUM_CEREMONY_SCRIPT.new()
+	_results_podium.name = "OfficialPodiumCeremony"
+	_results_podium.visible = false
+	_results_stack.add_child(_results_podium)
+	_results_recap = _make_label(_results_stack, "", 12, CREAM)
+	_results_recap.name = "EventRecap"
+	_results_recap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_results_recap.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_results_recap.custom_minimum_size = Vector2(0.0, 34.0)
+	_results_recap.visible = false
+
 	_results_payoff_panel = PanelContainer.new()
 	_results_payoff_panel.name = "CareerPayoff"
 	_results_payoff_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1899,6 +2210,8 @@ func _refresh_academy_panel() -> void:
 	)
 	if StringName(_academy_lesson.get(&"lesson_id", &"")) == &"MANUAL_SHIFTING":
 		coach_text += "\nLIVE  //  %s" % _academy_transmission_coach_text(InputRouter.input_mode)
+	elif StringName(_academy_lesson.get(&"lesson_id", &"")) == &"SURFACE_READING":
+		coach_text += "\nLIVE  //  %s" % _academy_surface_coach_text()
 	_academy_coach_label.text = "COACH  //  %s" % coach_text
 	_academy_coach_label.visible = true
 	var objectives := _academy_lesson.get(&"objectives", []) as Array
@@ -1971,6 +2284,23 @@ func _academy_transmission_coach_text(mode: StringName) -> String:
 		&"MANUAL_REQUIRED":
 			action_text = "MANUAL PRACTICE CONFIGURING"
 	return "G%d  //  RPM %03d%%  //  %s" % [gear, rpm_percent, action_text]
+
+
+func _academy_surface_coach_text() -> String:
+	var surface := StringName(_academy_live_metrics.get(&"current_surface", &"PACKED"))
+	var next_surface := StringName(_academy_live_metrics.get(&"next_surface", &""))
+	var adapted := bool(_academy_live_metrics.get(&"surface_adapted", false))
+	var output := "%s  //  %s%s" % [
+		String(surface).replace("_", " "),
+		ACADEMY_SURFACE_TRACKER_SCRIPT.get_advice(surface),
+		"  //  ADAPTED" if adapted else "",
+	]
+	if not next_surface.is_empty():
+		output += "\nNEXT  //  %s  //  %s" % [
+			String(next_surface).replace("_", " "),
+			ACADEMY_SURFACE_TRACKER_SCRIPT.get_advice(next_surface),
+		]
+	return output
 
 
 func _academy_pair_label(
@@ -2063,8 +2393,20 @@ func _refresh_results_layout() -> void:
 	if _results_panel == null or _results_stack == null or _results_scroll == null or _hud_root == null:
 		return
 	var touch_mode := InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+	var dense_accessible_results := _text_scale > 1.35
+	_results_margin.add_theme_constant_override(
+		&"margin_top", 10 if dense_accessible_results else 20
+	)
+	_results_margin.add_theme_constant_override(
+		&"margin_bottom", 8 if dense_accessible_results else 18
+	)
+	if _results_podium != null:
+		_results_podium.call(
+			&"set_compact",
+			touch_mode or _text_scale > 1.20 or _hud_root.size.y < 640.0
+		)
 	if not _last_result.is_empty() and _last_academy_evaluation.is_empty():
-		_results_competition.visible = not touch_mode
+		_results_competition.visible = not touch_mode and _text_scale <= 1.35
 	var root_size := _hud_root.size
 	var panel_width := minf(1040.0, maxf(root_size.x - 32.0, 1.0))
 	var top_margin := 16.0 if touch_mode else 24.0
@@ -2098,7 +2440,8 @@ func _results_content_fits() -> bool:
 		return false
 	var panel_rect := _results_panel.get_global_rect().grow(1.0)
 	for control: Control in [
-		_results_title, _results_summary, _results_payoff_panel, _results_competition,
+		_results_title, _results_summary, _results_podium, _results_recap,
+		_results_payoff_panel, _results_competition,
 		_results_heading_label, _results_scroll, _results_stats, _results_footer,
 	]:
 		if control != null and control.visible and not panel_rect.encloses(control.get_global_rect()):
@@ -2118,7 +2461,7 @@ func _results_line_fit_snapshot() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
 	for label: Label in [
 		_results_title, _results_summary, _results_payout_label, _results_unlock_label,
-		_results_goal_label, _results_competition, _results_heading_label,
+		_results_goal_label, _results_recap, _results_competition, _results_heading_label,
 		_results_stats, _results_footer,
 	]:
 		if label == null:
@@ -2179,8 +2522,11 @@ func _update_academy_live_metrics(snapshot: Dictionary) -> void:
 	var academy_metrics_value: Variant = snapshot.get(&"academy_metrics", {})
 	if academy_metrics_value is Dictionary:
 		for raw_metric: Variant in (academy_metrics_value as Dictionary).keys():
-			_academy_live_metrics[raw_metric] = float(
-				(academy_metrics_value as Dictionary).get(raw_metric, 0.0)
+			var metric_value: Variant = (academy_metrics_value as Dictionary).get(raw_metric)
+			_academy_live_metrics[raw_metric] = (
+				float(metric_value)
+				if metric_value is int or metric_value is float
+				else metric_value
 			)
 	var transmission_value: Variant = snapshot.get(&"transmission", {})
 	if transmission_value is Dictionary:
@@ -2524,6 +2870,49 @@ func _results_stats_text(result: Dictionary) -> String:
 	return stats
 
 
+func _results_event_recap_text(result: Dictionary) -> String:
+	var event_id := StringName(result.get(&"event_id", _activity))
+	var contract: Dictionary = SPONSOR_CONTRACT_CATALOG.get_contract(
+		event_id, Profile.completed_contracts
+	)
+	var cosmetics := Profile.get_rider_cosmetics()
+	var sponsor_name := str(contract.get(&"sponsor_name", "INDEPENDENT")).to_upper()
+	var rank_title := str(contract.get(&"rank_title", "PROSPECT")).to_upper()
+	var rider_number := clampi(int(cosmetics.get(&"rider_number", 17)), 1, 999)
+	var jersey := str(cosmetics.get(&"jersey", "RACE KIT")).replace("_", " ").to_upper()
+	var team_line := "TEAM  //  %s %s  //  #%03d %s" % [
+		sponsor_name, rank_title, rider_number, jersey,
+	]
+	var rival_line := _result_rival_text(result)
+	var moment := _results_signature_moment(result)
+	return "%s\n%s  //  MOMENT  %s" % [team_line, rival_line, moment]
+
+
+func _results_signature_moment(result: Dictionary) -> String:
+	if not bool(result.get(&"valid", true)):
+		return str(result.get(&"validity_reason", "RUN UNCLASSIFIED")).replace("_", " ").to_upper()
+	var player_position := int(result.get(&"player_position", _find_player_position()))
+	var holeshot := StringName(result.get(&"holeshot_rider_id", _holeshot_rider_id)) == &"PLAYER"
+	var overtakes := maxi(int(result.get(&"overtakes", 0)), 0)
+	var contacts := maxi(int(result.get(&"contacts", 0)), 0)
+	var crashes := maxi(int(result.get(&"crashes", 0)), 0)
+	var off_course := maxi(int(result.get(&"off_course_count", 0)), 0)
+	if player_position == 1 and holeshot:
+		return "LIGHTS-TO-FLAG WIN"
+	if player_position == 1:
+		return "RACE WIN  //  %d OVERTAKE%s" % [overtakes, "" if overtakes == 1 else "S"]
+	if player_position <= 3:
+		return "PODIUM  //  %s" % (
+			"CLEAN RIDE" if contacts == 0 and crashes == 0 and off_course == 0
+			else "%d OVERTAKE%s" % [overtakes, "" if overtakes == 1 else "S"]
+		)
+	if crashes == 0 and off_course == 0:
+		return "CLEAN FINISH  //  %d OVERTAKE%s" % [overtakes, "" if overtakes == 1 else "S"]
+	if overtakes > 0:
+		return "%d OVERTAKE%s  //  KEPT FIGHTING" % [overtakes, "" if overtakes == 1 else "S"]
+	return "FINISH BANKED  //  REMATCH READY"
+
+
 func _refresh_results_payoff(result: Dictionary) -> void:
 	if _results_payoff_panel == null:
 		return
@@ -2662,7 +3051,22 @@ func _refresh_results_competition() -> void:
 		_results_competition.text = ""
 		_results_competition.visible = false
 		return
-	_results_competition.visible = InputRouter.input_mode != InputRouter.INPUT_MODE_TOUCH
+	_results_competition.visible = (
+		InputRouter.input_mode != InputRouter.INPUT_MODE_TOUCH
+		and _text_scale <= 1.35
+	)
+	if not _last_hotseat_result.is_empty():
+		var hotseat_snapshot := _last_hotseat_result.get("snapshot", {}) as Dictionary
+		if str(hotseat_snapshot.get(&"challenge_id", "")) == str(_last_result.get(&"challenge_id", "")):
+			_results_competition.text = _local_duel_results_text(hotseat_snapshot)
+			_queue_results_layout_refresh()
+			return
+	if not _last_custom_tour_result.is_empty():
+		var custom_tour_snapshot := _last_custom_tour_result.get("snapshot", {}) as Dictionary
+		if StringName(custom_tour_snapshot.get(&"last_result_event_id", &"")) == StringName(_last_result.get(&"event_id", &"")):
+			_results_competition.text = _custom_tour_results_text(custom_tour_snapshot)
+			_queue_results_layout_refresh()
+			return
 	var event_id := StringName(_last_result.get(&"event_id", _activity))
 	var challenge_id := StringName(_last_result.get(&"challenge_id", &""))
 	var board_eligible := RaceServices.is_leaderboard_result_eligible(_last_result)
@@ -2691,6 +3095,56 @@ func _refresh_results_competition() -> void:
 func _refresh_results_footer(next_event_name: String) -> void:
 	if _results_footer == null or not _last_academy_evaluation.is_empty():
 		return
+	if not _last_hotseat_result.is_empty():
+		var hotseat_snapshot := _last_hotseat_result.get("snapshot", {}) as Dictionary
+		if str(hotseat_snapshot.get(&"challenge_id", "")) == str(_last_result.get(&"challenge_id", "")):
+			if bool(hotseat_snapshot.get(&"active", false)):
+				var participant := hotseat_snapshot.get(&"current_participant", {}) as Dictionary
+				var rider_name := str(participant.get("display_name", "NEXT RIDER")).to_upper()
+				var handoff_line := "PASS CONTROLLER TO %s  //  ATTEMPT %d / %d" % [
+					rider_name,
+					int(hotseat_snapshot.get(&"current_attempt", 1)),
+					int(hotseat_snapshot.get(&"attempts_per_participant", 1)),
+				]
+				_results_footer.text = (
+					"%s\nUSE THE GARAGE BUTTON BELOW" % handoff_line
+					if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+					else "%s\n%s  GARAGE  //  THEN CONFIRM TO RIDE" % [
+						handoff_line, _active_action_label(InputRouter.OPEN_GARAGE),
+					]
+				)
+			else:
+				_results_footer.text = (
+					"LOCAL DUEL COMPLETE\nUSE THE RESULTS BUTTONS BELOW"
+					if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+					else "LOCAL DUEL COMPLETE     //     %s  GARAGE"
+					% _active_action_label(InputRouter.OPEN_GARAGE)
+				)
+			_queue_results_layout_refresh()
+			return
+	if not _last_custom_tour_result.is_empty():
+		var custom_tour_snapshot := _last_custom_tour_result.get("snapshot", {}) as Dictionary
+		if StringName(custom_tour_snapshot.get(&"last_result_event_id", &"")) == StringName(_last_result.get(&"event_id", &"")):
+			if bool(custom_tour_snapshot.get(&"active", false)):
+				_results_footer.text = (
+					"CUSTOM TOUR ROUND COMPLETE  //  NEXT %s\nUSE THE GARAGE BUTTON BELOW"
+					% str(custom_tour_snapshot.get(&"next_event_name", "ROUND")).to_upper()
+					if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+					else "CUSTOM TOUR ROUND COMPLETE  //  NEXT %s\n%s  GARAGE  //  THEN CONTINUE TOUR"
+					% [
+						str(custom_tour_snapshot.get(&"next_event_name", "ROUND")).to_upper(),
+						_active_action_label(InputRouter.OPEN_GARAGE),
+					]
+				)
+			else:
+				_results_footer.text = (
+					"CUSTOM TOUR COMPLETE\nUSE THE RESULTS BUTTONS BELOW"
+					if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH
+					else "CUSTOM TOUR COMPLETE     //     %s  GARAGE"
+					% _active_action_label(InputRouter.OPEN_GARAGE)
+				)
+			_queue_results_layout_refresh()
+			return
 	var next_text := "NEXT  %s" % next_event_name.to_upper() if not next_event_name.is_empty() else "NEXT  CHASE A CLEANER RESULT"
 	if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH:
 		_results_footer.text = "%s\n%s\nUSE THE RESULTS BUTTONS BELOW" % [
@@ -2708,6 +3162,62 @@ func _refresh_results_footer(next_event_name: String) -> void:
 		_active_action_label(InputRouter.OPEN_GARAGE),
 	]
 	_queue_results_layout_refresh()
+
+
+func _custom_tour_results_text(snapshot: Dictionary) -> String:
+	var standings_value: Variant = snapshot.get(&"standings", [])
+	var standings: Array = standings_value if standings_value is Array else []
+	var rows := PackedStringArray()
+	for raw_entry: Variant in standings.slice(0, mini(standings.size(), 4)):
+		if not raw_entry is Dictionary:
+			continue
+		var entry := raw_entry as Dictionary
+		rows.append("P%d  %s  //  %d PTS  //  %d STARTS" % [
+			int(entry.get(&"championship_position", rows.size() + 1)),
+			str(entry.get(&"display_name", "RIDER")).to_upper(),
+			int(entry.get(&"points", 0)),
+			int(entry.get(&"starts", 0)),
+		])
+	var heading := "CUSTOM TOUR  //  ROUND %d / %d COMPLETE" % [
+		int(snapshot.get(&"completed_rounds", 0)),
+		int(snapshot.get(&"round_count", 0)),
+	]
+	if bool(snapshot.get(&"completed", false)):
+		var champion := snapshot.get(&"champion", {}) as Dictionary
+		var champion_name := str(champion.get(&"display_name", "")).to_upper()
+		heading = (
+			"CUSTOM TOUR COMPLETE  //  %s CHAMPION" % champion_name
+			if not champion_name.is_empty()
+			else "CUSTOM TOUR COMPLETE"
+		)
+	if rows.is_empty():
+		return heading
+	return "%s\n%s" % [heading, "\n".join(rows)]
+
+
+func _local_duel_results_text(snapshot: Dictionary) -> String:
+	var standings_value: Variant = snapshot.get(&"standings", [])
+	var standings: Array = standings_value if standings_value is Array else []
+	var rows := PackedStringArray()
+	for raw_entry: Variant in standings:
+		if not raw_entry is Dictionary:
+			continue
+		var entry := raw_entry as Dictionary
+		var time_usec := int(entry.get(&"time_usec", -1))
+		rows.append(
+			"P%d  %s  //  %s  //  %d / %d RUNS"
+			% [
+				int(entry.get(&"position", rows.size() + 1)),
+				str(entry.get(&"display_name", "RIDER")).to_upper(),
+				_format_usec(int(entry.get(&"effective_time_usec", time_usec))) if time_usec > 0 else "NO TIME",
+				int(entry.get(&"attempts_completed", 0)),
+				int(snapshot.get(&"attempts_per_participant", 1)),
+			]
+		)
+	var heading := "LOCAL DUEL COMPLETE" if bool(snapshot.get(&"completed", false)) else "LOCAL DUEL  //  RIDER HANDOFF"
+	if rows.is_empty():
+		return heading
+	return "%s\n%s" % [heading, "\n".join(rows)]
 
 
 func _academy_results_footer_text(
@@ -2933,8 +3443,14 @@ func _on_countdown_changed(value: int) -> void:
 func _on_race_started() -> void:
 	_completion_message_prefix = ""
 	_last_result.clear()
+	if _results_podium != null:
+		_results_podium.call(&"clear")
+	if _results_recap != null:
+		_results_recap.text = ""
 	_last_career_payoff.clear()
 	_last_leaderboard_result.clear()
+	_last_hotseat_result.clear()
+	_last_custom_tour_result.clear()
 	_replay_summary.clear()
 	_replay_available = false
 	_replay_hid_results = false
@@ -3013,10 +3529,22 @@ func _on_race_reset() -> void:
 	_replay_hid_results = false
 	_completion_message_prefix = ""
 	_last_result.clear()
+	if _results_podium != null:
+		_results_podium.call(&"clear")
+	if _results_recap != null:
+		_results_recap.text = ""
 	_last_leaderboard_result.clear()
+	_last_hotseat_result.clear()
+	_last_custom_tour_result.clear()
 	_replay_summary.clear()
 	_replay_available = false
 	_clear_flow_denied_feedback()
+	update_landing_projection({
+		&"state": &"IDLE",
+		&"visible": false,
+		&"confidence_percent": 0,
+		&"text": "",
+	})
 	show_control_hints(CONTROL_HINT_STAGE_SECONDS)
 	hide_results()
 	_gate_launch_feedback_time = 0.0

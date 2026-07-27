@@ -36,7 +36,7 @@ func _run() -> void:
 	var profile: Variant = PLAYER_PROFILE_SCRIPT.new()
 	profile.persistence_enabled = false
 	profile.reset_profile_for_testing()
-	_check(profile.PROFILE_SCHEMA_VERSION == 7, "Profile schema was not advanced for individual assists")
+	_check(profile.PROFILE_SCHEMA_VERSION >= 7, "Profile schema was not advanced for individual assists")
 	_check(profile.set_assist_value(&"steering", 0.70), "Steering assist could not be customized")
 	_check(profile.set_assist_value(&"landing", 0.20), "Landing assist could not be customized")
 	_check(profile.assist_mode == &"CUSTOM", "Individual adjustment did not enter Custom mode")

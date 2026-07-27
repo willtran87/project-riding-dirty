@@ -6,6 +6,9 @@ const RECOVERY_TIPPED: StringName = &"AUTO_TIPPED"
 const RECOVERY_WORLD_FALL: StringName = &"AUTO_WORLD_FALL"
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
+const LANDING_PROJECTION := preload("res://features/race/landing_projection.gd")
+const GROUND_BALANCE_RULES := preload("res://features/race/ground_balance_rules.gd")
+const BIKE_CONDITION_FEEDBACK := preload("res://features/race/bike_condition_feedback.gd")
 const FREESTYLE_TRICK_RULES := preload("res://features/freestyle/freestyle_trick_rules.gd")
 const BIKE_TRANSMISSION_SCRIPT := preload("res://entities/bike/bike_transmission.gd")
 const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
@@ -44,6 +47,8 @@ const SURFACE_FRICTION: Dictionary[StringName, float] = {
 	&"LOOSE_DIRT": 0.88,
 	&"GRAVEL": 0.9,
 	&"MUD": 0.76,
+	&"SAND": 0.72,
+	&"GRASS": 0.91,
 	&"ROCK": 1.02,
 }
 const SURFACE_DRAG: Dictionary[StringName, float] = {
@@ -53,6 +58,8 @@ const SURFACE_DRAG: Dictionary[StringName, float] = {
 	&"LOOSE_DIRT": 1.18,
 	&"GRAVEL": 1.12,
 	&"MUD": 1.85,
+	&"SAND": 1.62,
+	&"GRASS": 1.14,
 	&"ROCK": 1.05,
 }
 const SURFACE_ROUGHNESS: Dictionary[StringName, float] = {
@@ -62,6 +69,8 @@ const SURFACE_ROUGHNESS: Dictionary[StringName, float] = {
 	&"LOOSE_DIRT": 0.65,
 	&"GRAVEL": 0.8,
 	&"MUD": 0.45,
+	&"SAND": 0.58,
+	&"GRASS": 0.52,
 	&"ROCK": 0.9,
 }
 const SURFACE_ROOST: Dictionary[StringName, float] = {
@@ -71,12 +80,24 @@ const SURFACE_ROOST: Dictionary[StringName, float] = {
 	&"LOOSE_DIRT": 1.35,
 	&"GRAVEL": 1.0,
 	&"MUD": 1.5,
+	&"SAND": 1.62,
+	&"GRASS": 0.42,
 	&"ROCK": 0.2,
 }
+const SURFACE_TYPES: Array[StringName] = [
+	&"PACKED", &"DIRT", &"LOAM", &"LOOSE_DIRT", &"GRAVEL", &"MUD", &"SAND",
+	&"GRASS", &"ROCK",
+]
+const SESSION_SURFACE_MODIFIERS: Array[StringName] = [
+	&"PACKED", &"WET", &"MUD", &"LOOSE", &"RUTTED", &"SAND", &"GRASS",
+]
 
 signal telemetry_updated(speed_mph: float, throttle: float, grounded: bool)
 signal landed(intensity: float)
 signal airtime_started()
+signal landing_projection_changed(snapshot: Dictionary)
+signal landing_projection_event(kind: StringName, snapshot: Dictionary)
+signal ground_balance_changed(snapshot: Dictionary)
 signal trick_landed(airtime: float, rotation_amount: float, landing_intensity: float, clean: bool)
 signal trick_resolved(observation: Dictionary)
 signal flow_changed(value: float, boosting: bool)
@@ -88,6 +109,7 @@ signal respawned()
 signal racecraft_state_changed(snapshot: Dictionary)
 signal racecraft_event(kind: StringName, payload: Dictionary)
 signal transmission_changed(snapshot: Dictionary)
+signal condition_changed(snapshot: Dictionary)
 ## Emitted before an automatic recovery. A race controller can synchronously
 ## respawn the bike at its authoritative legal rejoin; otherwise the bike falls
 ## back to its locally sampled safe transform.
@@ -241,6 +263,7 @@ var _trick_pose_snapshot: Dictionary = {
 var _base_engine_force: float = 1200.0
 var _base_lateral_grip: float = 620.0
 var _base_maximum_speed_mps: float = 30.0
+var _condition_percent: int = 100
 var _flow: float = 0.0
 var _boost_time: float = 0.0
 var _active_flow_mode: StringName = &"NONE"
@@ -249,6 +272,9 @@ var _flow_mode_time: float = 0.0
 var _compose_landing_charge: float = 0.0
 var _wheelie_time: float = 0.0
 var _wheelie_awarded: bool = false
+var _stoppie_time: float = 0.0
+var _stoppie_awarded: bool = false
+var _ground_balance_snapshot: Dictionary = GROUND_BALANCE_RULES.idle_snapshot()
 var _scrub_time: float = 0.0
 var _scrub_strength: float = 0.0
 var _takeoff_speed_mps: float = 0.0
@@ -297,6 +323,16 @@ var _landing_target_normal: Vector3 = Vector3.UP
 var _landing_target_distance: float = INF
 var _landing_alignment_weight: float = 0.0
 var _landing_query := PhysicsRayQueryParameters3D.create(Vector3.ZERO, Vector3.ZERO)
+var _landing_projection_snapshot: Dictionary = {
+	&"state": &"IDLE",
+	&"visible": false,
+	&"likely_safe": false,
+	&"confidence_percent": 0,
+	&"cue": "",
+	&"text": "LANDING COACH IDLE",
+}
+var _landing_warning_issued: bool = false
+var _landing_recovery_issued: bool = false
 var _tipped_recovery_time: float = 0.0
 var _brake_was_pressed: bool = false
 var _pack_contact_cooldown: float = 0.0
@@ -423,17 +459,21 @@ func _physics_process(delta: float) -> void:
 	if _grounded:
 		_landing_target_valid = false
 		_landing_alignment_weight = 0.0
+		_update_landing_projection()
 		_apply_ground_drive(throttle, brake, _steer_input, ground_lean, delta)
 		_apply_balance(_steer_input)
-		_update_wheelie(delta, get_speed_mps())
+		_update_ground_balance(delta, get_speed_mps())
 		_safe_sample_time += delta
 		if _safe_sample_time >= 0.65 and global_transform.basis.y.dot(Vector3.UP) > 0.45:
 			_update_safe_transform()
 			_safe_sample_time = 0.0
 	else:
+		_reset_ground_balance_motion()
 		if _was_grounded:
 			_airtime = 0.0
 			_air_rotation = 0.0
+			_landing_warning_issued = false
+			_landing_recovery_issued = false
 			_reset_freestyle_observation()
 			_freestyle_takeoff_valid = _freestyle_contact_observed
 			_air_brake_pop_used = false
@@ -444,6 +484,7 @@ func _physics_process(delta: float) -> void:
 		_air_rotation += angular_velocity.length() * delta
 		_update_freestyle_observation(air_steer, air_lean, delta)
 		_sample_landing_target()
+		_update_landing_projection()
 		_apply_air_control(air_steer)
 		_apply_air_brake_pop(brake_just_pressed)
 		_update_scrub(air_lean, delta)
@@ -542,6 +583,16 @@ func get_gate_staging_input_snapshot() -> Dictionary:
 	}
 
 
+func get_live_control_snapshot() -> Dictionary:
+	return {
+		&"enabled": controls_enabled and not _motion_locked,
+		&"throttle": _last_throttle,
+		&"brake": _last_brake,
+		&"steer": _steer_input,
+		&"lean": _last_lean,
+	}
+
+
 func apply_gate_launch_drive(multiplier: float, duration: float = GATE_LAUNCH_DEFAULT_DURATION) -> void:
 	_gate_launch_drive_multiplier = clampf(
 		multiplier,
@@ -588,6 +639,9 @@ func reset_to_safe_position(reason: StringName = &"AUTO_RECOVERY") -> void:
 	# Signal delivery is synchronous. If an active race handles the request it
 	# calls respawn_at(), advancing the generation and preventing a second local
 	# respawn. Freeride has no active handler and uses the forgiving local sample.
+	var wear_severity := 1.0 if reason == RECOVERY_WORLD_FALL else 0.82 if reason == RECOVERY_TIPPED else 0.58
+	if _visual != null and _visual.has_method(&"add_equipment_crash_wear"):
+		_visual.call(&"add_equipment_crash_wear", wear_severity, _active_surface)
 	var generation_before_request := _respawn_generation
 	automatic_recovery_requested.emit(reason)
 	if _respawn_generation == generation_before_request:
@@ -610,6 +664,9 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_reset_flow()
 	_wheelie_time = 0.0
 	_wheelie_awarded = false
+	_stoppie_time = 0.0
+	_stoppie_awarded = false
+	_set_ground_balance_snapshot(GROUND_BALANCE_RULES.idle_snapshot())
 	_scrub_time = 0.0
 	_scrub_strength = 0.0
 	_takeoff_speed_mps = 0.0
@@ -643,6 +700,12 @@ func respawn_at(spawn_transform: Transform3D) -> void:
 	_landing_target_normal = Vector3.UP
 	_landing_target_distance = INF
 	_landing_alignment_weight = 0.0
+	_landing_projection_snapshot = LANDING_PROJECTION.evaluate({
+		&"grounded": true,
+		&"airborne_seconds": 0.0,
+	})
+	_landing_warning_issued = false
+	_landing_recovery_issued = false
 	_tipped_recovery_time = 0.0
 	_brake_was_pressed = false
 	_pack_contact_cooldown = 0.0
@@ -905,6 +968,14 @@ func get_landing_target_normal() -> Vector3:
 	return _landing_target_normal if _landing_target_valid else Vector3.UP
 
 
+func get_landing_projection_snapshot() -> Dictionary:
+	return _landing_projection_snapshot.duplicate(true)
+
+
+func get_ground_balance_snapshot() -> Dictionary:
+	return _ground_balance_snapshot.duplicate(true)
+
+
 func get_contact_feedback() -> Dictionary:
 	return {
 		&"surface": _active_surface,
@@ -1038,12 +1109,18 @@ func apply_setup(setup: StringName) -> void:
 
 
 func apply_condition(condition: int) -> void:
-	var condition_ratio := clampf(float(condition) / 100.0, 0.0, 1.0)
+	_condition_percent = clampi(condition, 0, 100)
+	var condition_ratio := float(_condition_percent) / 100.0
 	# Wear still matters, but it must not make a saved player bike dramatically
 	# slower than the non-physical race pack.
 	engine_force = _base_engine_force * lerpf(0.94, 1.0, condition_ratio)
 	lateral_grip = _base_lateral_grip * lerpf(0.96, 1.0, condition_ratio)
 	maximum_speed_mps = _base_maximum_speed_mps * lerpf(0.97, 1.0, condition_ratio)
+	condition_changed.emit(get_condition_snapshot())
+
+
+func get_condition_snapshot() -> Dictionary:
+	return BIKE_CONDITION_FEEDBACK.build(_condition_percent)
 
 
 func apply_racing_build(build_snapshot: Dictionary) -> void:
@@ -1116,13 +1193,113 @@ func apply_equalized_race_class(class_id: StringName) -> void:
 
 
 func apply_session_surface(surface: StringName) -> void:
-	match surface:
-		&"WET", &"MUD":
-			_session_grip_multiplier = 0.82
-		&"LOOSE", &"LOOSE_DIRT", &"RUTTED":
-			_session_grip_multiplier = 0.92
+	_session_grip_multiplier = session_surface_grip_multiplier(surface)
+
+
+static func get_surface_types() -> Array[StringName]:
+	return SURFACE_TYPES.duplicate()
+
+
+static func get_session_surface_modifiers() -> Array[StringName]:
+	return SESSION_SURFACE_MODIFIERS.duplicate()
+
+
+static func canonical_surface(value: Variant) -> StringName:
+	var key := String(value).strip_edges().to_upper().replace(" ", "_").replace("-", "_")
+	match key:
+		"PACKED", "HARDPACK", "HARD_PACK":
+			return &"PACKED"
+		"DIRT":
+			return &"DIRT"
+		"LOAM":
+			return &"LOAM"
+		"MUD", "WET_MUD":
+			return &"MUD"
+		"SAND", "DUNE", "DUNES":
+			return &"SAND"
+		"GRASS", "TURF", "MEADOW":
+			return &"GRASS"
+		"GRAVEL", "PEBBLES":
+			return &"GRAVEL"
+		"ROCK", "STONE":
+			return &"ROCK"
+		"LOOSE", "LOOSE_DIRT":
+			return &"LOOSE_DIRT"
 		_:
-			_session_grip_multiplier = 1.0
+			return &"PACKED"
+
+
+static func surface_profile(surface: Variant) -> Dictionary:
+	var canonical := canonical_surface(surface)
+	return {
+		&"surface": canonical,
+		&"friction": surface_friction(canonical),
+		&"drag": surface_drag(canonical),
+		&"roughness": surface_roughness(canonical),
+		&"roost": surface_roost(canonical),
+	}
+
+
+static func surface_friction(surface: Variant) -> float:
+	var direct := StringName(surface)
+	if SURFACE_FRICTION.has(direct):
+		return float(SURFACE_FRICTION[direct])
+	return float(SURFACE_FRICTION.get(canonical_surface(surface), 1.0))
+
+
+static func surface_drag(surface: Variant) -> float:
+	var direct := StringName(surface)
+	if SURFACE_DRAG.has(direct):
+		return float(SURFACE_DRAG[direct])
+	return float(SURFACE_DRAG.get(canonical_surface(surface), 1.0))
+
+
+static func surface_roughness(surface: Variant) -> float:
+	var direct := StringName(surface)
+	if SURFACE_ROUGHNESS.has(direct):
+		return float(SURFACE_ROUGHNESS[direct])
+	return float(SURFACE_ROUGHNESS.get(canonical_surface(surface), 0.35))
+
+
+static func surface_roost(surface: Variant) -> float:
+	var direct := StringName(surface)
+	if SURFACE_ROOST.has(direct):
+		return float(SURFACE_ROOST[direct])
+	return float(SURFACE_ROOST.get(canonical_surface(surface), 0.8))
+
+
+static func session_surface_grip_multiplier(surface: Variant) -> float:
+	var key := StringName(String(surface).strip_edges().to_upper().replace(" ", "_").replace("-", "_"))
+	if key in [&"WET", &"MUD"]:
+		return 0.82
+	if key == &"SAND":
+		return 0.86
+	if key in [&"LOOSE", &"LOOSE_DIRT", &"RUTTED"]:
+		return 0.92
+	if key == &"GRASS":
+		return 0.94
+	return 1.0
+
+
+func apply_session_weather(weather: StringName) -> void:
+	if _visual != null and _visual.has_method(&"configure_equipment_weather"):
+		_visual.call(&"configure_equipment_weather", weather)
+
+
+func reset_equipment_wear() -> void:
+	if _visual != null and _visual.has_method(&"reset_equipment_wear"):
+		_visual.call(&"reset_equipment_wear")
+
+
+func add_equipment_crash_wear(severity: float, surface: StringName = &"PACKED") -> void:
+	if _visual != null and _visual.has_method(&"add_equipment_crash_wear"):
+		_visual.call(&"add_equipment_crash_wear", severity, surface)
+
+
+func get_equipment_wear_snapshot() -> Dictionary:
+	if _visual != null and _visual.has_method(&"get_equipment_wear_snapshot"):
+		return _visual.call(&"get_equipment_wear_snapshot") as Dictionary
+	return {}
 
 
 func apply_run_modifier(modifier: StringName) -> void:
@@ -1145,6 +1322,18 @@ func apply_cosmetic_tier(tier: int) -> void:
 func apply_rider_cosmetics(cosmetics: Dictionary) -> void:
 	if _visual != null and _visual.has_method(&"apply_rider_cosmetics"):
 		_visual.call(&"apply_rider_cosmetics", cosmetics)
+
+
+func get_rider_cosmetics_snapshot() -> Dictionary:
+	if _visual != null and _visual.has_method(&"get_rider_cosmetics_snapshot"):
+		return _visual.call(&"get_rider_cosmetics_snapshot") as Dictionary
+	return {}
+
+
+func get_rider_equipment_presentation_snapshot() -> Dictionary:
+	if _visual != null and _visual.has_method(&"get_rider_equipment_presentation_snapshot"):
+		return _visual.call(&"get_rider_equipment_presentation_snapshot") as Dictionary
+	return {}
 
 
 func apply_assist_mode(mode: StringName) -> void:
@@ -1191,6 +1380,21 @@ func set_surface(surface: StringName) -> void:
 	_legacy_surface = canonical
 	if not _front_contact.colliding and not _rear_contact.colliding:
 		_set_active_surface(_legacy_surface, _surface_roughness(_legacy_surface))
+
+
+func set_training_surface_override(surface: StringName) -> void:
+	_surface_override = _canonical_surface(surface)
+	_set_active_surface(_surface_override, _surface_roughness(_surface_override))
+
+
+func clear_training_surface_override() -> void:
+	_surface_override = &""
+	if not _front_contact.colliding and not _rear_contact.colliding:
+		_set_active_surface(_legacy_surface, _surface_roughness(_legacy_surface))
+
+
+func get_training_surface_override() -> StringName:
+	return _surface_override
 
 
 func _update_steering_input(raw_steer: float, delta: float) -> void:
@@ -1394,11 +1598,17 @@ func _apply_ground_drive(throttle: float, brake: float, steer: float, lean: floa
 			# to real contact slip and preserves the configured brake bias.
 			var front_release := smoothstep(0.48, 0.94, _front_contact.slip) * _braking_assist * 0.32
 			var rear_release := smoothstep(0.52, 0.96, _rear_contact.slip) * _braking_assist * 0.24
+			var live_front_brake_bias := GROUND_BALANCE_RULES.front_brake_bias(
+				front_brake_bias,
+				brake,
+				lean,
+				planar_speed
+			)
 			front_longitudinal_request = (
-				-brake_force * brake * front_brake_bias * (1.0 - front_release)
+				-brake_force * brake * live_front_brake_bias * (1.0 - front_release)
 			)
 			rear_longitudinal_request -= (
-				brake_force * brake * (1.0 - front_brake_bias) * (1.0 - rear_release)
+				brake_force * brake * (1.0 - live_front_brake_bias) * (1.0 - rear_release)
 			)
 		elif _rear_contact.longitudinal_speed > -3.5:
 			rear_longitudinal_request -= reverse_force * brake
@@ -1611,6 +1821,8 @@ func _surface_from_ray(ray: RayCast3D) -> StringName:
 		return _legacy_surface
 	for group_surface: Array in [
 		[&"surface_mud", &"MUD"],
+		[&"surface_sand", &"SAND"],
+		[&"surface_grass", &"GRASS"],
 		[&"surface_gravel", &"GRAVEL"],
 		[&"surface_rock", &"ROCK"],
 		[&"surface_loose_dirt", &"LOOSE_DIRT"],
@@ -1641,40 +1853,23 @@ func _metadata_float_from_ray(
 
 
 func _canonical_surface(value: Variant) -> StringName:
-	var key := String(value).strip_edges().to_upper().replace(" ", "_").replace("-", "_")
-	match key:
-		"PACKED", "HARDPACK", "HARD_PACK":
-			return &"PACKED"
-		"DIRT":
-			return &"DIRT"
-		"LOAM":
-			return &"LOAM"
-		"MUD", "WET_MUD":
-			return &"MUD"
-		"GRAVEL", "PEBBLES":
-			return &"GRAVEL"
-		"ROCK", "STONE":
-			return &"ROCK"
-		"LOOSE", "LOOSE_DIRT", "SAND":
-			return &"LOOSE_DIRT"
-		_:
-			return &"PACKED"
+	return canonical_surface(value)
 
 
 func _surface_friction(surface: StringName) -> float:
-	return SURFACE_FRICTION.get(surface, 1.0)
+	return surface_friction(surface)
 
 
 func _surface_drag(surface: StringName) -> float:
-	return SURFACE_DRAG.get(surface, 1.0)
+	return surface_drag(surface)
 
 
 func _surface_roughness(surface: StringName) -> float:
-	return SURFACE_ROUGHNESS.get(surface, 0.35)
+	return surface_roughness(surface)
 
 
 func _surface_roost(surface: StringName) -> float:
-	return SURFACE_ROOST.get(surface, 0.8)
+	return surface_roost(surface)
 
 
 func _update_active_surface() -> void:
@@ -1898,6 +2093,7 @@ func _update_telemetry(delta: float, speed_mps: float, throttle: float) -> void:
 	_telemetry_time += delta
 	if _telemetry_time >= 0.08:
 		telemetry_updated.emit(speed_mps * 2.236936, throttle, _grounded)
+		landing_projection_changed.emit(_landing_projection_snapshot.duplicate(true))
 		_telemetry_time = 0.0
 
 
@@ -2372,15 +2568,78 @@ func _reset_flow() -> void:
 		flow_changed.emit(_flow, false)
 
 
-func _update_wheelie(delta: float, speed_mps: float) -> void:
-	if _rear_ray.is_colliding() and not _front_ray.is_colliding() and speed_mps > 5.0:
+func _update_ground_balance(delta: float, speed_mps: float) -> void:
+	var front_contact := _front_contact.colliding
+	var rear_contact := _rear_contact.colliding
+	if rear_contact and not front_contact and speed_mps >= GROUND_BALANCE_RULES.MINIMUM_WHEELIE_SPEED_MPS:
 		_wheelie_time += delta
-		if _wheelie_time >= 0.8 and not _wheelie_awarded:
+		if _wheelie_time >= GROUND_BALANCE_RULES.WHEELIE_AWARD_SECONDS and not _wheelie_awarded:
 			_wheelie_awarded = true
+			_add_flow(4.0)
+			_emit_racecraft_event(&"WHEELIE", {
+				&"seconds": _wheelie_time,
+				&"speed_mps": speed_mps,
+			})
 			style_event.emit(&"WHEELIE", 220)
-	elif _front_ray.is_colliding():
+			_play_haptic(0.16, 0.32, 0.14, &"WHEELIE")
+	elif front_contact:
 		_wheelie_time = 0.0
 		_wheelie_awarded = false
+	if (
+		front_contact
+		and not rear_contact
+		and speed_mps >= GROUND_BALANCE_RULES.MINIMUM_STOPPIE_SPEED_MPS
+		and _last_brake >= 0.40
+	):
+		_stoppie_time += delta
+		if _stoppie_time >= GROUND_BALANCE_RULES.STOPPIE_AWARD_SECONDS and not _stoppie_awarded:
+			_stoppie_awarded = true
+			_add_flow(5.0)
+			_emit_racecraft_event(&"STOPPIE", {
+				&"seconds": _stoppie_time,
+				&"speed_mps": speed_mps,
+			})
+			style_event.emit(&"STOPPIE", 260)
+			_play_haptic(0.12, 0.38, 0.16, &"STOPPIE")
+	elif rear_contact:
+		_stoppie_time = 0.0
+		_stoppie_awarded = false
+	var pitch_degrees := rad_to_deg(asin(clampf(
+		(-global_transform.basis.z).normalized().y,
+		-1.0,
+		1.0
+	)))
+	_set_ground_balance_snapshot(GROUND_BALANCE_RULES.evaluate({
+		&"front_contact": front_contact,
+		&"rear_contact": rear_contact,
+		&"speed_mps": speed_mps,
+		&"brake": _last_brake,
+		&"lean": _last_lean,
+		&"pitch_degrees": pitch_degrees,
+		&"wheelie_seconds": _wheelie_time,
+		&"stoppie_seconds": _stoppie_time,
+	}))
+
+
+func _reset_ground_balance_motion() -> void:
+	_wheelie_time = 0.0
+	_wheelie_awarded = false
+	_stoppie_time = 0.0
+	_stoppie_awarded = false
+	_set_ground_balance_snapshot(GROUND_BALANCE_RULES.idle_snapshot())
+
+
+func _set_ground_balance_snapshot(snapshot: Dictionary) -> void:
+	var next_state := StringName(snapshot.get(&"state", &"IDLE"))
+	var current_state := StringName(_ground_balance_snapshot.get(&"state", &"IDLE"))
+	var next_percent := roundi(float(snapshot.get(&"progress", 0.0)) * 100.0)
+	var current_percent := roundi(float(_ground_balance_snapshot.get(&"progress", 0.0)) * 100.0)
+	var next_cue := str(snapshot.get(&"cue", ""))
+	var current_cue := str(_ground_balance_snapshot.get(&"cue", ""))
+	if next_state == current_state and next_percent == current_percent and next_cue == current_cue:
+		return
+	_ground_balance_snapshot = snapshot.duplicate(true)
+	ground_balance_changed.emit(_ground_balance_snapshot.duplicate(true))
 
 
 func _apply_balance(steer: float) -> void:
@@ -2503,6 +2762,83 @@ func _sample_landing_target() -> void:
 	_landing_target_valid = true
 	_landing_target_normal = hit_normal
 	_landing_target_distance = origin.distance_to(result.get(&"position", destination))
+
+
+func _update_landing_projection() -> void:
+	var target_normal := (
+		_landing_target_normal.normalized()
+		if _landing_target_valid and _landing_target_normal.length_squared() > 0.2
+		else Vector3.UP
+	)
+	var current_forward := -global_transform.basis.z.normalized()
+	var current_up := global_transform.basis.y.normalized()
+	var target_forward := linear_velocity.slide(target_normal)
+	if target_forward.length_squared() < 0.1:
+		target_forward = current_forward.slide(target_normal)
+	if target_forward.length_squared() < 0.1:
+		target_forward = Vector3.FORWARD.slide(target_normal)
+	target_forward = target_forward.normalized()
+	var current_surface_forward := current_forward.slide(target_normal)
+	if current_surface_forward.length_squared() < 0.1:
+		current_surface_forward = target_forward
+	else:
+		current_surface_forward = current_surface_forward.normalized()
+	var pitch_axis := global_transform.basis.x.normalized()
+	var pitch_error_degrees := rad_to_deg(
+		current_forward.signed_angle_to(target_forward, pitch_axis)
+	)
+	var roll_error_degrees := rad_to_deg(
+		current_up.signed_angle_to(target_normal, target_forward)
+	)
+	var pose_id := StringName(_trick_pose_snapshot.get(&"pose_id", &"NONE"))
+	var safe_return := (
+		_trick_modifier_time <= 0.0
+		or (
+			pose_id == &"NONE"
+			and _trick_safe_return_time >= FREESTYLE_TRICK_RULES.SAFE_RETURN_SECONDS
+		)
+	)
+	var previous_state := StringName(_landing_projection_snapshot.get(&"state", &"IDLE"))
+	_landing_projection_snapshot = LANDING_PROJECTION.evaluate({
+		&"grounded": _grounded,
+		&"airborne_seconds": _airtime,
+		&"target_valid": _landing_target_valid,
+		&"target_distance_m": (
+			_landing_target_distance if _landing_target_valid else 0.0
+		),
+		&"orientation_alignment": current_up.dot(target_normal),
+		&"travel_alignment": current_surface_forward.dot(target_forward),
+		&"pitch_error_degrees": pitch_error_degrees,
+		&"roll_error_degrees": roll_error_degrees,
+		&"impact_speed_mps": maxf(-linear_velocity.dot(target_normal), 0.0),
+		&"angular_speed_rps": angular_velocity.length(),
+		&"safe_return": safe_return,
+	})
+	var state := StringName(_landing_projection_snapshot.get(&"state", &"IDLE"))
+	var eta_seconds := float(_landing_projection_snapshot.get(&"eta_seconds", INF))
+	if (
+		state == LANDING_PROJECTION.STATE_DANGER
+		and previous_state != LANDING_PROJECTION.STATE_DANGER
+		and eta_seconds <= 1.2
+		and not _landing_warning_issued
+	):
+		_landing_warning_issued = true
+		landing_projection_event.emit(&"DANGER", _landing_projection_snapshot.duplicate(true))
+		if controls_enabled:
+			_priority_haptic_time = maxf(_priority_haptic_time, 0.16)
+			_play_haptic(0.12, 0.18, 0.10, &"LANDING_DANGER")
+	elif (
+		state == LANDING_PROJECTION.STATE_SET
+		and previous_state in [
+			LANDING_PROJECTION.STATE_ADJUST,
+			LANDING_PROJECTION.STATE_DANGER,
+		]
+		and eta_seconds <= 1.4
+		and _landing_warning_issued
+		and not _landing_recovery_issued
+	):
+		_landing_recovery_issued = true
+		landing_projection_event.emit(&"RECOVERED", _landing_projection_snapshot.duplicate(true))
 
 
 func _apply_landing_alignment(steer: float) -> void:

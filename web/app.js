@@ -18,6 +18,67 @@
   let startupTimer = null;
   let startAttempt = 0;
 
+  const wrapperTextState = () => JSON.stringify({
+    schema_version: 1,
+    coordinate_system: {
+      units: 'meters',
+      origin: 'active track world origin',
+      axes: '+x right/east, +y up, -z forward at identity',
+    },
+    mode: engineSettled ? 'GARAGE' : (gameRequested ? 'LOADING' : 'START'),
+    activity: '',
+    paused: false,
+    transitioning: gameRequested && !engineSettled,
+    player: null,
+    race: null,
+    visible_riders: [],
+    coaching: {
+      message: runtimeStatus.textContent,
+      racecraft: '',
+      controls: 'START THE TOUR',
+      landing: { visible: false, state: '', text: '', progress: 0 },
+      balance: { visible: false, state: '', text: '', progress: 0 },
+    },
+  });
+
+  window.render_game_to_text = () => {
+    try {
+      const innerWindow = frame.contentWindow;
+      if (innerWindow && typeof innerWindow.render_game_to_text === 'function') {
+        return innerWindow.render_game_to_text();
+      }
+    } catch (error) {
+      // Same-origin production embeds are expected. Retain a useful wrapper
+      // state if a restrictive preview host temporarily blocks frame access.
+    }
+    return wrapperTextState();
+  };
+
+  if (typeof window.advanceTime !== 'function') {
+    window.advanceTime = (milliseconds) => {
+      try {
+        const innerWindow = frame.contentWindow;
+        if (innerWindow && typeof innerWindow.advanceTime === 'function') {
+          return Promise.resolve(innerWindow.advanceTime(milliseconds));
+        }
+      } catch (error) {
+        // Fall through to a requestAnimationFrame clock on restrictive hosts.
+      }
+      const duration = Math.max(0, Number(milliseconds) || 0);
+      return new Promise((resolve) => {
+        const start = performance.now();
+        const waitFrame = (now) => {
+          if (now - start >= duration) {
+            resolve();
+            return;
+          }
+          window.requestAnimationFrame(waitFrame);
+        };
+        window.requestAnimationFrame(waitFrame);
+      });
+    };
+  }
+
   const clearStartupTimer = () => {
     if (startupTimer !== null) {
       window.clearTimeout(startupTimer);

@@ -180,6 +180,9 @@ func _run() -> void:
 		{&"name": &"points", &"type": TYPE_INT},
 		{&"name": &"positive", &"type": TYPE_BOOL},
 	])
+	fake_race.add_user_signal(&"integrity_updated", [
+		{&"name": &"snapshot", &"type": TYPE_DICTIONARY},
+	])
 	race_root.add_child(fake_race)
 	audio.call(&"_connect_race_snapshot_source", fake_bike)
 	audio.set("_last_commentary_feedback_usec", -1_000_000)
@@ -197,6 +200,25 @@ func _run() -> void:
 		_expect(bool(commentary_ready.get(required_kind, false)), "Commentary cue was not built for %s" % String(required_kind))
 	for required_kind: StringName in [&"CHEER", &"ROAR", &"GASP"]:
 		_expect(bool(crowd_ready.get(required_kind, false)), "Crowd cue was not built for %s" % String(required_kind))
+	audio.set("_last_commentary_feedback_usec", -1_000_000)
+	fake_race.emit_signal(&"integrity_updated", {&"warning": &"WRONG_WAY"})
+	fake_race.emit_signal(&"integrity_updated", {&"warning": &"WRONG_WAY"})
+	var integrity_warning_snapshot := audio.get_competition_feedback_snapshot()
+	_expect(
+		int(integrity_warning_snapshot.get(&"integrity_transition_count", 0)) == 1
+			and StringName(integrity_warning_snapshot.get(&"last_integrity_warning", &"")) == &"WRONG_WAY"
+			and str(integrity_warning_snapshot.get(&"last_commentary_context", "")).contains("TURN AROUND"),
+		"Wrong-way integrity did not produce one exact, de-duplicated audio warning"
+	)
+	audio.set("_last_commentary_feedback_usec", -1_000_000)
+	fake_race.emit_signal(&"integrity_updated", {&"warning": &"CLEAR"})
+	var integrity_clear_snapshot := audio.get_competition_feedback_snapshot()
+	_expect(
+		int(integrity_clear_snapshot.get(&"integrity_transition_count", 0)) == 2
+			and StringName(integrity_clear_snapshot.get(&"last_integrity_warning", &"INVALID")) == &""
+			and str(integrity_clear_snapshot.get(&"last_commentary_context", "")) == "COURSE CLEAR",
+		"Integrity recovery did not produce one semantic course-clear receipt"
+	)
 	var denial_payload := {&"technique": &"SURGE", &"required": 35.0, &"available": 0.0}
 	audio.call(&"_on_bike_racecraft_event", &"FLOW_DENIED", denial_payload)
 	_expect(pooled_voice.bus == &"SFX", "A pooled gameplay cue inherited a prior semantic bus")
