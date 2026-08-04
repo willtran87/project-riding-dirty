@@ -557,6 +557,9 @@ func get_session_snapshot() -> Dictionary:
 		&"competition_id": StringName(_session_config.rules.get(&"competition_id", &"")),
 		&"challenge_kind": StringName(_session_config.rules.get(&"challenge_kind", &"")),
 		&"competitive_signature": _competitive_signature_cache,
+		&"crash_support_mode": StringName(
+			_session_config.rules.get(&"crash_support_mode", &"STANDARD")
+		),
 		&"track_id": _track_id,
 		&"route_version": _session_config.route_version,
 		&"reverse_route": _session_config.reverse_route,
@@ -599,6 +602,22 @@ func get_session_snapshot() -> Dictionary:
 		&"player_metrics": _player_race_metrics.get_snapshot(),
 		&"gate_launch": get_gate_launch_snapshot(),
 		&"racecraft": bike.get_racecraft_snapshot() if bike != null else {},
+		&"ghost_runtime": (
+			ghost.get_runtime_budget_snapshot()
+			if is_instance_valid(ghost)
+			else {
+				&"active": false,
+				&"recording_frames": 0,
+				&"best_frames": 0,
+				&"maximum_frames": GhostController.MAX_RECORDING_FRAMES,
+				&"effective_interval_seconds": GhostController.SAMPLE_INTERVAL,
+				&"decimations": 0,
+				&"elapsed_seconds": 0.0,
+				&"recording_span_seconds": 0.0,
+				&"best_span_seconds": 0.0,
+				&"bounded": true,
+			}
+		),
 		&"track_evolution": get_track_evolution_snapshot(),
 		&"transmission": bike.get_transmission_snapshot() if bike != null else {},
 		&"academy_metrics": _academy_live_metrics_snapshot(),
@@ -1236,6 +1255,7 @@ func _build_competitive_signature() -> String:
 			if bike != null else &"AUTOMATIC"
 		),
 		"control_signature": InputRouter.get_control_response_signature(),
+		"crash_support_mode": competitive_rules.get(&"crash_support_mode", &"STANDARD"),
 		"setup_id": competitive_rules.get(&"competitive_setup_id", Profile.current_setup),
 		"tune_signature": build_signature,
 		"weather": _session_config.weather,

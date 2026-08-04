@@ -16,6 +16,7 @@ signal custom_tour_state_changed(snapshot: Dictionary)
 
 const BIKE_VISUAL_SCRIPT = preload("res://entities/bike/bike_visual.gd")
 const AUDIO_CAPTION_FEED_SCRIPT = preload("res://features/accessibility/audio_caption_feed.gd")
+const CRASH_SUPPORT_POLICY := preload("res://features/race/crash_support_policy.gd")
 const SETTINGS_PAGE_IDS: Array[StringName] = [&"AUDIO", &"RIDE", &"ASSISTS", &"GRAPHICS", &"CAMERA", &"ACCESS", &"INPUT"]
 const RIDING_ASSIST_CONFIG := preload("res://common/riding_assist_config.gd")
 const VISUAL_QUALITY_PRESETS: Dictionary = {
@@ -136,6 +137,7 @@ var _riding_camera_active := true
 var _activity_transmission_override: StringName = &""
 var _activity_transmission_forced: bool = false
 var _activity_control_response_override: Dictionary = {}
+var _activity_crash_support_override: StringName = &""
 
 
 func _ready() -> void:
@@ -470,6 +472,40 @@ func _apply_effective_transmission() -> void:
 		&"touch_controls", &"configure_touch_controls",
 		_effective_touch_control_values()
 	)
+
+
+func get_preferred_crash_support_mode() -> StringName:
+	return CRASH_SUPPORT_POLICY.normalize(
+		settings.get_value(&"gameplay", &"crash_support_mode", &"STANDARD")
+	)
+
+
+func get_effective_crash_support_mode() -> StringName:
+	return (
+		_activity_crash_support_override
+		if not _activity_crash_support_override.is_empty()
+		else get_preferred_crash_support_mode()
+	)
+
+
+func has_activity_crash_support_override() -> bool:
+	return not _activity_crash_support_override.is_empty()
+
+
+func set_activity_crash_support_override(requested_mode: Variant) -> bool:
+	_activity_crash_support_override = CRASH_SUPPORT_POLICY.normalize(requested_mode)
+	_apply_effective_crash_support()
+	return true
+
+
+func clear_activity_crash_support_override() -> void:
+	_activity_crash_support_override = &""
+	_apply_effective_crash_support()
+
+
+func _apply_effective_crash_support() -> void:
+	if bike != null and bike.has_method(&"configure_crash_support"):
+		bike.call(&"configure_crash_support", get_effective_crash_support_mode())
 
 
 func get_preferred_control_response() -> Dictionary:
@@ -1236,6 +1272,8 @@ func _apply_settings(changed_binding_actions: Array[StringName] = []) -> void:
 		bike.call(&"configure_feedback", settings.values.get("feedback", {}) as Dictionary)
 	if bike != null and bike.has_method(&"configure_transmission"):
 		bike.call(&"configure_transmission", get_effective_transmission_mode())
+	if bike != null and bike.has_method(&"configure_crash_support"):
+		bike.call(&"configure_crash_support", get_effective_crash_support_mode())
 	if hud != null and hud.has_method(&"apply_accessibility"):
 		hud.call(&"apply_accessibility", interface)
 	if is_instance_valid(_audio_caption_feed):
@@ -1789,6 +1827,16 @@ func _adjust_setting(direction: int) -> void:
 				if is_activity_transmission_forced()
 				else "TRANSMISSION SAVED  //  APPLIES NEXT EVENT"
 			)
+		elif (
+			section == &"gameplay"
+			and key == &"crash_support_mode"
+			and has_activity_crash_support_override()
+		):
+			_settings_message = (
+				"CRASH SUPPORT: ASSISTED  //  LESS DAMAGE + FASTER TIP RECOVERY  //  APPLIES NEXT EVENT"
+				if get_preferred_crash_support_mode() == CRASH_SUPPORT_POLICY.ASSISTED
+				else "CRASH SUPPORT: STANDARD  //  STANDARD DAMAGE + RECOVERY  //  APPLIES NEXT EVENT"
+			)
 		else:
 			_settings_message = "%s UPDATED" % str(item.get(&"label", "SETTING"))
 		settings.save_to_disk()
@@ -1999,6 +2047,7 @@ func _settings_items_for_page(page_id: StringName) -> Array[Dictionary]:
 			])
 		&"ACCESS":
 			items.assign([
+				_enum_item("CRASH SUPPORT", &"gameplay", &"crash_support_mode", SettingsStore.CRASH_SUPPORT_MODES),
 				_value_item("TEXT SCALE", &"interface", &"text_scale", &"PERCENT", 0.05, 1.0),
 				_enum_item("HUD DETAIL", &"interface", &"hud_detail", SettingsStore.HUD_DETAIL_MODES),
 				_value_item("HUD SIZE", &"interface", &"hud_scale", &"PERCENT", 0.05, 1.0),
@@ -2262,9 +2311,16 @@ func _reset_selected_setting() -> void:
 			_settings_message = (
 				"%s RESTORED  //  APPLIES NEXT EVENT" % str(item.get(&"label", "SETTING"))
 				if (
-					section == &"controls"
-					and key in InputRouter.CONTROL_RESPONSE_KEYS
-					and has_activity_control_response_override()
+					(
+						section == &"controls"
+						and key in InputRouter.CONTROL_RESPONSE_KEYS
+						and has_activity_control_response_override()
+					)
+					or (
+						section == &"gameplay"
+						and key == &"crash_support_mode"
+						and has_activity_crash_support_override()
+					)
 				)
 				else "%s RESTORED" % str(item.get(&"label", "SETTING"))
 			)

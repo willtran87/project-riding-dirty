@@ -3,6 +3,7 @@ extends Node
 
 const PACK_COMPETITIVE_SPEED_DELTA_MPS := 2.0
 const PACK_DIFFICULTY_SPEED_ALLOWANCE_MPS := 0.45
+const PACK_FIXED_STEP_EPSILON_MPS := 0.05
 
 var _bike: DirtBikeController
 var _camera: ChaseCamera
@@ -278,13 +279,18 @@ func _run_circuit() -> void:
 		)
 		if leader_drag < 0.0:
 			leader_drag_allowance = absf(leader_drag) * 1.08
-	var pack_slower_limit := PACK_COMPETITIVE_SPEED_DELTA_MPS + leader_drag_allowance
+	var pack_slower_limit := (
+		PACK_COMPETITIVE_SPEED_DELTA_MPS
+		+ leader_drag_allowance
+		+ PACK_FIXED_STEP_EPSILON_MPS
+	)
 	# A championship-tier field should be able to outrun a neutral, no-Flow
 	# opening stint. Preserve the original starter-event ceiling and add a small,
 	# explicit allowance for each authored tier above the opening race.
 	var pack_faster_limit := (
 		PACK_COMPETITIVE_SPEED_DELTA_MPS
 		+ float(maxi(session.difficulty - 1, 0)) * PACK_DIFFICULTY_SPEED_ALLOWANCE_MPS
+		+ PACK_FIXED_STEP_EPSILON_MPS
 	)
 	var field_position := int(pace_snapshot.get(&"field_position", 0))
 	var field_size := int(pace_snapshot.get(&"field_size", 0))

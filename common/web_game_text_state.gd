@@ -120,6 +120,7 @@ static func _results_projection(source: Dictionary) -> Dictionary:
 
 static func _player_projection(player: Dictionary) -> Dictionary:
 	var transmission := _dictionary(player.get(&"transmission", {}))
+	var crash_support := _dictionary(player.get(&"crash_support", {}))
 	var controls := _dictionary(player.get(&"controls", {}))
 	var contact := _dictionary(player.get(&"contact", {}))
 	var condition := _dictionary(player.get(&"condition", {}))
@@ -168,6 +169,11 @@ static func _player_projection(player: Dictionary) -> Dictionary:
 		&"bike_condition_status": str(condition.get(&"status", "READY")),
 		&"gear": maxi(int(transmission.get(&"gear", 1)), 1),
 		&"transmission_mode": str(transmission.get(&"mode", "AUTOMATIC")),
+		&"crash_support_mode": str(crash_support.get(&"mode", "STANDARD")),
+		&"tipped_recovery_delay_seconds": maxf(
+			float(crash_support.get(&"tipped_recovery_delay_seconds", 1.15)),
+			0.0
+		),
 		&"controls": {
 			&"enabled": bool(controls.get(&"enabled", false)),
 			&"throttle": clampf(float(controls.get(&"throttle", 0.0)), 0.0, 1.0),
@@ -181,6 +187,7 @@ static func _player_projection(player: Dictionary) -> Dictionary:
 static func _race_projection(session: Dictionary) -> Dictionary:
 	var integrity := _dictionary(session.get(&"integrity", {}))
 	var conditions := _dictionary(session.get(&"conditions", {}))
+	var ghost_runtime := _dictionary(session.get(&"ghost_runtime", {}))
 	return {
 		&"phase": str(session.get(&"phase", "")),
 		&"event_id": str(session.get(&"event_id", "")),
@@ -188,6 +195,7 @@ static func _race_projection(session: Dictionary) -> Dictionary:
 		&"format": str(session.get(&"format", "")),
 		&"weather": str(session.get(&"weather", "")),
 		&"surface": str(session.get(&"surface", "")),
+		&"crash_support_mode": str(session.get(&"crash_support_mode", "STANDARD")),
 		&"conditions": {
 			&"variable": bool(conditions.get(&"variable", false)),
 			&"label": str(conditions.get(&"label", "")),
@@ -212,6 +220,27 @@ static func _race_projection(session: Dictionary) -> Dictionary:
 		&"penalty_seconds": maxf(float(session.get(&"penalty_usec", 0)) / 1_000_000.0, 0.0),
 		&"valid": bool(integrity.get(&"valid", true)),
 		&"validity_reason": str(integrity.get(&"reason", integrity.get(&"validity_reason", ""))),
+		&"ghost_runtime": {
+			&"active": bool(ghost_runtime.get(&"active", false)),
+			&"recording_frames": maxi(
+				int(ghost_runtime.get(&"recording_frames", 0)), 0
+			),
+			&"best_frames": maxi(int(ghost_runtime.get(&"best_frames", 0)), 0),
+			&"maximum_frames": maxi(
+				int(ghost_runtime.get(&"maximum_frames", 0)), 0
+			),
+			&"effective_interval_seconds": maxf(
+				float(ghost_runtime.get(&"effective_interval_seconds", 0.0)), 0.0
+			),
+			&"decimations": maxi(int(ghost_runtime.get(&"decimations", 0)), 0),
+			&"recording_span_seconds": maxf(
+				float(ghost_runtime.get(&"recording_span_seconds", 0.0)), 0.0
+			),
+			&"best_span_seconds": maxf(
+				float(ghost_runtime.get(&"best_span_seconds", 0.0)), 0.0
+			),
+			&"bounded": bool(ghost_runtime.get(&"bounded", true)),
+		},
 	}
 
 

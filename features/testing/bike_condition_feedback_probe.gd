@@ -43,8 +43,17 @@ func _run() -> void:
 		and CONDITION_FEEDBACK.damage_for_automatic_recovery(
 			DirtBikeController.RECOVERY_WORLD_FALL
 		) == 8
+		and CONDITION_FEEDBACK.damage_for_automatic_recovery(
+			DirtBikeController.RECOVERY_WORLD_FALL,
+			&"ASSISTED"
+		) == 4
+		and CONDITION_FEEDBACK.damage_for_automatic_recovery(
+			DirtBikeController.RECOVERY_TIPPED,
+			&"ASSISTED"
+		) == 3
+		and CONDITION_FEEDBACK.damage_for_landing(1.0, &"ASSISTED") == 3
 		and CONDITION_FEEDBACK.damage_for_automatic_recovery(&"MANUAL_RESET") == 0,
-		"Landing, crash, and manual-reset damage policy is inconsistent"
+		"Standard/assisted landing, crash, and manual-reset damage policy is inconsistent"
 	)
 
 	var bike: DirtBikeController = BIKE_SCRIPT.new()

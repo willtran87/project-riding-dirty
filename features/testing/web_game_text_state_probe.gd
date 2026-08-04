@@ -38,6 +38,10 @@ func _ready() -> void:
 			&"flow": 46.0,
 			&"boosting": true,
 			&"transmission": {&"mode": &"MANUAL", &"gear": 4},
+			&"crash_support": {
+				&"mode": &"ASSISTED",
+				&"tipped_recovery_delay_seconds": 0.6555,
+			},
 			&"controls": {
 				&"enabled": true,
 				&"throttle": 0.82,
@@ -80,6 +84,7 @@ func _ready() -> void:
 			&"format": &"SPRINT",
 			&"weather": &"CLEAR",
 			&"surface": &"DIRT",
+			&"crash_support_mode": &"ASSISTED",
 			&"conditions": {
 				&"variable": true,
 				&"label": "DRY START",
@@ -102,6 +107,17 @@ func _ready() -> void:
 			&"flag": &"GREEN",
 			&"classification": classification,
 			&"integrity": {&"valid": true, &"reason": &"VALID"},
+			&"ghost_runtime": {
+				&"active": true,
+				&"recording_frames": 125,
+				&"best_frames": 7_200,
+				&"maximum_frames": 7_200,
+				&"effective_interval_seconds": 0.4,
+				&"decimations": 2,
+				&"recording_span_seconds": 12.4,
+				&"best_span_seconds": 3_599.3,
+				&"bounded": true,
+			},
 		},
 		&"hud": {
 			&"message": "STOPPIE",
@@ -266,6 +282,7 @@ func _ready() -> void:
 		"State identifies schema, mode, and world coordinates"
 	)
 	var projected_conditions := race.get(&"conditions", {}) as Dictionary
+	var projected_ghost_runtime := race.get(&"ghost_runtime", {}) as Dictionary
 	_check(
 		bool(projected_conditions.get(&"variable", false))
 			and str(projected_conditions.get(&"next_weather", "")) == "WINDY"
@@ -344,6 +361,8 @@ func _ready() -> void:
 		and bool(player.get(&"test_ride", false))
 		and str(player.get(&"surface", "")) == "LOAM"
 		and int(player.get(&"gear", 0)) == 4
+		and str(player.get(&"crash_support_mode", "")) == "ASSISTED"
+		and is_equal_approx(float(player.get(&"tipped_recovery_delay_seconds", 0.0)), 0.6555)
 		and int(player.get(&"rider_number", 0)) == 128
 		and str(player.get(&"body_type", "")) == "POWERFUL"
 		and str(player.get(&"skin_tone", "")) == "DEEP"
@@ -363,14 +382,32 @@ func _ready() -> void:
 			float((player.get(&"controls", {}) as Dictionary).get(&"steer", 0.0)),
 			-0.35
 		),
-		"Player projection retains physical, transmission, surface, and signed input state"
+		"Player projection retains physical, transmission, crash-support, surface, and signed input state"
 	)
 	_check(
 		int(race.get(&"lap", 0)) == 2
 		and int(race.get(&"checkpoint", 0)) == 5
 		and is_equal_approx(float(race.get(&"elapsed_seconds", 0.0)), 12.5)
+		and str(race.get(&"crash_support_mode", "")) == "ASSISTED"
 		and bool(race.get(&"valid", false)),
-		"Race projection retains current progress, timing, gaps, and integrity"
+		"Race projection retains current progress, timing, crash support, gaps, and integrity"
+	)
+	_check(
+		bool(projected_ghost_runtime.get(&"active", false))
+		and int(projected_ghost_runtime.get(&"recording_frames", 0)) == 125
+		and int(projected_ghost_runtime.get(&"best_frames", 0)) == 7_200
+		and int(projected_ghost_runtime.get(&"maximum_frames", 0)) == 7_200
+		and int(projected_ghost_runtime.get(&"decimations", 0)) == 2
+		and is_equal_approx(
+			float(projected_ghost_runtime.get(&"effective_interval_seconds", 0.0)),
+			0.4
+		)
+		and is_equal_approx(
+			float(projected_ghost_runtime.get(&"best_span_seconds", 0.0)),
+			3_599.3
+		)
+		and bool(projected_ghost_runtime.get(&"bounded", false)),
+		"Browser race projection omitted the bounded ghost runtime contract"
 	)
 	_check(
 		visible_riders.size() == TEXT_STATE.MAX_VISIBLE_RIDERS

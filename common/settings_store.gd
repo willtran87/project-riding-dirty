@@ -3,7 +3,7 @@ class_name SettingsStore
 ## Versioned accessibility, controls, presentation, audio, and binding settings.
 
 const VERIFIED_JSON_CODEC := preload("res://common/verified_json_codec.gd")
-const SETTINGS_VERSION: int = 15
+const SETTINGS_VERSION: int = 16
 const DEFAULT_PATH: String = "user://settings/riding_dirty_settings.json"
 const BACKUP_SUFFIX: String = ".bak"
 const TEMP_SUFFIX: String = ".tmp"
@@ -12,6 +12,7 @@ const COLOR_SAFE_MODES: Array[String] = ["OFF", "PROTANOPIA", "DEUTERANOPIA", "T
 const UNIT_MODES: Array[String] = ["IMPERIAL", "METRIC"]
 const RACE_DIFFICULTY_MODES: Array[String] = ["RELAXED", "STANDARD", "EXPERT"]
 const TRANSMISSION_MODES: Array[String] = ["AUTOMATIC", "MANUAL"]
+const CRASH_SUPPORT_MODES: Array[String] = ["STANDARD", "ASSISTED"]
 const PRELOAD_BEHAVIOR_MODES: Array[String] = ["HOLD", "TOGGLE"]
 const CAMERA_MODES: Array[String] = ["CHASE", "CLOSE_CHASE", "HELMET", "FIRST_PERSON", "HANDLEBAR"]
 const VISUAL_QUALITY_MODES: Array[String] = ["PERFORMANCE", "BALANCED", "QUALITY"]
@@ -52,6 +53,7 @@ const DEFAULTS: Dictionary = {
 	"gameplay": {
 		"race_difficulty": "STANDARD",
 		"transmission_mode": "AUTOMATIC",
+		"crash_support_mode": "STANDARD",
 	},
 	"graphics": {
 		"visual_quality": "BALANCED",
@@ -562,6 +564,7 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 	var caption_style := str(interface.get("caption_style", "STANDARD")).to_upper()
 	var race_difficulty := str(gameplay.get("race_difficulty", "STANDARD")).to_upper()
 	var transmission_mode := str(gameplay.get("transmission_mode", "AUTOMATIC")).to_upper()
+	var crash_support_mode := str(gameplay.get("crash_support_mode", "STANDARD")).to_upper()
 	var camera_mode := str(camera.get("mode", "CHASE")).to_upper()
 	var visual_quality := str(graphics.get("visual_quality", "BALANCED")).to_upper()
 	var render_scale := str(graphics.get("render_scale", "AUTO")).to_upper()
@@ -598,6 +601,7 @@ static func _sanitize_values(raw_values: Variant) -> Dictionary:
 		"gameplay": {
 			"race_difficulty": race_difficulty if race_difficulty in RACE_DIFFICULTY_MODES else "STANDARD",
 			"transmission_mode": transmission_mode if transmission_mode in TRANSMISSION_MODES else "AUTOMATIC",
+			"crash_support_mode": crash_support_mode if crash_support_mode in CRASH_SUPPORT_MODES else "STANDARD",
 		},
 		"graphics": {
 			"visual_quality": visual_quality if visual_quality in VISUAL_QUALITY_MODES else "BALANCED",

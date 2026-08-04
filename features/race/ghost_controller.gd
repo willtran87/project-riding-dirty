@@ -1,8 +1,11 @@
 extends Node3D
 class_name GhostController
-## Records transforms at 10 Hz, persists the best run, and interpolates a collision-free ghost.
+## Records transforms at an adaptive bounded rate, persists the best run, and
+## interpolates a collision-free ghost.
 
 const SAMPLE_INTERVAL: float = 0.1
+const MAX_RECORDING_FRAMES: int = 7_200
+const MAX_IMPORT_FRAMES: int = 36_000
 const PLAYER_GRID_PROGRESS_METERS: float = 2.0
 const RIVAL_START_LEAD_METERS: float = 4.5
 const RIVAL_RIDE_HEIGHT_METERS: float = 0.75
@@ -18,6 +21,8 @@ var _best_frames: Array[Dictionary] = []
 var _is_running: bool = false
 var _elapsed: float = 0.0
 var _next_sample: float = 0.0
+var _recording_interval: float = SAMPLE_INTERVAL
+var _recording_decimations: int = 0
 var _playback_index: int = 0
 var _record_slot: StringName = &"quarry"
 var _rival_root: Node3D
@@ -35,10 +40,12 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not _is_running or target == null:
 		return
-	_elapsed += delta
+	_elapsed += maxf(delta, 0.0)
 	if _elapsed >= _next_sample:
+		if _recording.size() >= MAX_RECORDING_FRAMES:
+			_compact_recording()
 		_recording.append({&"time": _elapsed, &"transform": target.global_transform})
-		_next_sample += SAMPLE_INTERVAL
+		_next_sample = _elapsed + _recording_interval
 	_update_playback()
 	_update_rival_playback()
 
@@ -47,6 +54,8 @@ func start_run() -> void:
 	_recording.clear()
 	_elapsed = 0.0
 	_next_sample = 0.0
+	_recording_interval = SAMPLE_INTERVAL
+	_recording_decimations = 0
 	_playback_index = 0
 	_is_running = true
 	_ghost_root.visible = _best_frames.size() >= 2
@@ -73,13 +82,55 @@ func finish_run(time_usec: int, is_new_best: bool) -> void:
 		_best_frames = _recording.duplicate(true)
 		if persistence_enabled:
 			_save_best_run()
+	_release_recording()
 
 
 func cancel_run() -> void:
 	_is_running = false
 	_ghost_root.visible = false
 	_rival_root.visible = false
+	_release_recording()
+
+
+func get_runtime_budget_snapshot() -> Dictionary:
+	var recording_span := _frame_span_seconds(_recording)
+	var best_span := _frame_span_seconds(_best_frames)
+	return {
+		&"active": _is_running,
+		&"recording_frames": _recording.size(),
+		&"best_frames": _best_frames.size(),
+		&"maximum_frames": MAX_RECORDING_FRAMES,
+		&"maximum_import_frames": MAX_IMPORT_FRAMES,
+		&"effective_interval_seconds": _recording_interval,
+		&"decimations": _recording_decimations,
+		&"elapsed_seconds": _elapsed,
+		&"recording_span_seconds": recording_span,
+		&"best_span_seconds": best_span,
+		&"bounded": (
+			_recording.size() <= MAX_RECORDING_FRAMES
+			and _best_frames.size() <= MAX_RECORDING_FRAMES
+		),
+	}
+
+
+func _compact_recording() -> void:
+	var compacted: Array[Dictionary] = []
+	compacted.resize(ceili(float(_recording.size()) / 2.0))
+	var destination := 0
+	for source: int in range(0, _recording.size(), 2):
+		compacted[destination] = _recording[source]
+		destination += 1
+	_recording = compacted
+	_recording_interval *= 2.0
+	_recording_decimations += 1
+
+
+func _release_recording() -> void:
+	_recording.clear()
 	_elapsed = 0.0
+	_next_sample = 0.0
+	_recording_interval = SAMPLE_INTERVAL
+	_recording_decimations = 0
 
 
 func configure_rival(
@@ -325,8 +376,10 @@ func _load_best_run() -> void:
 		var web_payload: Variant = web_result.get(&"value", null)
 		if web_payload is Dictionary:
 			var saved_data := web_payload as Dictionary
-			best_time_usec = int(saved_data.get("best_time_usec", -1))
-			_best_frames = _deserialize_frames(saved_data.get("frames", []))
+			_apply_loaded_run(
+				int(saved_data.get("best_time_usec", -1)),
+				saved_data.get("frames", [])
+			)
 			if str(web_result.get(&"source", "")) == "backup":
 				SaveLifecycle.report_recovered(
 					&"GHOST", "PERSONAL BEST GHOST", bool(web_result.get(&"repaired", false))
@@ -338,10 +391,10 @@ func _load_best_run() -> void:
 	var load_result := ATOMIC_CONFIG_STORE.load_section(save_path, &"ghost", persistence_enabled)
 	if bool(load_result.get(&"ok", false)):
 		var atomic_data := load_result.get(&"data", {}) as Dictionary
-		best_time_usec = int(atomic_data.get(&"best_time_usec", -1))
-		var atomic_frames: Variant = atomic_data.get(&"frames", [])
-		if atomic_frames is Array:
-			_best_frames.assign(atomic_frames)
+		_apply_loaded_run(
+			int(atomic_data.get(&"best_time_usec", -1)),
+			atomic_data.get(&"frames", [])
+		)
 		if str(load_result.get(&"source", "")) == "backup":
 			SaveLifecycle.report_recovered(
 				&"GHOST", "PERSONAL BEST GHOST", bool(load_result.get(&"repaired", false))
@@ -357,11 +410,11 @@ func _load_best_run() -> void:
 	if payload is not Dictionary:
 		return
 	var saved_data := payload as Dictionary
-	best_time_usec = int(saved_data.get(&"best_time_usec", -1))
-	var frames: Variant = saved_data.get(&"frames", [])
-	if frames is Array:
-		_best_frames.assign(frames)
-	if persistence_enabled:
+	_apply_loaded_run(
+		int(saved_data.get(&"best_time_usec", -1)),
+		saved_data.get(&"frames", [])
+	)
+	if persistence_enabled and best_time_usec > 0 and not _best_frames.is_empty():
 		_save_best_run()
 
 
@@ -389,14 +442,118 @@ func _serialize_frames(frames: Array[Dictionary]) -> Array[Array]:
 
 
 func _deserialize_frames(serialized: Variant) -> Array[Dictionary]:
+	return _sanitize_loaded_frames(serialized)
+
+
+func _apply_loaded_run(saved_time_usec: int, raw_frames: Variant) -> void:
+	var sanitized := _sanitize_loaded_frames(raw_frames)
+	if saved_time_usec <= 0:
+		best_time_usec = -1
+		_best_frames.clear()
+		return
+	# Early builds could persist a legitimate comparison time without transform
+	# samples. Keep that time for continuity, but reject non-empty malformed data.
+	if raw_frames is Array and (raw_frames as Array).is_empty():
+		best_time_usec = saved_time_usec
+		_best_frames.clear()
+		return
+	if sanitized.is_empty():
+		best_time_usec = -1
+		_best_frames.clear()
+		return
+	best_time_usec = saved_time_usec
+	_best_frames = sanitized
+
+
+func _sanitize_loaded_frames(raw_frames: Variant) -> Array[Dictionary]:
 	var frames: Array[Dictionary] = []
-	if serialized is not Array:
+	if raw_frames is not Array:
 		return frames
-	for raw_frame: Variant in serialized:
-		if raw_frame is not Array or raw_frame.size() < 8:
-			continue
+	var source := raw_frames as Array
+	if source.is_empty() or source.size() > MAX_IMPORT_FRAMES:
+		return frames
+	var previous_time := -1.0
+	for raw_frame: Variant in source:
+		var frame := _sanitize_frame(raw_frame)
+		if frame.is_empty():
+			return [] as Array[Dictionary]
+		var frame_time := float(frame.get(&"time", -1.0))
+		if frame_time <= previous_time:
+			return [] as Array[Dictionary]
+		previous_time = frame_time
+		frames.append(frame)
+	return _downsample_frames(frames, MAX_RECORDING_FRAMES)
+
+
+func _sanitize_frame(raw_frame: Variant) -> Dictionary:
+	var frame_time := -1.0
+	var position := Vector3.ZERO
+	var rotation := Quaternion.IDENTITY
+	if raw_frame is Dictionary:
+		var source := raw_frame as Dictionary
+		var raw_time: Variant = source.get(&"time", source.get("time", null))
+		var raw_transform: Variant = source.get(
+			&"transform", source.get("transform", null)
+		)
+		if not _is_number(raw_time) or raw_transform is not Transform3D:
+			return {}
+		var transform := raw_transform as Transform3D
+		frame_time = float(raw_time)
+		position = transform.origin
+		rotation = transform.basis.get_rotation_quaternion()
+	elif raw_frame is Array:
 		var values := raw_frame as Array
-		var position := Vector3(float(values[1]), float(values[2]), float(values[3]))
-		var rotation := Quaternion(float(values[4]), float(values[5]), float(values[6]), float(values[7])).normalized()
-		frames.append({&"time": float(values[0]), &"transform": Transform3D(Basis(rotation), position)})
-	return frames
+		if values.size() < 8:
+			return {}
+		for index: int in 8:
+			if not _is_number(values[index]):
+				return {}
+		frame_time = float(values[0])
+		position = Vector3(float(values[1]), float(values[2]), float(values[3]))
+		rotation = Quaternion(
+			float(values[4]), float(values[5]), float(values[6]), float(values[7])
+		)
+	else:
+		return {}
+	if (
+		not is_finite(frame_time)
+		or frame_time < 0.0
+		or not position.is_finite()
+		or not rotation.is_finite()
+		or rotation.length_squared() <= 0.000001
+	):
+		return {}
+	rotation = rotation.normalized()
+	return {
+		&"time": frame_time,
+		&"transform": Transform3D(Basis(rotation), position),
+	}
+
+
+func _downsample_frames(frames: Array[Dictionary], maximum: int) -> Array[Dictionary]:
+	if frames.size() <= maximum:
+		return frames
+	var sampled: Array[Dictionary] = []
+	sampled.resize(maximum)
+	var source_last := frames.size() - 1
+	var target_last := maximum - 1
+	for target_index: int in maximum:
+		var source_index := roundi(
+			float(target_index) * float(source_last) / float(target_last)
+		)
+		sampled[target_index] = frames[source_index]
+	return sampled
+
+
+func _frame_span_seconds(frames: Array[Dictionary]) -> float:
+	if frames.size() < 2:
+		return 0.0
+	return maxf(
+		float(frames[-1].get(&"time", 0.0))
+			- float(frames[0].get(&"time", 0.0)),
+		0.0
+	)
+
+
+func _is_number(value: Variant) -> bool:
+	return value is int or value is float

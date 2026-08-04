@@ -99,10 +99,16 @@ func _run() -> void:
 	add_child(ghost)
 	await get_tree().process_frame
 	ghost.best_time_usec = 123_000
-	ghost.set(&"_best_frames", [{&"time": 0.0, &"transform": Transform3D.IDENTITY}])
+	var first_ghost_frames: Array[Dictionary] = [
+		{&"time": 0.0, &"transform": Transform3D.IDENTITY},
+	]
+	ghost.set(&"_best_frames", first_ghost_frames)
 	_expect(bool(ghost.call(&"_save_best_run")), "initial verified ghost write failed")
 	ghost.best_time_usec = 110_000
-	ghost.set(&"_best_frames", [{&"time": 0.0, &"transform": Transform3D(Basis.IDENTITY, Vector3.ONE)}])
+	var replacement_ghost_frames: Array[Dictionary] = [
+		{&"time": 0.0, &"transform": Transform3D(Basis.IDENTITY, Vector3.ONE)},
+	]
+	ghost.set(&"_best_frames", replacement_ghost_frames)
 	_expect(bool(ghost.call(&"_save_best_run")), "replacement verified ghost write failed")
 	_expect(FileAccess.file_exists(TEST_GHOST_PATH + ".bak"), "ghost write did not rotate a recovery copy")
 	ghost.queue_free()
@@ -117,7 +123,10 @@ func _run() -> void:
 	recovered_ghost.set(&"_record_slot", &"save_lifecycle_probe")
 	add_child(recovered_ghost)
 	await get_tree().process_frame
-	_expect(recovered_ghost.best_time_usec == 123_000, "ghost backup recovery restored wrong run")
+	_expect(
+		recovered_ghost.best_time_usec == 123_000,
+		"ghost backup recovery restored wrong run (%dus)" % recovered_ghost.best_time_usec
+	)
 	var ghost_recovery := SaveLifecycle.get_snapshot()
 	_expect(StringName(ghost_recovery.get(&"state", &"")) == &"RECOVERED", "ghost recovery was not published")
 	_expect(StringName(ghost_recovery.get(&"domain", &"")) == &"GHOST", "ghost recovery used wrong domain")

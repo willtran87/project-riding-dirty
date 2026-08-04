@@ -2,6 +2,8 @@ extends RigidBody3D
 class_name DirtBikeController
 ## Two-point ray suspension with arcade balance, steering, air control, and recovery.
 
+const CRASH_SUPPORT_POLICY := preload("res://features/race/crash_support_policy.gd")
+
 const RECOVERY_TIPPED: StringName = &"AUTO_TIPPED"
 const RECOVERY_WORLD_FALL: StringName = &"AUTO_WORLD_FALL"
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
@@ -334,6 +336,7 @@ var _landing_projection_snapshot: Dictionary = {
 var _landing_warning_issued: bool = false
 var _landing_recovery_issued: bool = false
 var _tipped_recovery_time: float = 0.0
+var _crash_support_mode: StringName = CrashSupportPolicy.STANDARD
 var _brake_was_pressed: bool = false
 var _pack_contact_cooldown: float = 0.0
 var _technique_cooldown: float = 0.0
@@ -755,6 +758,14 @@ func configure_transmission(requested_mode: Variant) -> void:
 
 func get_transmission_snapshot() -> Dictionary:
 	return _transmission.get_snapshot()
+
+
+func configure_crash_support(requested_mode: Variant) -> void:
+	_crash_support_mode = CRASH_SUPPORT_POLICY.normalize(requested_mode)
+
+
+func get_crash_support_snapshot() -> Dictionary:
+	return CRASH_SUPPORT_POLICY.snapshot(_crash_support_mode, tipped_recovery_delay)
 
 
 func _on_transmission_shifted(_from_gear: int, _to_gear: int, _mode: StringName) -> void:
@@ -2932,7 +2943,10 @@ func _update_tipped_recovery(delta: float) -> void:
 	var nearly_stopped := get_speed_mps() < 2.2 and absf(linear_velocity.y) < 1.4
 	if upright_dot < 0.24 and nearly_stopped and _airtime > 0.55:
 		_tipped_recovery_time += delta
-		if _tipped_recovery_time >= tipped_recovery_delay:
+		if _tipped_recovery_time >= CRASH_SUPPORT_POLICY.tipped_recovery_delay(
+			tipped_recovery_delay,
+			_crash_support_mode
+		):
 			reset_to_safe_position(RECOVERY_TIPPED)
 	else:
 		_tipped_recovery_time = 0.0

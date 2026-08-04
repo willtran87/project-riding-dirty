@@ -5,6 +5,8 @@ class_name BikeConditionFeedback
 ## DirtBikeController. This helper gives every presentation consumer the same
 ## semantic severity and truthful performance deltas without owning simulation.
 
+const CRASH_SUPPORT_POLICY := preload("res://features/race/crash_support_policy.gd")
+
 
 static func build(condition_percent: int) -> Dictionary:
 	var condition := clampi(condition_percent, 0, 100)
@@ -35,19 +37,28 @@ static func build(condition_percent: int) -> Dictionary:
 	}
 
 
-static func damage_for_landing(intensity: float) -> int:
+static func damage_for_landing(
+	intensity: float,
+	crash_support_mode: Variant = CrashSupportPolicy.STANDARD
+) -> int:
 	if intensity <= 0.72:
 		return 0
-	return maxi(int(ceil((intensity - 0.72) * 18.0)), 1)
+	return CRASH_SUPPORT_POLICY.scale_damage(
+		maxi(int(ceil((intensity - 0.72) * 18.0)), 1),
+		crash_support_mode
+	)
 
 
-static func damage_for_automatic_recovery(reason: StringName) -> int:
+static func damage_for_automatic_recovery(
+	reason: StringName,
+	crash_support_mode: Variant = CrashSupportPolicy.STANDARD
+) -> int:
+	var base_damage := 4
 	match reason:
 		&"AUTO_WORLD_FALL":
-			return 8
+			base_damage = 8
 		&"AUTO_TIPPED":
-			return 5
+			base_damage = 5
 		&"MANUAL_RESET":
-			return 0
-		_:
-			return 4
+			base_damage = 0
+	return CRASH_SUPPORT_POLICY.scale_damage(base_damage, crash_support_mode)

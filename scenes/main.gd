@@ -246,6 +246,7 @@ func get_web_game_text_state_snapshot() -> Dictionary:
 			&"flow": _bike.get_flow(),
 			&"boosting": _bike.is_boosting(),
 			&"transmission": _bike.get_transmission_snapshot(),
+			&"crash_support": _bike.get_crash_support_snapshot(),
 			&"controls": _bike.get_live_control_snapshot(),
 			&"contact": _bike.get_contact_feedback(),
 			&"condition": _bike.get_condition_snapshot(),
@@ -494,6 +495,7 @@ func _on_ride_requested(setup: StringName, activity: StringName) -> void:
 		apply_career_opponent_build_match(session, active_build, setup)
 	_apply_session_transmission_rule(session)
 	_apply_session_control_response_rule(session)
+	_apply_session_crash_support_rule(session)
 	var authoritative_route := get_authoritative_route(track_id)
 	var authoritative_surface_root := _get_track_builder(track_id)
 	# RaceController owns route preparation internally, so it still receives the
@@ -789,6 +791,7 @@ func _restart_academy_progression() -> void:
 	session.bike_class = Profile.selected_bike_class
 	_apply_session_transmission_rule(session)
 	_apply_session_control_response_rule(session)
+	_apply_session_crash_support_rule(session)
 	_ensure_track_loaded(session.track_id)
 	var authoritative_route := get_authoritative_route(session.track_id)
 	var authoritative_surface_root := _get_track_builder(session.track_id)
@@ -808,6 +811,7 @@ func _stop_all_activities() -> void:
 		_race_services.stop_transient_presentation()
 		_race_services.clear_activity_transmission_override()
 		_race_services.clear_activity_control_response_override()
+		_race_services.clear_activity_crash_support_override()
 	if is_instance_valid(_sponsor_trackside):
 		_sponsor_trackside.clear_presentation()
 	_race.enter_waiting()
@@ -879,6 +883,17 @@ func _apply_session_control_response_rule(session: RaceSessionConfig) -> void:
 		if not forced_response.is_empty()
 		else _race_services.get_preferred_control_response()
 	)
+
+
+func _apply_session_crash_support_rule(session: RaceSessionConfig) -> void:
+	if not is_instance_valid(_race_services):
+		return
+	# Crash support changes lasting bike damage and tipped-recovery timing. Freeze
+	# it with the rest of the activity rules and sign the exact mode for records.
+	var selected_mode := _race_services.get_preferred_crash_support_mode()
+	_race_services.set_activity_crash_support_override(selected_mode)
+	if session != null:
+		session.rules[&"crash_support_mode"] = selected_mode
 
 
 func _get_requested_test_activity() -> StringName:
@@ -1606,7 +1621,10 @@ func _on_bike_landed(intensity: float) -> void:
 		or intensity <= 0.72
 	):
 		return
-	var damage := BIKE_CONDITION_FEEDBACK.damage_for_landing(intensity)
+	var damage := BIKE_CONDITION_FEEDBACK.damage_for_landing(
+		intensity,
+		_race_services.get_effective_crash_support_mode()
+	)
 	_apply_live_bike_damage(damage)
 
 
@@ -1618,7 +1636,10 @@ func _on_bike_automatic_recovery_requested(reason: StringName) -> void:
 	):
 		return
 	_apply_live_bike_damage(
-		BIKE_CONDITION_FEEDBACK.damage_for_automatic_recovery(reason)
+		BIKE_CONDITION_FEEDBACK.damage_for_automatic_recovery(
+			reason,
+			_race_services.get_effective_crash_support_mode()
+		)
 	)
 
 

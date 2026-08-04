@@ -75,18 +75,22 @@ func _run() -> void:
 	var reduced_motion_index := _find_setting_index(access_items, &"reduced_motion")
 	var reduced_flashes_index := _find_setting_index(access_items, &"reduced_flashes")
 	var reduced_particles_index := _find_setting_index(access_items, &"reduced_particles")
+	var crash_support_index := _find_setting_index(access_items, &"crash_support_mode")
 	var hud_detail_index := _find_setting_index(access_items, &"hud_detail")
 	var hud_scale_index := _find_setting_index(access_items, &"hud_scale")
 	var hud_safe_area_index := _find_setting_index(access_items, &"hud_safe_area")
-	_check(access_items.size() == 14, "Accessibility page does not include the complete fourteen-row option set")
+	_check(access_items.size() == 15, "Accessibility page does not include the complete fifteen-row option set")
 	_check(
-		hud_detail_index == 1 and hud_scale_index == 2 and hud_safe_area_index == 3,
-		"HUD detail, size, and safe area are not presented directly after global text scale"
+		crash_support_index == 0
+		and hud_detail_index == 2
+		and hud_scale_index == 3
+		and hud_safe_area_index == 4,
+		"Crash support and HUD customization are not presented in the stable Access order"
 	)
 	_check(
-		reduced_motion_index == 4
-		and reduced_flashes_index == 5
-		and reduced_particles_index == 6,
+		reduced_motion_index == 5
+		and reduced_flashes_index == 6
+		and reduced_particles_index == 7,
 		"Sensory reduction settings are missing or presented out of order"
 	)
 	service.set("_settings_index", hud_detail_index)
