@@ -9,6 +9,14 @@ Original prompt: Resolve the complete race-experience backlog, make the authorit
 - **Regression and exact Web candidate:** The parser scan, all `79` curated probes, all six Academy/Circuit/Pine/Mesa/Freestyle/Discovery smokes, save recovery, ghost eligibility, replay, full race, and Web-state contracts pass. The Mesa pace smoke retains its elite `+2.93 m/s` opponent advantage under a `0.05 m/s` fixed-step epsilon; gameplay pace is unchanged. All `17` delivery/recovery tests pass for `index.fcedba016124.pck` (`5,456,392` bytes; SHA-256 `fcedba016124e4682cca0bf7b56867dd84d008109d566db676545759eca5c666`) beside `index.9778df3b5d0e.wasm`.
 - **Release status:** This accumulated candidate is authorized for source commit, branch push, and GitHub Pages republication. Representative long-session play should still judge sustained pacing, concentration load, reward cadence, and subjective fun.
 
+## Crash-accessibility and long-session GitHub Pages publication - 2026-08-03
+
+- **Source release:** Commit `375bc09` publishes player-selectable Standard/Assisted crash support, run-locked competitive separation, adaptive bounded ghost capture, hostile ghost-save validation, schema-7 runtime evidence, deterministic probes, and the exact verified Web bundle on `codex/racecraft-v27`.
+- **Pages deployment:** GitHub Pages commit `0948dcbe94d98364ac4cd8cb20ac4688a0e60482` completed workflow run `30869927250` successfully from `gh-pages` with HTTPS enforcement at `https://willtran87.github.io/project-riding-dirty/`. Its tree exactly matches the source commit's `web/` tree and excludes ignored Godot export scratch files.
+- **Public payload proof:** The public manifest and inner game page reference `index.fcedba016124.pck`. An independent public download is exactly `5,456,392` bytes with SHA-256 `fcedba016124e4682cca0bf7b56867dd84d008109d566db676545759eca5c666`; the former `index.6e651106bec7.pck` returns 404.
+- **Public browser proof:** The required shared-action client reaches Quarry Trail Event 01/19 at `output/github-pages-long-session-release-client/shot-0.png`. Schema 7 reports Standard crash support plus `ghost_runtime.maximum_frames=7200` and `bounded=true`; no console or page-error artifact was produced.
+- **Release gates:** The published candidate passed the parser scan, all `79` curated probes, all six representative activity smokes, the deterministic one-hour soak, all `17` Web delivery/recovery tests, exact public payload verification, and public production-browser startup.
+
 ## Session-local evolving track lines - 2026-07-26
 
 - **Race traffic now changes the line:** The player and every running opponent write deterministic wear into five route-relative lanes across 12-meter bins. A rider can contribute only once per bin, keeping deformation independent of frame rate; surface erodibility and bounded adjacent-lane transfer make repeated lines develop naturally without rewriting authoritative collision.
