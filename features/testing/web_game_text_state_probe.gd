@@ -233,6 +233,25 @@ func _ready() -> void:
 			&"title": "RACE COMPLETE // SILVER",
 			&"summary": "P2 / 12 // 3:01.200",
 			&"event_recap": "TEAM // DUSTLINE WORKS // #128 NIGHT CYAN",
+			&"rider_debrief": {
+				&"grade": &"A",
+				&"focus_id": &"SECTOR_PACE",
+				&"headline": "ONE SECTOR HOLDS THE NEXT RESULT",
+				&"strength": "FASTEST LAP PACE",
+				&"primary_insight": "S03 COST +1.20s AGAINST THE RIVAL TARGET",
+				&"next_objective": "REPLAY S03, THEN BEAT ITS SPLIT BY 0.50s",
+				&"summary": "RIDER DEBRIEF // GRADE A",
+				&"costliest_sector": 3,
+				&"costliest_sector_delta_usec": 1_200_000,
+				&"flow_uses": 2,
+				&"follow_up": {
+					&"focus_id": &"FLOW_USAGE",
+					&"status": &"CLEARED",
+					&"achieved": true,
+					&"improved": true,
+					&"receipt": "2 FLOW USES // 1 SURGE",
+				},
+			},
 			&"podium": {
 				&"visible": true,
 				&"event_name": "QUARRY TRAIL",
@@ -266,6 +285,8 @@ func _ready() -> void:
 	var custom_tour := state.get(&"custom_tour", {}) as Dictionary
 	var results := state.get(&"results", {}) as Dictionary
 	var podium := results.get(&"podium", {}) as Dictionary
+	var rider_debrief := results.get(&"rider_debrief", {}) as Dictionary
+	var debrief_follow_up := rider_debrief.get(&"follow_up", {}) as Dictionary
 	var trackside_sponsor := state.get(&"trackside_sponsor", {}) as Dictionary
 	var track_evolution := state.get(&"track_evolution", {}) as Dictionary
 	var visible_riders_include_player := false
@@ -276,7 +297,7 @@ func _ready() -> void:
 			or str(rider.get(&"name", "")) == "YOU"
 		)
 	_check(
-		int(state.get(&"schema_version", 0)) == 7
+		int(state.get(&"schema_version", 0)) == 13
 		and str(state.get(&"mode", "")) == "RACE"
 		and not str((state.get(&"coordinate_system", {}) as Dictionary).get(&"axes", "")).is_empty(),
 		"State identifies schema, mode, and world coordinates"
@@ -352,7 +373,14 @@ func _ready() -> void:
 		and int(podium.get(&"rider_number", 0)) == 128
 		and str(podium.get(&"body_type", "")) == "POWERFUL"
 		and (podium.get(&"top_three", []) as Array).size() == 3
-		and str(results.get(&"event_recap", "")).contains("DUSTLINE"),
+		and str(results.get(&"event_recap", "")).contains("DUSTLINE")
+		and str(rider_debrief.get(&"grade", "")) == "A"
+		and str(rider_debrief.get(&"focus_id", "")) == "SECTOR_PACE"
+		and int(rider_debrief.get(&"costliest_sector", 0)) == 3
+		and int(rider_debrief.get(&"flow_uses", 0)) == 2
+		and str(debrief_follow_up.get(&"status", "")) == "CLEARED"
+		and bool(debrief_follow_up.get(&"achieved", false))
+		and str(debrief_follow_up.get(&"receipt", "")).contains("1 SURGE"),
 		"Official results and personalized podium are browser-observable"
 	)
 	_check(
@@ -488,6 +516,73 @@ func _ready() -> void:
 			&"workshop_open": true,
 			&"event": &"CIRCUIT",
 			&"setup": &"BALANCED",
+			&"setup_comparison": {
+				&"baseline": &"BALANCED",
+				&"label": "REFERENCE KIT // NEUTRAL DRIVE, GRIP, AND SPEED",
+				&"deltas": {
+					&"drive_percent": 0,
+					&"grip_percent": 0,
+					&"speed_percent": 0,
+				},
+			},
+			&"setup_decision": {
+				&"equipped_setup": &"BALANCED",
+				&"selected_setup": &"ATTACK",
+				&"recommended_setup": &"TRAIL",
+				&"active_tune": &"BALANCED",
+				&"recommended_tune": &"ENDURO",
+				&"state": &"PREVIEW",
+				&"action": "PURCHASE SELECTED",
+				&"selected_owned": false,
+				&"selected_affordable": false,
+				&"selected_shortfall": 1500,
+				&"label": "EQUIPPED BALANCED // VIEWING ATTACK // EVENT TRAIL + ENDURO",
+				&"metrics": {
+					&"POWER": {&"equipped": 6.0, &"selected": 8.0, &"recommended": 5.0},
+					&"GRIP": {&"equipped": 6.0, &"selected": 4.0, &"recommended": 9.0},
+					&"SUSPENSION": {&"equipped": 6.0, &"selected": 6.0, &"recommended": 4.0},
+					&"TOP SPEED": {&"equipped": 6.0, &"selected": 9.0, &"recommended": 5.0},
+				},
+				&"selected_vs_equipped": {&"drive_percent": 8, &"grip_percent": -10, &"speed_percent": 10},
+				&"recommended_vs_equipped": {&"drive_percent": -8, &"grip_percent": 21, &"speed_percent": -9},
+				&"sources": {&"kit": "DRIVE", &"tune": "SUSPENSION", &"build": "BIKE", &"assists": "CONTROL"},
+			},
+			&"result_history": {
+				&"event_id": &"CIRCUIT",
+				&"recent_count": 3,
+				&"previous_label": "LAST RUN // P4 // 02:05.000 // BALANCED + ENDURO CONTROL",
+				&"personal_best_label": "PERSONAL BEST // P2 // 01:58.000 // ATTACK + RHYTHM ATTACK",
+				&"pinned_label": "PINNED REFERENCE // P3 // 02:00.000 // BALANCED + ENDURO CONTROL",
+				&"reference_kind": &"PINNED",
+				&"previous_run": {
+					&"position": 4, &"status": &"FINISHED", &"valid": true,
+					&"effective_time_usec": 125_000_000, &"crashes": 1, &"contacts": 0, &"flow_uses": 2,
+					&"plan": {&"bike_id": &"TYKE_125", &"setup_id": &"BALANCED", &"assist_mode": &"SPORT"},
+				},
+				&"personal_best_run": {
+					&"position": 2, &"status": &"FINISHED", &"valid": true,
+					&"effective_time_usec": 118_000_000, &"crashes": 0, &"contacts": 0, &"flow_uses": 3,
+					&"plan": {&"bike_id": &"TYKE_125", &"setup_id": &"ATTACK", &"assist_mode": &"SPORT"},
+				},
+				&"pinned_run": {
+					&"position": 3, &"status": &"FINISHED", &"valid": true,
+					&"effective_time_usec": 120_000_000, &"crashes": 0, &"contacts": 0, &"flow_uses": 4,
+					&"plan": {&"bike_id": &"TYKE_125", &"setup_id": &"BALANCED", &"assist_mode": &"SPORT"},
+				},
+				&"comparison": {
+					&"previous_minus_pb_usec": 7_000_000,
+					&"pace_state": &"PB_AHEAD",
+					&"summary": "PB AHEAD 7.000s  //  BIGGEST GAP S2 +4.000s",
+					&"attribution": &"PLAN_CHANGED",
+					&"attribution_label": "PLAN CHANGED: SETUP_ID  //  RESULT IS CONFOUNDED",
+					&"comparable": false,
+					&"opportunity_sector": 2,
+					&"opportunity_usec": 4_000_000,
+					&"crash_delta": 1,
+					&"flow_delta": -1,
+					&"recommendation": "NEXT: REPEAT ONE PLAN AND CHANGE ONE VARIABLE AT A TIME",
+				},
+			},
 			&"status": "ENTER RIDE",
 			&"workshop_category": &"NUMBER",
 			&"workshop_item": "APPLY RIDER NUMBER // #128",
@@ -499,6 +594,14 @@ func _ready() -> void:
 	})
 	var garage_coaching := garage_state.get(&"coaching", {}) as Dictionary
 	var garage_menu := garage_state.get(&"menu", {}) as Dictionary
+	var garage_comparison := garage_menu.get(&"setup_comparison", {}) as Dictionary
+	var garage_decision := garage_menu.get(&"setup_decision", {}) as Dictionary
+	var garage_history := garage_menu.get(&"result_history", {}) as Dictionary
+	var garage_pb := garage_history.get(&"personal_best_run", {}) as Dictionary
+	var garage_pinned := garage_history.get(&"pinned_run", {}) as Dictionary
+	var garage_run_comparison := garage_history.get(&"comparison", {}) as Dictionary
+	var decision_metrics := garage_decision.get(&"metrics", {}) as Dictionary
+	var selected_deltas := garage_decision.get(&"selected_vs_equipped", {}) as Dictionary
 	_check(
 		(garage_state.get(&"visible_riders", []) as Array).is_empty()
 		and str(garage_coaching.get(&"message", "")).is_empty()
@@ -507,6 +610,24 @@ func _ready() -> void:
 			(garage_coaching.get(&"balance", {}) as Dictionary).get(&"visible", true)
 		)
 		and str(garage_menu.get(&"status", "")) == "ENTER RIDE"
+		and str(garage_comparison.get(&"baseline", "")) == "BALANCED"
+		and str(garage_comparison.get(&"label", "")).contains("REFERENCE KIT")
+		and str(garage_decision.get(&"equipped_setup", "")) == "BALANCED"
+		and str(garage_decision.get(&"selected_setup", "")) == "ATTACK"
+		and str(garage_decision.get(&"recommended_setup", "")) == "TRAIL"
+		and str(garage_decision.get(&"state", "")) == "PREVIEW"
+		and int(garage_decision.get(&"selected_shortfall", 0)) == 1500
+		and is_equal_approx(float((decision_metrics.get(&"POWER", {}) as Dictionary).get(&"selected", 0.0)), 8.0)
+		and int(selected_deltas.get(&"drive_percent", 0)) == 8
+		and str((garage_decision.get(&"sources", {}) as Dictionary).get(&"assists", "")) == "CONTROL"
+		and int(garage_history.get(&"recent_count", 0)) == 3
+		and int(garage_pb.get(&"effective_time_usec", 0)) == 118_000_000
+		and str((garage_pb.get(&"plan", {}) as Dictionary).get(&"setup_id", "")) == "ATTACK"
+		and str(garage_history.get(&"reference_kind", "")) == "PINNED"
+		and int(garage_pinned.get(&"effective_time_usec", 0)) == 120_000_000
+		and int(garage_run_comparison.get(&"opportunity_sector", 0)) == 2
+		and str(garage_run_comparison.get(&"attribution", "")) == "PLAN_CHANGED"
+		and not bool(garage_run_comparison.get(&"comparable", true))
 		and str(garage_menu.get(&"workshop_category", "")) == "NUMBER"
 		and int(garage_menu.get(&"rider_number", 0)) == 128
 		and int(garage_menu.get(&"rider_number_draft", 0)) == 128

@@ -79,6 +79,7 @@ var _results_title: Label
 var _results_summary: Label
 var _results_podium: Control
 var _results_recap: Label
+var _results_debrief: Label
 var _results_payoff_panel: PanelContainer
 var _results_payoff_flow: HFlowContainer
 var _results_payout_label: Label
@@ -456,9 +457,15 @@ func show_results(result: Dictionary) -> void:
 	if academy_results:
 		_results_podium.call(&"clear")
 		_results_recap.text = ""
+		_results_debrief.text = ""
+		_results_debrief.visible = false
 	else:
 		_results_podium.call(&"present", _classification, result, Profile.get_rider_cosmetics())
 		_results_recap.text = _results_event_recap_text(result)
+		var debrief_value: Variant = result.get(&"rider_debrief", {})
+		var debrief: Dictionary = debrief_value as Dictionary if debrief_value is Dictionary else {}
+		_results_debrief.text = str(debrief.get(&"summary", ""))
+		_results_debrief.visible = not _results_debrief.text.is_empty()
 	_refresh_results_payoff(result)
 	_results_competition.visible = (
 		_last_academy_evaluation.is_empty()
@@ -726,6 +733,11 @@ func get_competition_presentation_snapshot() -> Dictionary:
 			if _results_podium != null else {}
 		),
 		&"event_recap": _results_recap.text if _results_recap != null else "",
+		&"rider_debrief": (
+			(_last_result.get(&"rider_debrief", {}) as Dictionary).duplicate(true)
+			if _last_result.get(&"rider_debrief", {}) is Dictionary else {}
+		),
+		&"rider_debrief_text": _results_debrief.text if _results_debrief != null else "",
 		&"text": _results_competition.text if _results_competition != null else "",
 		&"footer": _results_footer.text if _results_footer != null else "",
 		&"replay_available": _replay_available,
@@ -2070,6 +2082,12 @@ func _build_results_panel(root: Control) -> void:
 	_results_recap.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_results_recap.custom_minimum_size = Vector2(0.0, 34.0)
 	_results_recap.visible = false
+	_results_debrief = _make_label(_results_stack, "", 13, CYAN)
+	_results_debrief.name = "RiderDebrief"
+	_results_debrief.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_results_debrief.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_results_debrief.custom_minimum_size = Vector2(0.0, 58.0)
+	_results_debrief.visible = false
 
 	_results_payoff_panel = PanelContainer.new()
 	_results_payoff_panel.name = "CareerPayoff"
@@ -2467,7 +2485,7 @@ func _results_content_fits() -> bool:
 		return false
 	var panel_rect := _results_panel.get_global_rect().grow(1.0)
 	for control: Control in [
-		_results_title, _results_summary, _results_podium, _results_recap,
+		_results_title, _results_summary, _results_podium, _results_recap, _results_debrief,
 		_results_payoff_panel, _results_competition,
 		_results_heading_label, _results_scroll, _results_stats, _results_footer,
 	]:
@@ -2488,7 +2506,7 @@ func _results_line_fit_snapshot() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
 	for label: Label in [
 		_results_title, _results_summary, _results_payout_label, _results_unlock_label,
-		_results_goal_label, _results_recap, _results_competition, _results_heading_label,
+		_results_goal_label, _results_recap, _results_debrief, _results_competition, _results_heading_label,
 		_results_stats, _results_footer,
 	]:
 		if label == null:
@@ -3185,7 +3203,7 @@ func _refresh_results_footer(next_event_name: String) -> void:
 		_queue_results_layout_refresh()
 		return
 	var replay_action := "     %s  WATCH REPLAY" % _active_action_label(InputRouter.TOGGLE_REPLAY) if _replay_available else ""
-	_results_footer.text = "%s\n%s\n%s  REMATCH%s     %s  GARAGE" % [
+	_results_footer.text = "%s\n%s\n%s  REMATCH LAST PLAN%s     %s  GARAGE" % [
 		next_text,
 		_results_navigation_prompt(),
 		_active_action_label(InputRouter.RESTART_RUN),
@@ -3478,6 +3496,9 @@ func _on_race_started() -> void:
 		_results_podium.call(&"clear")
 	if _results_recap != null:
 		_results_recap.text = ""
+	if _results_debrief != null:
+		_results_debrief.text = ""
+		_results_debrief.visible = false
 	_last_career_payoff.clear()
 	_last_leaderboard_result.clear()
 	_last_hotseat_result.clear()
@@ -3564,6 +3585,9 @@ func _on_race_reset() -> void:
 		_results_podium.call(&"clear")
 	if _results_recap != null:
 		_results_recap.text = ""
+	if _results_debrief != null:
+		_results_debrief.text = ""
+		_results_debrief.visible = false
 	_last_leaderboard_result.clear()
 	_last_hotseat_result.clear()
 	_last_custom_tour_result.clear()

@@ -10,7 +10,7 @@ signal achievement_unlocked(achievement_id: StringName)
 const SAVE_PATH: String = "user://rider_profile.cfg"
 const WEB_SAVE_KEY: String = "rider_profile_v1"
 const ATOMIC_CONFIG_STORE := preload("res://common/atomic_config_store.gd")
-const PROFILE_SCHEMA_VERSION: int = 10
+const PROFILE_SCHEMA_VERSION: int = 12
 const COURSE_LAYOUT_VERSION: int = 4
 const MAX_CASH: int = 999_999
 const MAX_LOG_ENTRIES: int = 30
@@ -19,6 +19,7 @@ const MAX_ACTIVITY_RESULT_IDS: int = 64
 const MAX_ACADEMY_RESULT_BINDINGS: int = 128
 const MAX_EVENT_RECORDS: int = 64
 const MAX_CHALLENGE_RECORDS: int = 64
+const MAX_EVENT_RUN_HISTORY: int = 5
 const MAX_LEADERBOARD_SUMMARIES: int = 48
 const MAX_SAVED_BUILD_SLOTS: int = 3
 const SAVED_BUILD_SLOT_IDS: Array[StringName] = [&"BUILD_A", &"BUILD_B", &"BUILD_C"]
@@ -792,6 +793,121 @@ func get_event_record(event_id: StringName, challenge_id: StringName = &"") -> D
 		return get_challenge_record(challenge_id, event_id)
 	var record: Variant = event_records.get(event_id, event_records.get(String(event_id), {}))
 	return (record as Dictionary).duplicate(true) if record is Dictionary else {}
+
+
+func get_event_run_history_snapshot(event_id: StringName, challenge_id: StringName = &"") -> Dictionary:
+	var record := get_event_record(event_id, challenge_id)
+	var recent_value: Variant = record.get(&"recent_runs", [])
+	var recent_runs: Array = recent_value.duplicate(true) if recent_value is Array else []
+	var personal_best_value: Variant = record.get(&"personal_best_run", {})
+	var pinned_value: Variant = record.get(&"pinned_run", {})
+	return {
+		&"event_id": event_id,
+		&"challenge_id": challenge_id,
+		&"recent_runs": recent_runs,
+		&"previous_run": (recent_runs[0] as Dictionary).duplicate(true) if not recent_runs.is_empty() and recent_runs[0] is Dictionary else {},
+		&"personal_best_run": (
+			(personal_best_value as Dictionary).duplicate(true)
+			if personal_best_value is Dictionary else {}
+		),
+		&"pinned_run": (
+			(pinned_value as Dictionary).duplicate(true)
+			if pinned_value is Dictionary else {}
+		),
+		&"history_limit": MAX_EVENT_RUN_HISTORY,
+	}
+
+
+func pin_event_run_reference(
+	event_id: StringName, challenge_id: StringName, result_id: String
+) -> Dictionary:
+	## Pin one official, sanitized result as a durable custom comparison target.
+	## The copy remains valid when the bounded recent list advances.
+	var scoped_challenge := not challenge_id.is_empty()
+	var record_value: Variant = (
+		challenge_records.get(challenge_id, {})
+		if scoped_challenge else event_records.get(event_id, {})
+	)
+	if not record_value is Dictionary or result_id.strip_edges().is_empty():
+		return {&"accepted": false, &"reason": &"RUN_UNAVAILABLE"}
+	var record := (record_value as Dictionary).duplicate(true)
+	if scoped_challenge and StringName(record.get(&"event_id", &"")) != event_id:
+		return {&"accepted": false, &"reason": &"RUN_UNAVAILABLE"}
+	var candidates: Array = record.get(&"recent_runs", []) as Array
+	var personal_best_value: Variant = record.get(&"personal_best_run", {})
+	if personal_best_value is Dictionary and not (personal_best_value as Dictionary).is_empty():
+		candidates = candidates.duplicate(true)
+		candidates.append((personal_best_value as Dictionary).duplicate(true))
+	var pinned: Dictionary = {}
+	for raw_candidate: Variant in candidates:
+		if raw_candidate is Dictionary and str((raw_candidate as Dictionary).get(&"result_id", "")) == result_id:
+			pinned = _sanitize_event_run_history_entry(raw_candidate)
+			break
+	if pinned.is_empty():
+		return {&"accepted": false, &"reason": &"RUN_UNAVAILABLE"}
+
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	_begin_settlement_signal_batch()
+	record[&"pinned_run"] = pinned.duplicate(true)
+	if scoped_challenge:
+		challenge_records[challenge_id] = record
+	else:
+		event_records[event_id] = record
+	if not _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration):
+		return {&"accepted": false, &"reason": &"SAVE_FAILED"}
+	return {
+		&"accepted": true, &"reason": &"RUN_PINNED",
+		&"event_id": event_id, &"challenge_id": challenge_id,
+		&"pinned_run": pinned.duplicate(true),
+	}
+
+
+func apply_recorded_race_plan(plan_value: Variant) -> Dictionary:
+	## Restore strategy only. Live condition and odometer remain authoritative so
+	## a historical personal best can never repair or rewind an owned bike.
+	var plan := _sanitize_recorded_run_plan(plan_value)
+	if plan.is_empty():
+		return {&"accepted": false, &"reason": &"INVALID_PLAN"}
+	var target_bike := StringName(plan.get(&"bike_id", &""))
+	var target_build_data := get_bike_build_snapshot(target_bike)
+	if target_build_data.is_empty():
+		return {&"accepted": false, &"reason": &"BIKE_UNAVAILABLE"}
+	var target_setup := StringName(plan.get(&"setup_id", &"BALANCED"))
+	if target_setup not in unlocked_setups:
+		return {&"accepted": false, &"reason": &"SETUP_UNAVAILABLE"}
+	var catalog: Variant = BIKE_CATALOG_SCRIPT.create_default()
+	var installed_parts := plan.get(&"installed_parts", {}) as Dictionary
+	for raw_slot: Variant in installed_parts:
+		var part_id := StringName(installed_parts.get(raw_slot, &""))
+		if part_id not in owned_part_ids or not catalog.is_part_compatible(part_id, target_bike):
+			return {&"accepted": false, &"reason": &"PART_UNAVAILABLE", &"part_id": part_id}
+	var rollback_profile := _profile_to_dictionary()
+	var rollback_transactions := transaction_log.duplicate(true)
+	var rollback_migration := _profile_migration_pending
+	_begin_settlement_signal_batch()
+	var target_build: Variant = BIKE_BUILD_SCRIPT.from_dictionary(target_build_data)
+	target_build.installed_parts = installed_parts.duplicate(true)
+	target_build.tune = BIKE_TUNE_SCRIPT.from_dictionary(plan.get(&"tune", {}) as Dictionary)
+	target_build.livery_id = StringName(plan.get(&"livery_id", target_build.livery_id))
+	owned_bike_builds[target_bike] = target_build.to_dictionary()
+	active_bike_id = target_bike
+	current_setup = target_setup
+	bike_condition = clampi(roundi(target_build.condition * 100.0), 0, 100)
+	var eligible: Array[StringName] = target_build.eligible_classes(catalog, racer_reputation)
+	var recorded_class := StringName(plan.get(&"selected_class", &""))
+	selected_bike_class = recorded_class if recorded_class in eligible else (
+		eligible[0] if not eligible.is_empty() else &"OPEN"
+	)
+	if not _commit_profile_transaction(rollback_profile, rollback_transactions, rollback_migration):
+		return {&"accepted": false, &"reason": &"SAVE_FAILED"}
+	return {
+		&"accepted": true,
+		&"reason": &"PLAN_APPLIED",
+		&"plan": plan.duplicate(true),
+		&"active_setup": get_active_bike_setup_snapshot(),
+	}
 
 
 func get_challenge_record(challenge_id: StringName, event_id: StringName = &"") -> Dictionary:
@@ -2627,6 +2743,13 @@ func _sanitize_event_records(value: Variant) -> Dictionary:
 			&"last_position": clampi(int(_dictionary_value(record, "last_position", 0)), 0, 99),
 			&"last_status": _safe_identifier(_dictionary_value(record, "last_status", &"UNRIDDEN"), &"UNRIDDEN"),
 			&"last_medal": _safe_identifier(_dictionary_value(record, "last_medal", &"UNRIDDEN"), &"UNRIDDEN"),
+			&"recent_runs": _sanitize_event_run_history(_dictionary_value(record, "recent_runs", [])),
+			&"personal_best_run": _sanitize_event_run_history_entry(
+				_dictionary_value(record, "personal_best_run", {})
+			),
+			&"pinned_run": _sanitize_event_run_history_entry(
+				_dictionary_value(record, "pinned_run", {})
+			),
 		}
 	return output
 
@@ -2667,8 +2790,110 @@ func _sanitize_challenge_records(value: Variant) -> Dictionary:
 			&"last_medal": _safe_identifier(_dictionary_value(record, "last_medal", &"UNRIDDEN"), &"UNRIDDEN"),
 			&"best_medal_rank": clampi(int(_dictionary_value(record, "best_medal_rank", 0)), 0, 4),
 			&"updated_unix": maxi(int(_dictionary_value(record, "updated_unix", 0)), 0),
+			&"recent_runs": _sanitize_event_run_history(_dictionary_value(record, "recent_runs", [])),
+			&"personal_best_run": _sanitize_event_run_history_entry(
+				_dictionary_value(record, "personal_best_run", {})
+			),
+			&"pinned_run": _sanitize_event_run_history_entry(
+				_dictionary_value(record, "pinned_run", {})
+			),
 		}
 	return output
+
+
+func _sanitize_event_run_history(value: Variant) -> Array[Dictionary]:
+	var output: Array[Dictionary] = []
+	if not value is Array:
+		return output
+	for raw_entry: Variant in (value as Array):
+		if output.size() >= MAX_EVENT_RUN_HISTORY:
+			break
+		var entry := _sanitize_event_run_history_entry(raw_entry)
+		if not entry.is_empty():
+			output.append(entry)
+	return output
+
+
+func _sanitize_event_run_history_entry(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return {}
+	var data := value as Dictionary
+	var plan := _sanitize_recorded_run_plan(_dictionary_value(data, "plan", {}))
+	if plan.is_empty():
+		return {}
+	var status := _safe_identifier(_dictionary_value(data, "status", &"UNCLASSIFIED"), &"UNCLASSIFIED")
+	var effective_time_usec := int(_dictionary_value(data, "effective_time_usec", -1))
+	if effective_time_usec <= 0:
+		effective_time_usec = -1
+	return {
+		&"result_id": str(_dictionary_value(data, "result_id", "")).strip_edges().substr(0, 160),
+		&"completed_unix": maxi(int(_dictionary_value(data, "completed_unix", 0)), 0),
+		&"position": clampi(int(_dictionary_value(data, "position", 0)), 0, 99),
+		&"status": status,
+		&"valid": bool(_dictionary_value(data, "valid", false)),
+		&"effective_time_usec": effective_time_usec,
+		&"medal": _safe_identifier(_dictionary_value(data, "medal", &"NO_AWARD"), &"NO_AWARD"),
+		&"crashes": clampi(int(_dictionary_value(data, "crashes", 0)), 0, 999),
+		&"contacts": clampi(int(_dictionary_value(data, "contacts", 0)), 0, 999),
+		&"resets": clampi(int(_dictionary_value(data, "resets", 0)), 0, 999),
+		&"flow_uses": clampi(int(_dictionary_value(data, "flow_uses", 0)), 0, 999),
+		&"sector_times_usec": _int_array(_dictionary_value(data, "sector_times_usec", []), 32),
+		&"plan": plan,
+	}
+
+
+func _sanitize_recorded_run_plan(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return {}
+	var data := value as Dictionary
+	var catalog: Variant = BIKE_CATALOG_SCRIPT.create_default()
+	var bike_id := _safe_identifier(_dictionary_value(data, "bike_id", &""), &"")
+	var setup_id := _safe_identifier(_dictionary_value(data, "setup_id", &"BALANCED"), &"BALANCED")
+	if bike_id.is_empty() or not catalog.has_bike(bike_id) or setup_id not in [&"BALANCED", &"TRAIL", &"ATTACK"]:
+		return {}
+	var installed_parts: Dictionary = {}
+	var raw_parts: Variant = _dictionary_value(data, "installed_parts", {})
+	if raw_parts is Dictionary:
+		for raw_slot: Variant in raw_parts:
+			if installed_parts.size() >= 5:
+				break
+			var slot := _safe_identifier(raw_slot, &"")
+			var part_id := _safe_identifier((raw_parts as Dictionary).get(raw_slot, &""), &"")
+			if (
+				not slot.is_empty() and not part_id.is_empty()
+				and catalog.is_part_compatible(part_id, bike_id)
+				and StringName(catalog.get_part(part_id).get(&"slot", &"")) == slot
+			):
+				installed_parts[slot] = part_id
+	var raw_tune: Variant = _dictionary_value(data, "tune", {})
+	var assist_mode := _safe_identifier(_dictionary_value(data, "assist_mode", &"SPORT"), &"SPORT")
+	if assist_mode not in [&"ASSISTED", &"SPORT", &"PRO", &"CUSTOM"]:
+		assist_mode = &"SPORT"
+	var transmission := _safe_identifier(_dictionary_value(data, "transmission_mode", &"AUTOMATIC"), &"AUTOMATIC")
+	if transmission not in [&"AUTOMATIC", &"MANUAL"]:
+		transmission = &"AUTOMATIC"
+	var crash_support := _safe_identifier(_dictionary_value(data, "crash_support_mode", &"STANDARD"), &"STANDARD")
+	if crash_support not in [&"STANDARD", &"ASSISTED"]:
+		crash_support = &"STANDARD"
+	return {
+		&"version": 1,
+		&"setup_id": setup_id,
+		&"bike_id": bike_id,
+		&"selected_class": _safe_identifier(_dictionary_value(data, "selected_class", &"LITE_125"), &"LITE_125"),
+		&"installed_parts": installed_parts,
+		&"tune": BIKE_TUNE_SCRIPT.from_dictionary(raw_tune as Dictionary if raw_tune is Dictionary else {}).to_dictionary(),
+		&"livery_id": _safe_identifier(_dictionary_value(data, "livery_id", &"FACTORY"), &"FACTORY"),
+		&"condition_percent": clampi(int(_dictionary_value(data, "condition_percent", 100)), 0, 100),
+		&"build_signature": str(_dictionary_value(data, "build_signature", "")).strip_edges().substr(0, 256),
+		&"assist_mode": assist_mode,
+		&"assist_signature": str(_dictionary_value(data, "assist_signature", "")).strip_edges().substr(0, 160),
+		&"difficulty": clampi(int(_dictionary_value(data, "difficulty", 1)), 0, 2),
+		&"transmission_mode": transmission,
+		&"control_signature": str(_dictionary_value(data, "control_signature", "")).strip_edges().substr(0, 160),
+		&"crash_support_mode": crash_support,
+		&"weather": _safe_identifier(_dictionary_value(data, "weather", &"CLEAR"), &"CLEAR"),
+		&"surface": _safe_identifier(_dictionary_value(data, "surface", &"PACKED"), &"PACKED"),
+	}
 
 
 func _sanitize_leaderboard_summary(value: Variant) -> Dictionary:
@@ -2712,6 +2937,11 @@ func _record_event_result(
 		else event_records.get(event_id, {})
 	)
 	var record: Dictionary = (record_value as Dictionary).duplicate(true) if record_value is Dictionary else {}
+	var prior_personal_best_value: Variant = record.get(&"personal_best_run", {})
+	var prior_personal_best: Dictionary = (
+		(prior_personal_best_value as Dictionary).duplicate(true)
+		if prior_personal_best_value is Dictionary else {}
+	)
 	if scoped_challenge:
 		record[&"event_id"] = event_id
 		record[&"challenge_id"] = challenge_id
@@ -2745,6 +2975,21 @@ func _record_event_result(
 		_safe_identifier(_dictionary_value(result, "medal", &"UNRIDDEN"), &"UNRIDDEN")
 		if result_valid else &"NO_AWARD"
 	)
+	var history_entry := _build_event_run_history_entry(
+		result, result_valid, status, position, effective_time
+	)
+	if not history_entry.is_empty():
+		var recent_runs := _sanitize_event_run_history(record.get(&"recent_runs", []))
+		recent_runs.push_front(history_entry.duplicate(true))
+		while recent_runs.size() > MAX_EVENT_RUN_HISTORY:
+			recent_runs.pop_back()
+		record[&"recent_runs"] = recent_runs
+		var prior_pb_time := int(prior_personal_best.get(&"effective_time_usec", -1))
+		if (
+			finished and result_valid and effective_time > 0
+			and (prior_pb_time <= 0 or effective_time < prior_pb_time)
+		):
+			record[&"personal_best_run"] = history_entry.duplicate(true)
 	if scoped_challenge:
 		record[&"updated_unix"] = int(Time.get_unix_time_from_system())
 		challenge_records[challenge_id] = record
@@ -2752,6 +2997,38 @@ func _record_event_result(
 	else:
 		event_records[event_id] = record
 		_trim_event_records()
+
+
+func _build_event_run_history_entry(
+	result: Dictionary,
+	result_valid: bool,
+	status: StringName,
+	position: int,
+	effective_time_usec: int
+) -> Dictionary:
+	var plan := _sanitize_recorded_run_plan(_dictionary_value(result, "run_plan", {}))
+	if plan.is_empty():
+		return {}
+	var racecraft_value: Variant = _dictionary_value(result, "racecraft_metrics", {})
+	var racecraft: Dictionary = racecraft_value as Dictionary if racecraft_value is Dictionary else {}
+	return _sanitize_event_run_history_entry({
+		&"result_id": _race_result_fingerprint(
+			result,
+			_safe_identifier(_dictionary_value(result, "event_id", &"CIRCUIT"), &"CIRCUIT")
+		),
+		&"completed_unix": int(Time.get_unix_time_from_system()),
+		&"position": position,
+		&"status": status,
+		&"valid": result_valid,
+		&"effective_time_usec": effective_time_usec,
+		&"medal": _safe_identifier(_dictionary_value(result, "medal", &"NO_AWARD"), &"NO_AWARD"),
+		&"crashes": maxi(int(_dictionary_value(result, "crashes", 0)), 0),
+		&"contacts": maxi(int(_dictionary_value(result, "contacts", 0)), 0),
+		&"resets": maxi(int(_dictionary_value(result, "reset_count", 0)), 0),
+		&"flow_uses": maxi(int(_dictionary_value(racecraft, "flow_uses", 0)), 0),
+		&"sector_times_usec": _dictionary_value(result, "sector_times_usec", []),
+		&"plan": plan,
+	})
 
 
 func _record_weekend_result(phase: StringName, classification: Array[Dictionary]) -> bool:

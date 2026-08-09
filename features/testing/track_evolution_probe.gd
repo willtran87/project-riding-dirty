@@ -105,7 +105,7 @@ func _run() -> void:
 	if _failures.is_empty():
 		print(
 			"TRACK EVOLUTION PROBE: PASS // traffic=6 compacted=true "
-			+ "wet_risk=true lane_isolated=true collision_free=true schema=7"
+			+ "wet_risk=true lane_isolated=true collision_free=true schema=13"
 		)
 	else:
 		for failure: String in _failures:
@@ -147,7 +147,7 @@ func _check_source_integration() -> void:
 	)
 	_check(
 		main_source.contains("&\"track_evolution\": _race.get_track_evolution_snapshot()")
-			and web_source.contains("const SCHEMA_VERSION := 7")
+			and web_source.contains("const SCHEMA_VERSION := 13")
 			and web_source.contains("_track_evolution_projection"),
 		"Browser-readable state omitted bounded track-evolution observability"
 	)

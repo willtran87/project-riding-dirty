@@ -9,6 +9,7 @@ const BIKE_TEST_RIDE_SCRIPT := preload("res://features/career/bike_test_ride.gd"
 const PROGRESSION_PAYOFF_SCRIPT := preload("res://features/career/progression_payoff.gd")
 const WEB_GAME_TEXT_STATE := preload("res://common/web_game_text_state.gd")
 const BIKE_CONDITION_FEEDBACK := preload("res://features/race/bike_condition_feedback.gd")
+const RIDER_DEBRIEF_SCRIPT := preload("res://features/race/rider_debrief.gd")
 const SPONSOR_TRACKSIDE_PRESENTER := preload("res://features/presentation/sponsor_trackside_presenter.gd")
 const QUARRY_SCENE := preload("res://levels/quarry/quarry.tscn")
 const PINE_RIDGE_SCENE := preload("res://levels/pine_ridge/pine_ridge.tscn")
@@ -61,6 +62,7 @@ var _activity_progression_baselines: Dictionary = {}
 var _pending_garage_event: StringName = &""
 var _pending_academy_settlement: Dictionary = {}
 var _pending_race_settlement: Dictionary = {}
+var _last_rider_debrief: Dictionary = {}
 var _pending_close_after_save: bool = false
 var _web_game_text_publish_time: float = 0.0
 var _test_ride_bike_id: StringName = &""
@@ -271,6 +273,9 @@ func get_web_game_text_state_snapshot() -> Dictionary:
 			&"workshop_open": bool(workshop.get(&"open", false)),
 			&"event": garage_briefing.get(&"event_id", _current_activity),
 			&"setup": garage_strategy.get(&"selected_setup", Profile.current_setup),
+			&"setup_comparison": garage_strategy.get(&"setup_comparison", {}),
+			&"setup_decision": garage_strategy.get(&"setup_decision", {}),
+			&"result_history": garage_strategy.get(&"result_history", {}),
 			&"status": garage_prompts.get(&"status", ""),
 			&"workshop_category": workshop.get(&"category", ""),
 			&"workshop_item": workshop.get(&"workshop_item", ""),
@@ -716,6 +721,8 @@ func _return_to_garage() -> void:
 		_current_activity, _ghost.best_time_usec, _active_competition_id()
 	)
 	_garage.show_garage()
+	if _garage.has_method(&"set_rider_debrief"):
+		_garage.call(&"set_rider_debrief", _last_rider_debrief)
 	if not completed_test_ride_name.is_empty():
 		_garage.show_test_ride_complete(completed_test_ride_name)
 	if _race_services.get_custom_tour_last_result_event() == _current_activity:
@@ -1262,6 +1269,27 @@ func _on_race_results_ready(
 		else PROGRESSION_PAYOFF_SCRIPT.capture(Profile)
 	)
 	var structured_result := result.duplicate(true)
+	var rider_debrief_value: Variant = structured_result.get(&"rider_debrief", {})
+	var current_rider_debrief: Dictionary = (
+		(rider_debrief_value as Dictionary).duplicate(true)
+		if rider_debrief_value is Dictionary else {}
+	)
+	if (
+		_current_activity != &"ACADEMY"
+		and not _last_rider_debrief.is_empty()
+		and not current_rider_debrief.is_empty()
+	):
+		var follow_up: Dictionary = RIDER_DEBRIEF_SCRIPT.evaluate_follow_up(
+			_last_rider_debrief, current_rider_debrief
+		)
+		if not follow_up.is_empty():
+			current_rider_debrief[&"follow_up"] = follow_up
+			current_rider_debrief[&"summary"] = RIDER_DEBRIEF_SCRIPT.compose_summary(
+				current_rider_debrief
+			)
+			structured_result[&"rider_debrief"] = current_rider_debrief.duplicate(true)
+	if _current_activity != &"ACADEMY":
+		_last_rider_debrief = current_rider_debrief.duplicate(true)
 	if not bool(structured_result.get(&"valid", true)):
 		structured_result[&"medal"] = &"NO_AWARD"
 		structured_result[&"championship_points"] = 0

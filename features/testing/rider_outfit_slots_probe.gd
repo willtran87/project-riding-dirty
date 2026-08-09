@@ -91,7 +91,7 @@ func _run() -> void:
 		restored._apply_profile_dictionary(json_round_trip)
 		restored._ensure_full_race_defaults()
 	var restored_c: Dictionary = restored.get_saved_rider_outfit_snapshot(&"OUTFIT_C")
-	_check(restored.PROFILE_SCHEMA_VERSION == 10, "Profile schema was not advanced for rider graphics")
+	_check(restored.PROFILE_SCHEMA_VERSION == 12, "Profile schema was not advanced for pinned result references")
 	_check(restored.get_saved_rider_outfit_slots().size() == 3, "Outfit slots are not bounded to exactly three")
 	_check(str(restored_c.get(&"display_name", "")) == "TAMPERED IDENTITY", "Outfit name controls survived sanitization")
 	_check(

@@ -12,9 +12,11 @@ signal event_selection_changed(activity: StringName)
 
 const BIKE_CATALOG_SCRIPT := preload("res://features/career/racing_bike_catalog.gd")
 const BIKE_BUILD_SCRIPT := preload("res://features/career/racing_bike_build.gd")
+const BIKE_TUNE_SCRIPT := preload("res://features/career/racing_bike_tune.gd")
 const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_catalog.gd")
 const SPONSOR_CONTRACT_CATALOG := preload("res://features/career/sponsor_contract_catalog.gd")
 const RIDER_GRAPHICS_CATALOG := preload("res://features/career/rider_graphics_catalog.gd")
+const RUN_PLAN_ANALYSIS := preload("res://features/race/run_plan_analysis.gd")
 
 const SETUPS: Array[StringName] = [&"TRAIL", &"BALANCED", &"ATTACK"]
 const EVENTS: Array[StringName] = [
@@ -30,7 +32,7 @@ const CYAN := Color("56d6ff")
 const MUTED := Color("8b989f")
 const DARK := Color(0.025, 0.03, 0.036, 0.92)
 const WORKSHOP_CATEGORIES: Array[StringName] = [
-	&"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE", &"GRAPHICS", &"RIDER", &"NUMBER", &"OUTFIT", &"BUILD",
+	&"HISTORY", &"BIKE", &"CLASS", &"TUNE", &"PART", &"STYLE", &"GRAPHICS", &"RIDER", &"NUMBER", &"OUTFIT", &"BUILD",
 ]
 const PART_SLOTS: Array[StringName] = [&"ENGINE", &"TIRES", &"SUSPENSION", &"BRAKES", &"CHASSIS"]
 const TUNE_PRESETS: Array[Dictionary] = [
@@ -65,6 +67,8 @@ var _profile_label: Label
 var _setup_name: Label
 var _tagline: Label
 var _description: Label
+var _decision_label: Label
+var _comparison_label: Label
 var _strategy_label: Label
 var _price_label: Label
 var _status_label: Label
@@ -80,6 +84,8 @@ var _repair_label: Label
 var _setup_left_hint: Label
 var _setup_right_hint: Label
 var _bars: Dictionary[StringName, ProgressBar] = {}
+var _equipped_bars: Dictionary[StringName, ProgressBar] = {}
+var _recommended_bars: Dictionary[StringName, ProgressBar] = {}
 var _event_markers: Array[Label] = []
 var _workshop_summary_panel: PanelContainer
 var _workshop_summary_label: Label
@@ -99,9 +105,9 @@ var _selected_index: int = 1
 var _event_index: int = 0
 var _open: bool = false
 var _workshop_open: bool = false
-var _workshop_category_index: int = 0
+var _workshop_category_index: int = 1
 var _workshop_item_indices: Dictionary[StringName, int] = {
-	&"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0, &"NUMBER": 0,
+	&"HISTORY": 0, &"BIKE": 0, &"CLASS": 0, &"TUNE": 0, &"PART": 0, &"STYLE": 0, &"NUMBER": 0,
 	&"GRAPHICS": 0, &"RIDER": 1, &"OUTFIT": 1, &"BUILD": 1,
 }
 var _rider_number_draft: int = 17
@@ -111,6 +117,9 @@ var _active_competition_id: StringName = &""
 var _active_ghost_best_usec: int = -1
 var _custom_tour_builder_open: bool = false
 var _custom_tour_candidate_index: int = 0
+var _rider_debrief: Dictionary = {}
+var _last_plan_undo: Dictionary = {}
+var _workshop_focus_debrief_pending: bool = false
 
 
 func _ready() -> void:
@@ -195,14 +204,20 @@ func _unhandled_input(event: InputEvent) -> void:
 		_emit_interface_feedback(&"NAVIGATE", &"GARAGE_EVENT")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.REPAIR_BIKE):
-		_attempt_repair()
+		if Profile.get_repair_price() > 0:
+			_attempt_repair()
+		else:
+			apply_recommended_event_plan()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.TOGGLE_ASSIST):
-		Profile.cycle_assist_mode()
-		_refresh()
-		_status_label.text = "HANDLING ASSIST  //  %s" % Profile.get_assist_summary()
-		_status_label.modulate = CYAN
-		_emit_interface_feedback(&"CONFIRM", &"GARAGE_ASSIST")
+		if not _last_plan_undo.is_empty():
+			undo_recommended_event_plan()
+		else:
+			Profile.cycle_assist_mode()
+			_refresh()
+			_status_label.text = "HANDLING ASSIST  //  %s" % Profile.get_assist_summary()
+			_status_label.modulate = CYAN
+			_emit_interface_feedback(&"CONFIRM", &"GARAGE_ASSIST")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed(InputRouter.GARAGE_RIGHT):
 		_selected_index = wrapi(_selected_index + 1, 0, SETUPS.size())
@@ -254,12 +269,23 @@ func show_test_ride_complete(bike_name: String) -> void:
 	_status_label.modulate = CYAN
 
 
+func set_rider_debrief(debrief: Dictionary) -> void:
+	## Carry the last official lesson into the next setup/event decision.
+	_rider_debrief = debrief.duplicate(true)
+	_workshop_focus_debrief_pending = not _rider_debrief.is_empty()
+	if _open:
+		_refresh_event_strategy()
+
+
 func show_workshop() -> void:
 	if not _open:
 		return
 	_workshop_open = true
 	_workshop_overlay.visible = true
 	_sync_workshop_selection()
+	if _workshop_focus_debrief_pending:
+		_workshop_category_index = maxi(WORKSHOP_CATEGORIES.find(_debrief_workshop_category()), 0)
+		_workshop_focus_debrief_pending = false
 	_workshop_status_label.text = ""
 	_refresh_workshop()
 	workshop_visibility_changed.emit(true)
@@ -319,6 +345,7 @@ func confirm_workshop_item() -> bool:
 		return false
 	var success := false
 	match category:
+		&"HISTORY": success = _apply_history_plan_action(item)
 		&"BIKE": success = _activate_or_purchase_bike(item)
 		&"CLASS": success = _select_bike_class(item)
 		&"TUNE": success = _apply_tune_preset(item)
@@ -379,6 +406,7 @@ func get_workshop_snapshot() -> Dictionary:
 		&"rider_number_draft": _rider_number_draft,
 		&"saved_outfits": Profile.get_saved_rider_outfit_slots(),
 		&"saved_builds": Profile.get_saved_bike_build_slots(),
+		&"event_history": get_event_history_presentation_snapshot(),
 		&"workshop_title": _workshop_title_label.text if _workshop_title_label != null else "",
 		&"workshop_item": _workshop_item_label.text if _workshop_item_label != null else "",
 		&"workshop_detail": _workshop_detail_label.text if _workshop_detail_label != null else "",
@@ -418,7 +446,39 @@ func get_event_strategy_presentation_snapshot() -> Dictionary:
 	var active_tune := _active_tune_id()
 	var snapshot := _event_strategy_fit(activity, selected_setup, active_tune)
 	snapshot[&"label"] = _strategy_label.text if _strategy_label != null else ""
+	snapshot[&"rider_debrief"] = _rider_debrief.duplicate(true)
+	snapshot[&"setup_comparison"] = get_setup_comparison_snapshot(selected_setup)
+	snapshot[&"setup_decision"] = get_setup_decision_snapshot(selected_setup, activity)
+	snapshot[&"result_history"] = get_event_history_presentation_snapshot(activity)
 	return snapshot
+
+
+func get_event_history_presentation_snapshot(activity: StringName = &"") -> Dictionary:
+	if activity.is_empty():
+		activity = EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	var challenge_id := _challenge_id_for_activity(activity)
+	var history: Dictionary = Profile.get_event_run_history_snapshot(activity, challenge_id)
+	var previous := history.get(&"previous_run", {}) as Dictionary
+	var personal_best := history.get(&"personal_best_run", {}) as Dictionary
+	var pinned := history.get(&"pinned_run", {}) as Dictionary
+	var reference := pinned if not pinned.is_empty() else personal_best
+	var reference_kind := &"PINNED" if not pinned.is_empty() else &"PERSONAL_BEST"
+	var comparison: Dictionary = RUN_PLAN_ANALYSIS.compare(previous, reference, _rider_debrief)
+	return {
+		&"event_id": activity,
+		&"challenge_id": challenge_id,
+		&"previous_run": previous.duplicate(true),
+		&"personal_best_run": personal_best.duplicate(true),
+		&"pinned_run": pinned.duplicate(true),
+		&"reference_run": reference.duplicate(true),
+		&"reference_kind": reference_kind,
+		&"recent_count": (history.get(&"recent_runs", []) as Array).size(),
+		&"history_limit": int(history.get(&"history_limit", 0)),
+		&"previous_label": _history_run_label(previous, "LAST RUN"),
+		&"personal_best_label": _history_run_label(personal_best, "PERSONAL BEST"),
+		&"pinned_label": _history_run_label(pinned, "PINNED REFERENCE"),
+		&"comparison": comparison,
+	}
 
 
 func _event_strategy_fit(activity: StringName, setup_id: StringName, tune_id: StringName) -> Dictionary:
@@ -847,14 +907,170 @@ func get_continue_weekend_snapshot() -> Dictionary:
 
 
 func get_setup_runtime_snapshot(setup: StringName) -> Dictionary:
+	return get_setup_plan_runtime_snapshot(setup, _active_tune_id())
+
+
+func get_setup_plan_runtime_snapshot(setup: StringName, tune_id: StringName) -> Dictionary:
 	var active: Dictionary = Profile.get_active_bike_setup_snapshot()
 	var build := active.get(&"build", {}) as Dictionary
+	var tune := build.get(&"tune", {}) as Dictionary
+	var preset_tune := _tune_dictionary(tune_id)
+	if not preset_tune.is_empty():
+		tune = preset_tune
 	return BIKE_BUILD_SCRIPT.runtime_projection(
 		setup,
 		active.get(&"stats", {}) as Dictionary,
 		Profile.bike_condition,
-		build.get(&"tune", {}) as Dictionary
+		tune
 	)
+
+
+func get_setup_comparison_snapshot(setup: StringName) -> Dictionary:
+	## Quantify kit consequences from the exact runtime projection shown by the
+	## Garage and applied to the bike. Balanced is the stable comparison anchor so
+	## cycling cards never changes the meaning of a positive or negative value.
+	var selected := get_setup_runtime_snapshot(setup)
+	var baseline := get_setup_runtime_snapshot(&"BALANCED")
+	var deltas := {
+		&"drive_percent": _runtime_delta_percent(selected, baseline, &"engine_force"),
+		&"grip_percent": _runtime_delta_percent(selected, baseline, &"lateral_grip"),
+		&"suspension_percent": _runtime_delta_percent(selected, baseline, &"spring_stiffness"),
+		&"speed_percent": _runtime_delta_percent(selected, baseline, &"maximum_speed_mps"),
+		&"preload_percent": _runtime_delta_percent(selected, baseline, &"preload_impulse"),
+		&"braking_percent": _runtime_delta_percent(selected, baseline, &"brake_force"),
+	}
+	return {
+		&"setup": setup,
+		&"baseline": &"BALANCED",
+		&"deltas": deltas,
+		&"label": _format_setup_comparison(setup, deltas),
+	}
+
+
+func get_setup_decision_snapshot(setup: StringName, activity: StringName = &"") -> Dictionary:
+	## Keep the three roles explicit: what will run now, what the rider is browsing,
+	## and what the event suggests. Browsing remains read-only until confirmation.
+	var event_id := activity
+	if event_id.is_empty():
+		event_id = EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	var strategy := RaceEventCatalog.get_event_strategy(event_id)
+	var equipped_setup := Profile.current_setup
+	var recommended_setup := StringName(strategy.get(&"setup_id", &"BALANCED"))
+	var recommended_tune := StringName(strategy.get(&"tune_id", &"BALANCED"))
+	var active_tune := _active_tune_id()
+	var selected_purchase: Dictionary = Profile.get_setup_purchase_snapshot(setup)
+	var equipped_runtime := get_setup_plan_runtime_snapshot(equipped_setup, active_tune)
+	var selected_runtime := get_setup_plan_runtime_snapshot(setup, active_tune)
+	var recommended_runtime := get_setup_plan_runtime_snapshot(recommended_setup, recommended_tune)
+	var state := &"ALTERNATE"
+	var action := "RIDE EQUIPPED ALTERNATE"
+	if setup != equipped_setup:
+		state = &"PREVIEW"
+		action = "INSTALL SELECTED" if bool(selected_purchase.get(&"owned", false)) else "PURCHASE SELECTED"
+	elif equipped_setup == recommended_setup and active_tune == recommended_tune:
+		state = &"READY"
+		action = "RIDE EVENT PLAN"
+	elif equipped_setup == recommended_setup:
+		state = &"TUNE_NEEDED"
+		action = "APPLY %s TUNE" % String(recommended_tune).replace("_", " ")
+	return {
+		&"event_id": event_id,
+		&"equipped_setup": equipped_setup,
+		&"selected_setup": setup,
+		&"recommended_setup": recommended_setup,
+		&"active_tune": active_tune,
+		&"recommended_tune": recommended_tune,
+		&"state": state,
+		&"action": action,
+		&"selected_owned": bool(selected_purchase.get(&"owned", false)),
+		&"selected_affordable": bool(selected_purchase.get(&"affordable", false)),
+		&"selected_shortfall": maxi(int(selected_purchase.get(&"shortfall", 0)), 0),
+		&"metrics": _setup_decision_metrics(equipped_runtime, selected_runtime, recommended_runtime),
+		&"selected_vs_equipped": _runtime_deltas(selected_runtime, equipped_runtime),
+		&"recommended_vs_equipped": _runtime_deltas(recommended_runtime, equipped_runtime),
+		&"sources": {
+			&"kit": "DRIVE / BASE GRIP / TOP SPEED",
+			&"tune": "GEARING / TIRE SUPPORT / SUSPENSION / PRELOAD / BRAKES",
+			&"build": "BIKE / INSTALLED PARTS / CONDITION",
+			&"assists": "CONTROL RESPONSE ONLY // NOT INCLUDED IN BUILD BARS",
+		},
+		&"label": _format_setup_decision(
+			equipped_setup, setup, recommended_setup, recommended_tune, active_tune
+		),
+	}
+
+
+func apply_recommended_event_plan() -> bool:
+	var activity := EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	var strategy := RaceEventCatalog.get_event_strategy(activity)
+	var setup := StringName(strategy.get(&"setup_id", &"BALANCED"))
+	var tune_id := StringName(strategy.get(&"tune_id", &"BALANCED"))
+	var tune := _tune_dictionary(tune_id)
+	if not Profile.is_setup_unlocked(setup):
+		_status_label.text = "EVENT PLAN LOCKED  //  BUY %s KIT FIRST" % String(setup).replace("_", " ")
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN")
+		return false
+	if tune.is_empty():
+		_status_label.text = "EVENT PLAN TUNE IS UNAVAILABLE"
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN")
+		return false
+	if Profile.current_setup == setup and _active_tune_id() == tune_id:
+		_status_label.text = "EVENT PLAN ALREADY EQUIPPED"
+		_status_label.modulate = CYAN
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN")
+		return false
+	var previous_build := Profile.get_bike_build_snapshot(Profile.active_bike_id)
+	var previous_tune := (previous_build.get(&"tune", {}) as Dictionary).duplicate(true)
+	var previous_setup := Profile.current_setup
+	if not Profile.set_current_setup(setup):
+		_status_label.text = "EVENT PLAN KIT COULD NOT BE EQUIPPED"
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN")
+		return false
+	if not Profile.set_bike_tune(tune):
+		Profile.set_current_setup(previous_setup)
+		Profile.set_bike_tune(previous_tune)
+		_status_label.text = "EVENT PLAN ROLLED BACK  //  TUNE FAILED"
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN")
+		return false
+	_last_plan_undo = {
+		&"setup": previous_setup,
+		&"tune": previous_tune,
+		&"event_id": activity,
+	}
+	_selected_index = maxi(SETUPS.find(setup), 0)
+	_refresh()
+	_status_label.text = "EVENT PLAN APPLIED  //  %s KIT + %s TUNE  //  %s UNDO" % [
+		String(setup).replace("_", " "), String(tune_id).replace("_", " "),
+		_any_action_label(InputRouter.TOGGLE_ASSIST),
+	]
+	_status_label.modulate = CYAN
+	_emit_interface_feedback(&"CONFIRM", &"GARAGE_EVENT_PLAN")
+	return true
+
+
+func undo_recommended_event_plan() -> bool:
+	if _last_plan_undo.is_empty():
+		return false
+	var setup := StringName(_last_plan_undo.get(&"setup", &"BALANCED"))
+	var tune := (_last_plan_undo.get(&"tune", {}) as Dictionary).duplicate(true)
+	if not Profile.is_setup_unlocked(setup) or not Profile.set_current_setup(setup) or not Profile.set_bike_tune(tune):
+		_status_label.text = "EVENT PLAN UNDO FAILED  //  CURRENT BUILD PRESERVED"
+		_status_label.modulate = Color("ff6f5e")
+		_emit_interface_feedback(&"DENIED", &"GARAGE_EVENT_PLAN_UNDO")
+		return false
+	_last_plan_undo.clear()
+	_selected_index = maxi(SETUPS.find(setup), 0)
+	_refresh()
+	_status_label.text = "PREVIOUS BUILD RESTORED  //  %s KIT + %s TUNE" % [
+		String(setup).replace("_", " "), _active_tune_name().to_upper(),
+	]
+	_status_label.modulate = CYAN
+	_emit_interface_feedback(&"CANCEL", &"GARAGE_EVENT_PLAN_UNDO")
+	return true
 
 
 func continue_weekend() -> bool:
@@ -1033,51 +1249,65 @@ func _build_ui() -> void:
 	_root.add_child(_setup_right_hint)
 
 	_setup_name = _label("BALANCED", 52, AMBER)
+	_setup_name.name = "SetupName"
 	_setup_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_setup_name.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_setup_name.clip_text = true
 	_anchor_rect(_setup_name, Vector2(0.5, 0.5), Rect2(-110.0, -200.0, 600.0, 70.0))
 	_root.add_child(_setup_name)
+	_decision_label = _label("", 15, CYAN)
+	_decision_label.name = "SetupDecision"
+	_decision_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_decision_label.clip_text = true
+	_decision_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_rect(_decision_label, Vector2(0.5, 0.5), Rect2(-290.0, -145.0, 800.0, 24.0))
+	_root.add_child(_decision_label)
 	_tagline = _label("", 22, CREAM)
 	_tagline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_tagline, Vector2(0.5, 0.5), Rect2(-290.0, -132.0, 800.0, 46.0))
+	_anchor_rect(_tagline, Vector2(0.5, 0.5), Rect2(-290.0, -120.0, 800.0, 34.0))
 	_root.add_child(_tagline)
 	_description = _label("", 18, Color("aab9c2"))
 	_description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-290.0, -82.0, 800.0, 52.0))
+	_description.clip_text = true
+	_description.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_rect(_description, Vector2(0.5, 0.5), Rect2(-290.0, -82.0, 800.0, 28.0))
 	_root.add_child(_description)
+	_comparison_label = _label("", 15, CREAM)
+	_comparison_label.name = "SetupComparison"
+	_comparison_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_comparison_label.clip_text = true
+	_comparison_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_rect(_comparison_label, Vector2(0.5, 0.5), Rect2(-290.0, -53.0, 800.0, 26.0))
+	_root.add_child(_comparison_label)
 	_strategy_label = _label("", 15, CYAN)
 	_strategy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_strategy_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_anchor_rect(_strategy_label, Vector2(0.5, 0.5), Rect2(-290.0, -28.0, 800.0, 26.0))
 	_root.add_child(_strategy_label)
 
+	var metric_legend := _label("EQUIPPED                     VIEWING                     EVENT PLAN", 12, MUTED)
+	metric_legend.name = "SetupMetricLegend"
+	metric_legend.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(metric_legend, Vector2(0.5, 0.5), Rect2(-55.0, 0.0, 560.0, 18.0))
+	_root.add_child(metric_legend)
 	var stat_names: Array[StringName] = [&"POWER", &"GRIP", &"SUSPENSION", &"TOP SPEED"]
 	for index: int in stat_names.size():
 		var stat_name := stat_names[index]
 		var label := _label(String(stat_name), 16, Color("8fa0aa"))
-		_anchor_rect(label, Vector2(0.5, 0.5), Rect2(-200.0, 5.0 + index * 46.0, 150.0, 28.0))
+		_anchor_rect(label, Vector2(0.5, 0.5), Rect2(-200.0, 15.0 + index * 43.0, 150.0, 28.0))
 		_root.add_child(label)
-		var bar := ProgressBar.new()
-		bar.min_value = 0.0
-		bar.max_value = 10.0
-		bar.show_percentage = false
-		var background := StyleBoxFlat.new()
-		background.bg_color = Color("202b32")
-		background.corner_radius_top_left = 5
-		background.corner_radius_top_right = 5
-		background.corner_radius_bottom_left = 5
-		background.corner_radius_bottom_right = 5
-		var fill := StyleBoxFlat.new()
-		fill.bg_color = AMBER
-		fill.corner_radius_top_left = 5
-		fill.corner_radius_top_right = 5
-		fill.corner_radius_bottom_left = 5
-		fill.corner_radius_bottom_right = 5
-		bar.add_theme_stylebox_override(&"background", background)
-		bar.add_theme_stylebox_override(&"fill", fill)
-		_anchor_rect(bar, Vector2(0.5, 0.5), Rect2(-40.0, 8.0 + index * 46.0, 560.0, 19.0))
-		_root.add_child(bar)
-		_bars[stat_name] = bar
+		var equipped_bar := _setup_metric_bar(MUTED)
+		_anchor_rect(equipped_bar, Vector2(0.5, 0.5), Rect2(-40.0, 20.0 + index * 43.0, 170.0, 15.0))
+		_root.add_child(equipped_bar)
+		_equipped_bars[stat_name] = equipped_bar
+		var selected_bar := _setup_metric_bar(AMBER)
+		_anchor_rect(selected_bar, Vector2(0.5, 0.5), Rect2(140.0, 20.0 + index * 43.0, 170.0, 15.0))
+		_root.add_child(selected_bar)
+		_bars[stat_name] = selected_bar
+		var recommended_bar := _setup_metric_bar(CYAN)
+		_anchor_rect(recommended_bar, Vector2(0.5, 0.5), Rect2(320.0, 20.0 + index * 43.0, 170.0, 15.0))
+		_root.add_child(recommended_bar)
+		_recommended_bars[stat_name] = recommended_bar
 
 	_price_label = _label("", 24, CREAM)
 	_price_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1119,15 +1349,15 @@ func _build_workshop_summary() -> void:
 	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stack.add_theme_constant_override(&"separation", 8)
 	margin.add_child(stack)
-	var title := _label("WORKSHOP", 20, AMBER)
+	var title := _label("BIKE & NEXT GOALS", 18, AMBER)
 	stack.add_child(title)
 	_workshop_hint_label = _label("", 13, CYAN)
 	stack.add_child(_workshop_hint_label)
-	_workshop_summary_label = _label("", 13, CREAM)
+	_workshop_summary_label = _label("", 14, CREAM)
 	_workshop_summary_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_workshop_summary_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	stack.add_child(_workshop_summary_label)
-	_workshop_meta_label = _label("", 12, Color("9dadb6"))
+	_workshop_meta_label = _label("", 13, Color("9dadb6"))
 	_workshop_meta_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_workshop_meta_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	stack.add_child(_workshop_meta_label)
@@ -1202,29 +1432,34 @@ func _panel_style(background: Color, border: Color, border_width: int) -> StyleB
 func _refresh() -> void:
 	var setup := SETUPS[_selected_index]
 	var data := _setup_data(setup)
-	var runtime := get_setup_runtime_snapshot(setup)
+	var decision := get_setup_decision_snapshot(setup)
+	var metrics := decision.get(&"metrics", {}) as Dictionary
 	_setup_name.text = str(data.get(&"name", setup))
+	# Reassert the fixed card rect when the glyph run changes. Godot Web can retain
+	# a stale first-frame Label rect while rapidly paging to a newly shaped title.
+	_anchor_rect(_setup_name, Vector2(0.5, 0.5), Rect2(-110.0, -200.0, 600.0, 70.0))
 	_tagline.text = str(data.get(&"tagline", ""))
-	_description.text = "%s\nLIVE  %dN DRIVE  //  %d GRIP  //  %.1f M/S" % [
-		str(data.get(&"description", "")),
-		roundi(float(runtime.get(&"engine_force", 0.0))),
-		roundi(float(runtime.get(&"lateral_grip", 0.0))),
-		float(runtime.get(&"maximum_speed_mps", 0.0)),
-	]
-	_bars[&"POWER"].value = clampf(inverse_lerp(850.0, 1750.0, float(runtime.get(&"engine_force", 0.0))) * 10.0, 0.0, 10.0)
-	_bars[&"GRIP"].value = clampf(inverse_lerp(450.0, 850.0, float(runtime.get(&"lateral_grip", 0.0))) * 10.0, 0.0, 10.0)
-	_bars[&"SUSPENSION"].value = clampf(inverse_lerp(16_000.0, 24_000.0, float(runtime.get(&"spring_stiffness", 0.0))) * 10.0, 0.0, 10.0)
-	_bars[&"TOP SPEED"].value = clampf(inverse_lerp(23.0, 43.0, float(runtime.get(&"maximum_speed_mps", 0.0))) * 10.0, 0.0, 10.0)
+	_description.text = str(data.get(&"description", ""))
+	_decision_label.text = str(decision.get(&"label", ""))
+	_comparison_label.text = str(get_setup_comparison_snapshot(setup).get(&"label", ""))
+	for metric_id: StringName in [&"POWER", &"GRIP", &"SUSPENSION", &"TOP SPEED"]:
+		var row := metrics.get(metric_id, {}) as Dictionary
+		_equipped_bars[metric_id].value = float(row.get(&"equipped", 0.0))
+		_bars[metric_id].value = float(row.get(&"selected", 0.0))
+		_recommended_bars[metric_id].value = float(row.get(&"recommended", 0.0))
 	_refresh_event_strategy()
 	_profile_label.text = "$%06d     RACER REP  %04d" % [Profile.cash, Profile.racer_reputation]
 	if Profile.is_setup_unlocked(setup):
 		_price_label.text = "INSTALLED" if setup == Profile.current_setup else "OWNED"
 		_price_label.modulate = CYAN
-		_status_label.text = "%s EVENT   •   %s SETUP   •   %s WORKSHOP   •   %s ASSIST   •   %s RIDE" % [
+		var plan_or_repair := "REPAIR" if Profile.get_repair_price() > 0 else "APPLY PLAN"
+		var assist_or_undo := "UNDO PLAN" if not _last_plan_undo.is_empty() else "ASSIST"
+		_status_label.text = "%s EVENT   •   %s SETUP   •   %s WORKSHOP   •   %s %s   •   %s %s   •   %s RIDE" % [
 			_any_action_pair_label(InputRouter.EVENT_PREVIOUS, InputRouter.EVENT_NEXT),
 			_any_action_pair_label(InputRouter.GARAGE_LEFT, InputRouter.GARAGE_RIGHT),
 			_any_action_label(InputRouter.OPEN_WORKSHOP),
-			_any_action_label(InputRouter.TOGGLE_ASSIST),
+			_any_action_label(InputRouter.REPAIR_BIKE), plan_or_repair,
+			_any_action_label(InputRouter.TOGGLE_ASSIST), assist_or_undo,
 			_any_action_label(InputRouter.CONFIRM),
 		]
 		_status_label.modulate = Color("9dadb6")
@@ -1327,12 +1562,17 @@ func _refresh_workshop_summary() -> void:
 			int(next_milestone.get(&"current", 0)),
 			int(next_milestone.get(&"target", 1)),
 		]
-	_workshop_meta_label.text = "%s\n\n%s\n\nACADEMY  %d/%d  //  STARS %02d\n%s  %s\n\nMILESTONES  %d/%d\n%s" % [
-		championship_text, weekend_text,
-		int(academy.get(&"completed", 0)), int(academy.get(&"total", 0)), int(academy.get(&"stars", 0)),
-		academy_mode, academy_lesson,
-		int(milestones.get(&"unlocked", 0)), int(milestones.get(&"total", 0)), milestone_detail,
-	]
+	if first_run_path:
+		_workshop_meta_label.text = "NEXT GOAL\n%s\n\nUNLOCK PATH\nCLEAR 2 QUARRY EVENTS\nPINE, THEN RED MESA\n\nOPTIONAL ACADEMY  %d/%d  //  STARS %02d" % [
+			championship_text,
+			int(academy.get(&"completed", 0)), int(academy.get(&"total", 0)), int(academy.get(&"stars", 0)),
+		]
+	else:
+		_workshop_meta_label.text = "TOUR\n%s\n\nWEEKEND\n%s\n\nACADEMY  %d/%d  //  %s %s\nMILESTONE  %d/%d  //  %s" % [
+			championship_text, weekend_text,
+			int(academy.get(&"completed", 0)), int(academy.get(&"total", 0)), academy_mode, academy_lesson,
+			int(milestones.get(&"unlocked", 0)), int(milestones.get(&"total", 0)), milestone_detail,
+		]
 
 
 func _on_workshop_summary_gui_input(event: InputEvent) -> void:
@@ -1387,6 +1627,54 @@ func _refresh_workshop() -> void:
 
 func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 	match category:
+		&"HISTORY":
+			var history := get_event_history_presentation_snapshot()
+			var previous := history.get(&"previous_run", {}) as Dictionary
+			var personal_best := history.get(&"personal_best_run", {}) as Dictionary
+			var pinned := history.get(&"pinned_run", {}) as Dictionary
+			var comparison := history.get(&"comparison", {}) as Dictionary
+			var history_items: Array[Dictionary] = [
+				{
+					&"history_id": &"PREVIOUS", &"display_name": "Previous Run",
+					&"action_id": &"APPLY",
+					&"occupied": not previous.is_empty(), &"run": previous.duplicate(true),
+					&"comparison": comparison.duplicate(true),
+				},
+				{
+					&"history_id": &"PERSONAL_BEST", &"display_name": "Personal Best",
+					&"action_id": &"APPLY",
+					&"occupied": not personal_best.is_empty(), &"run": personal_best.duplicate(true),
+					&"comparison": comparison.duplicate(true),
+				},
+				{
+					&"history_id": &"PIN_PREVIOUS", &"display_name": "Pin Previous as Reference",
+					&"action_id": &"PIN", &"event_id": history.get(&"event_id", &""),
+					&"challenge_id": history.get(&"challenge_id", &""),
+					&"occupied": not previous.is_empty(), &"run": previous.duplicate(true),
+					&"comparison": comparison.duplicate(true),
+				},
+				{
+					&"history_id": &"PIN_PERSONAL_BEST", &"display_name": "Pin PB as Reference",
+					&"action_id": &"PIN", &"event_id": history.get(&"event_id", &""),
+					&"challenge_id": history.get(&"challenge_id", &""),
+					&"occupied": not personal_best.is_empty(), &"run": personal_best.duplicate(true),
+					&"comparison": comparison.duplicate(true),
+				},
+				{
+					&"history_id": &"PINNED", &"display_name": "Pinned Reference",
+					&"action_id": &"APPLY",
+					&"occupied": not pinned.is_empty(), &"run": pinned.duplicate(true),
+					&"comparison": comparison.duplicate(true),
+				},
+			]
+			for row: Dictionary in (comparison.get(&"sector_rows", []) as Array):
+				history_items.append({
+					&"history_id": StringName("SECTOR_%02d" % int(row.get(&"sector", 0))),
+					&"display_name": "Sector %02d Comparison" % int(row.get(&"sector", 0)),
+					&"action_id": &"READ", &"occupied": true,
+					&"sector_row": row.duplicate(true), &"comparison": comparison.duplicate(true),
+				})
+			return history_items
 		&"BIKE":
 			return _bike_catalog.get_bikes(Profile.racer_reputation, true)
 		&"CLASS":
@@ -1440,7 +1728,8 @@ func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 			return outfit_items
 		&"BUILD":
 			var build_items: Array[Dictionary] = []
-			for slot: Dictionary in Profile.get_saved_bike_build_slots():
+			var saved_slots: Array[Dictionary] = Profile.get_saved_bike_build_slots()
+			for slot: Dictionary in saved_slots:
 				var slot_id := StringName(slot.get(&"slot_id", &""))
 				var slot_label := str(slot.get(&"slot_label", "?"))
 				var occupied := bool(slot.get(&"occupied", false))
@@ -1455,6 +1744,22 @@ func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 					&"action_id": &"SAVE", &"occupied": occupied,
 					&"saved_build": saved.duplicate(true),
 				})
+			for first_index: int in saved_slots.size():
+				for second_index: int in range(first_index + 1, saved_slots.size()):
+					var first := saved_slots[first_index]
+					var second := saved_slots[second_index]
+					build_items.append({
+						&"slot_id": StringName("COMPARE_%s_%s" % [
+							str(first.get(&"slot_label", "?")), str(second.get(&"slot_label", "?")),
+						]),
+						&"slot_label": "%s / %s" % [
+							str(first.get(&"slot_label", "?")), str(second.get(&"slot_label", "?")),
+						],
+						&"action_id": &"COMPARE",
+						&"occupied": bool(first.get(&"occupied", false)) and bool(second.get(&"occupied", false)),
+						&"first_build": (first.get(&"build", {}) as Dictionary).duplicate(true),
+						&"second_build": (second.get(&"build", {}) as Dictionary).duplicate(true),
+					})
 			return build_items
 	return []
 
@@ -1469,6 +1774,7 @@ func _get_selected_workshop_item(category: StringName) -> Dictionary:
 
 func _workshop_item_projection(category: StringName, item: Dictionary) -> Dictionary:
 	match category:
+		&"HISTORY": return _history_plan_projection(item)
 		&"BIKE": return _bike_projection(item)
 		&"CLASS": return _class_projection(item)
 		&"TUNE": return _tune_projection(item)
@@ -1480,6 +1786,98 @@ func _workshop_item_projection(category: StringName, item: Dictionary) -> Dictio
 		&"OUTFIT": return _saved_outfit_projection(item)
 		&"BUILD": return _saved_build_projection(item)
 	return {}
+
+
+func _history_plan_projection(item: Dictionary) -> Dictionary:
+	var action_id := StringName(item.get(&"action_id", &"APPLY"))
+	if action_id == &"READ":
+		var row := item.get(&"sector_row", {}) as Dictionary
+		var delta := int(row.get(&"previous_minus_pb_usec", 0))
+		var state := StringName(row.get(&"state", &"EVEN"))
+		var direction := (
+			"REFERENCE FASTER" if state == &"PB_FASTER"
+			else "LATEST FASTER" if state == &"LATEST_FASTER"
+			else "MATCHED"
+		)
+		return {
+			&"title": "SECTOR %02d  //  %s" % [int(row.get(&"sector", 0)), direction],
+			&"detail": "LATEST %s  //  REFERENCE %s  //  DELTA %+.3fs" % [
+				_format_usec(int(row.get(&"previous_usec", 0))),
+				_format_usec(int(row.get(&"personal_best_usec", 0))),
+				float(delta) / 1_000_000.0,
+			],
+			&"build": "%s\n%s" % [
+				str((item.get(&"comparison", {}) as Dictionary).get(&"attribution_label", "")),
+				str((item.get(&"comparison", {}) as Dictionary).get(&"recommendation", "")),
+			],
+			&"action": "%s  ACKNOWLEDGE  //  READ ONLY" % _any_action_label(InputRouter.CONFIRM),
+			&"available": true,
+		}
+	var occupied := bool(item.get(&"occupied", false))
+	var run := item.get(&"run", {}) as Dictionary
+	var history_name := str(item.get(&"display_name", "RECORDED RUN")).to_upper()
+	if not occupied or run.is_empty():
+		return {
+			&"title": history_name,
+			&"detail": "NO OFFICIAL RESULT RECORDED FOR THIS EVENT YET.",
+			&"build": "Finish a classified run to preserve its exact bike, kit, parts, tune, assists, controls, and conditions.",
+			&"action": "EMPTY  //  COMPLETE THIS EVENT FIRST",
+			&"available": false,
+		}
+	var plan := run.get(&"plan", {}) as Dictionary
+	var comparison := item.get(&"comparison", {}) as Dictionary
+	var availability := _recorded_plan_availability(plan)
+	var position := maxi(int(run.get(&"position", 0)), 0)
+	var time_usec := int(run.get(&"effective_time_usec", -1))
+	var detail := "P%d  //  %s  //  %s  //  %d CRASH  //  %d CONTACT  //  %d FLOW" % [
+		position,
+		_format_usec(time_usec) if time_usec > 0 else "NO TIME",
+		String(run.get(&"medal", &"NO_AWARD")).replace("_", " "),
+		int(run.get(&"crashes", 0)), int(run.get(&"contacts", 0)), int(run.get(&"flow_uses", 0)),
+	]
+	if action_id == &"PIN":
+		return {
+			&"title": "%s  //  %s" % [history_name, _format_usec(time_usec)],
+			&"detail": "%s\nMakes this official result the durable sector and execution reference." % detail,
+			&"build": "%s\nPinned evidence remains available after the five-run recent list advances." % _saved_build_summary(plan),
+			&"action": "%s  PIN AS COMPARISON REFERENCE" % _any_action_label(InputRouter.CONFIRM),
+			&"available": true,
+		}
+	return {
+		&"title": "%s  //  %s" % [history_name, _format_usec(time_usec) if time_usec > 0 else "NO TIME"],
+		&"detail": "%s\n%s\nRestores strategy only. Current condition and odometer stay live." % [
+			detail, str(comparison.get(&"summary", "COMPLETE ANOTHER RUN TO COMPARE")),
+		],
+		&"build": "%s\n%s" % [
+			_saved_build_summary(plan), str(comparison.get(&"recommendation", "")),
+		],
+		&"action": (
+			"%s  APPLY RECORDED PLAN" % _any_action_label(InputRouter.CONFIRM)
+			if bool(availability.get(&"available", false))
+			else str(availability.get(&"reason", "RECORDED PLAN UNAVAILABLE"))
+		),
+		&"available": bool(availability.get(&"available", false)),
+	}
+
+
+func _recorded_plan_availability(plan: Dictionary) -> Dictionary:
+	if plan.is_empty():
+		return {&"available": false, &"reason": "RECORDED PLAN IS INVALID"}
+	var bike_id := StringName(plan.get(&"bike_id", &""))
+	if Profile.get_bike_build_snapshot(bike_id).is_empty():
+		return {&"available": false, &"reason": "RECORDED BIKE IS NOT OWNED"}
+	var setup_id := StringName(plan.get(&"setup_id", &"BALANCED"))
+	if not Profile.is_setup_unlocked(setup_id):
+		return {&"available": false, &"reason": "RECORDED KIT IS NOT OWNED"}
+	var parts := plan.get(&"installed_parts", {}) as Dictionary
+	for raw_slot: Variant in parts:
+		var part_id := StringName(parts.get(raw_slot, &""))
+		if part_id not in Profile.owned_part_ids or not _bike_catalog.is_part_compatible(part_id, bike_id):
+			return {
+				&"available": false,
+				&"reason": "RECORDED PART UNAVAILABLE  //  %s" % String(part_id).replace("_", " "),
+			}
+	return {&"available": true, &"reason": "READY"}
 
 
 func _bike_projection(item: Dictionary) -> Dictionary:
@@ -1650,6 +2048,28 @@ func _saved_build_projection(item: Dictionary) -> Dictionary:
 	var action_id := StringName(item.get(&"action_id", &""))
 	var slot_label := str(item.get(&"slot_label", "?"))
 	var occupied := bool(item.get(&"occupied", false))
+	if action_id == &"COMPARE":
+		var first := item.get(&"first_build", {}) as Dictionary
+		var second := item.get(&"second_build", {}) as Dictionary
+		if not occupied or first.is_empty() or second.is_empty():
+			return {
+				&"title": "COMPARE BUILDS %s" % slot_label,
+				&"detail": "BOTH SLOTS MUST CONTAIN A SAVED BUILD.",
+				&"build": "Save two strategies to compare their physical race consequences without applying either.",
+				&"action": "READ ONLY  //  FILL BOTH SLOTS FIRST", &"available": false,
+			}
+		var pair_comparison := _saved_build_pair_comparison(first, second)
+		return {
+			&"title": "BUILD %s  //  CONTROLLED COMPARISON" % slot_label,
+			&"detail": "%s\nREFERENCE %s" % [
+				str(first.get(&"display_name", "BUILD A")), str(second.get(&"display_name", "BUILD B")),
+			],
+			&"build": "%s\n%s" % [
+				_saved_build_summary(first), str(pair_comparison.get(&"label", "COMPARISON UNAVAILABLE")),
+			],
+			&"action": "%s  ACKNOWLEDGE  //  NEITHER BUILD IS APPLIED" % _any_action_label(InputRouter.CONFIRM),
+			&"available": not pair_comparison.is_empty(),
+		}
 	var saved: Dictionary = item.get(&"saved_build", {}) as Dictionary
 	var confirm_label := _any_action_label(InputRouter.CONFIRM)
 	if action_id == &"LOAD":
@@ -1662,13 +2082,16 @@ func _saved_build_projection(item: Dictionary) -> Dictionary:
 				&"available": false,
 			}
 		var saved_fit := _saved_build_event_fit(saved)
+		var current_comparison := _saved_build_pair_comparison(saved, _current_build_dictionary())
 		return {
 			&"title": "LOAD BUILD %s" % slot_label,
 			&"detail": "%s  //  READY TO APPLY\nSELECTED EVENT  //  %s  //  %s" % [
 				str(saved.get(&"display_name", "SAVED BUILD")),
 				str(saved_fit.get(&"event_name", "EVENT")), str(saved_fit.get(&"fit_status", "ALTERNATE")),
 			],
-			&"build": _saved_build_summary(saved),
+			&"build": "%s\n%s" % [
+				_saved_build_summary(saved), str(current_comparison.get(&"label", "")),
+			],
 			&"action": "%s  LOAD BUILD  //  CURRENT CONDITION IS PRESERVED" % confirm_label,
 			&"available": true,
 		}
@@ -1916,8 +2339,56 @@ func _apply_graphics_option(item: Dictionary) -> bool:
 	return true
 
 
+func _apply_history_plan_action(item: Dictionary) -> bool:
+	var action_id := StringName(item.get(&"action_id", &"APPLY"))
+	if action_id == &"READ":
+		var row := item.get(&"sector_row", {}) as Dictionary
+		_set_workshop_status("SECTOR %02d REVIEWED  //  KEEP ONE VARIABLE CONTROLLED" % int(row.get(&"sector", 0)), true)
+		return true
+	var run := item.get(&"run", {}) as Dictionary
+	var plan := run.get(&"plan", {}) as Dictionary
+	if not bool(item.get(&"occupied", false)) or plan.is_empty():
+		_set_workshop_status("NO RECORDED PLAN  //  COMPLETE THIS EVENT FIRST", false)
+		return false
+	if action_id == &"PIN":
+		var pin_receipt: Dictionary = Profile.pin_event_run_reference(
+			StringName(item.get(&"event_id", &"")), StringName(item.get(&"challenge_id", &"")),
+			str(run.get(&"result_id", ""))
+		)
+		if bool(pin_receipt.get(&"accepted", false)):
+			_set_workshop_status("REFERENCE PINNED  //  LATEST RUN NOW COMPARES AGAINST IT", true)
+			return true
+		_set_workshop_status("REFERENCE COULD NOT BE PINNED  //  NO CHANGES APPLIED", false)
+		return false
+	var receipt: Dictionary = Profile.apply_recorded_race_plan(plan)
+	if bool(receipt.get(&"accepted", false)):
+		var current_index := SETUPS.find(Profile.current_setup)
+		_selected_index = current_index if current_index >= 0 else 1
+		_sync_workshop_selection()
+		_set_workshop_status("%s APPLIED  //  LIVE WEAR AND DISTANCE PRESERVED" % str(
+			item.get(&"display_name", "RECORDED PLAN")
+		).to_upper(), true)
+		return true
+	var reason := StringName(receipt.get(&"reason", &"PLAN_UNAVAILABLE"))
+	var failure_text := "RECORDED PLAN UNAVAILABLE"
+	match reason:
+		&"BIKE_UNAVAILABLE": failure_text = "RECORDED BIKE IS NOT OWNED"
+		&"SETUP_UNAVAILABLE": failure_text = "RECORDED KIT IS NOT OWNED"
+		&"PART_UNAVAILABLE": failure_text = "RECORDED PART IS NOT OWNED"
+		&"SAVE_FAILED": failure_text = "PLAN SAVE FAILED"
+		&"INVALID_PLAN": failure_text = "RECORDED PLAN IS INVALID"
+	_set_workshop_status("%s  //  NO CHANGES APPLIED" % failure_text, false)
+	return false
+
+
 func _apply_saved_build_action(item: Dictionary) -> bool:
 	var action_id := StringName(item.get(&"action_id", &""))
+	if action_id == &"COMPARE":
+		if not bool(item.get(&"occupied", false)):
+			_set_workshop_status("BUILD COMPARISON NEEDS TWO OCCUPIED SLOTS", false)
+			return false
+		_set_workshop_status("BUILDS COMPARED  //  NEITHER CONFIGURATION CHANGED", true)
+		return true
 	var slot_id := StringName(item.get(&"slot_id", &""))
 	var slot_label := str(item.get(&"slot_label", "?"))
 	var result: Dictionary
@@ -2056,6 +2527,7 @@ func _set_workshop_index_for_id(category: StringName, key: StringName, target: S
 
 func _workshop_item_id(category: StringName, item: Dictionary) -> StringName:
 	match category:
+		&"HISTORY": return StringName(item.get(&"history_id", &""))
 		&"BIKE": return StringName(item.get(&"bike_id", &""))
 		&"CLASS": return StringName(item.get(&"class_id", &""))
 		&"TUNE": return StringName(item.get(&"preset_id", &""))
@@ -2102,16 +2574,59 @@ func _current_saved_build_name() -> String:
 
 
 func _current_saved_build_summary() -> String:
+	return _saved_build_summary(_current_build_dictionary())
+
+
+func _current_build_dictionary() -> Dictionary:
 	var setup: Dictionary = Profile.get_active_bike_setup_snapshot()
 	var build: Dictionary = setup.get(&"build", {}) as Dictionary
-	return _saved_build_summary({
+	return {
 		&"bike_id": Profile.active_bike_id,
 		&"setup_id": Profile.current_setup,
 		&"selected_class": Profile.selected_bike_class,
 		&"installed_parts": (build.get(&"installed_parts", {}) as Dictionary).duplicate(true),
 		&"tune": (build.get(&"tune", {}) as Dictionary).duplicate(true),
 		&"livery_id": StringName(Profile.get_rider_cosmetics().get(&"bike_livery", &"FACTORY")),
-	})
+	}
+
+
+func _saved_build_pair_comparison(candidate: Dictionary, reference: Dictionary) -> Dictionary:
+	var candidate_runtime := _saved_build_runtime(candidate)
+	var reference_runtime := _saved_build_runtime(reference)
+	if candidate_runtime.is_empty() or reference_runtime.is_empty():
+		return {}
+	var deltas := _runtime_deltas(candidate_runtime, reference_runtime)
+	return {
+		&"deltas": deltas,
+		&"label": "VS REFERENCE  //  DRIVE %s  GRIP %s  SPEED %s  SUSP %s  BRAKE %s" % [
+			_signed_percent(int(deltas.get(&"drive_percent", 0))),
+			_signed_percent(int(deltas.get(&"grip_percent", 0))),
+			_signed_percent(int(deltas.get(&"speed_percent", 0))),
+			_signed_percent(int(deltas.get(&"suspension_percent", 0))),
+			_signed_percent(int(deltas.get(&"braking_percent", 0))),
+		],
+	}
+
+
+func _saved_build_runtime(saved: Dictionary) -> Dictionary:
+	var bike_id := StringName(saved.get(&"bike_id", &""))
+	var live_data: Dictionary = Profile.get_bike_build_snapshot(bike_id)
+	if live_data.is_empty():
+		return {}
+	var build: Variant = BIKE_BUILD_SCRIPT.from_dictionary(live_data)
+	build.installed_parts = (saved.get(&"installed_parts", {}) as Dictionary).duplicate(true)
+	build.tune = BIKE_TUNE_SCRIPT.from_dictionary(saved.get(&"tune", {}) as Dictionary)
+	var tune := saved.get(&"tune", {}) as Dictionary
+	return BIKE_BUILD_SCRIPT.runtime_projection(
+		StringName(saved.get(&"setup_id", &"BALANCED")),
+		build.calculate_stats(_bike_catalog),
+		clampi(roundi(float(live_data.get(&"condition", 1.0)) * 100.0), 0, 100),
+		tune
+	)
+
+
+func _signed_percent(value: int) -> String:
+	return "%+d%%" % value
 
 
 func _saved_build_summary(saved: Dictionary) -> String:
@@ -2684,9 +3199,17 @@ func _refresh_event_strategy() -> void:
 		match_text = "KIT READY $%d" % setup_price if setup_affordable else "KIT $%d AWAY" % setup_shortfall
 	elif bool(snapshot.get(&"setup_match", false)) and not bool(snapshot.get(&"tune_match", false)):
 		match_text = "KIT MATCH"
-	_strategy_label.text = "EVENT PLAN  //  KIT %s + TUNE %s  //  %s  //  %s" % [
-		recommended_setup, recommended_tune, str(snapshot.get(&"focus", "READABLE PACE")), match_text,
-	]
+	if not _rider_debrief.is_empty():
+		_strategy_label.text = "RIDER FOCUS %s  //  %s  //  KIT %s + TUNE %s" % [
+			str(_rider_debrief.get(&"focus_id", &"PACE")).replace("_", " "),
+			str(_rider_debrief.get(&"next_objective", "BUILD A CLEANER NEXT RUN")),
+			recommended_setup,
+			recommended_tune,
+		]
+	else:
+		_strategy_label.text = "EVENT PLAN  //  KIT %s + TUNE %s  //  %s  //  %s" % [
+			recommended_setup, recommended_tune, str(snapshot.get(&"focus", "READABLE PACE")), match_text,
+		]
 	_set_label_color(_strategy_label, CYAN if bool(snapshot.get(&"ready_to_ride", false)) else AMBER if setup_affordable and not setup_owned else CREAM)
 
 
@@ -2807,6 +3330,28 @@ func _session_competition_id(session: RaceSessionConfig) -> StringName:
 
 func _challenge_id_for_activity(activity: StringName) -> StringName:
 	return _session_challenge_id(_competition_session(activity)) if RaceEventCatalog.is_challenge_event(activity) else &""
+
+
+func _debrief_workshop_category() -> StringName:
+	var history := get_event_history_presentation_snapshot()
+	if not (history.get(&"previous_run", {}) as Dictionary).is_empty():
+		return &"HISTORY"
+	var focus := StringName(_rider_debrief.get(&"focus_id", &""))
+	return &"TUNE" if focus in [&"CRASH_CONTROL", &"RECOVERY", &"SECTOR_PACE", &"CONSISTENCY", &"FLOW_USAGE"] else &"BIKE"
+
+
+func _history_run_label(run: Dictionary, prefix: String) -> String:
+	if run.is_empty():
+		return "%s  //  NOT SET" % prefix
+	var plan := run.get(&"plan", {}) as Dictionary
+	var time_usec := int(run.get(&"effective_time_usec", -1))
+	return "%s  //  P%d  //  %s  //  %s + %s" % [
+		prefix,
+		maxi(int(run.get(&"position", 0)), 0),
+		_format_usec(time_usec) if time_usec > 0 else "NO TIME",
+		String(plan.get(&"setup_id", &"BALANCED")).replace("_", " "),
+		_tune_name_for_dictionary(plan.get(&"tune", {}) as Dictionary).to_upper(),
+	]
 
 
 func _championship_briefing(activity: StringName) -> Dictionary:
@@ -3082,11 +3627,113 @@ func _set_label_color(label: Label, color: Color) -> void:
 func _setup_data(setup: StringName) -> Dictionary:
 	match setup:
 		&"TRAIL":
-			return {&"name": "TRAIL KIT", &"tagline": "SOFT, SURE-FOOTED, HARD TO RATTLE", &"description": "Forgiving grip and soft suspension trade straight-line speed for control.", &"power": 5.0, &"grip": 9.0, &"suspension": 9.0, &"speed": 5.0}
+			return {&"name": "TRAIL KIT", &"tagline": "STEADY, SURE-FOOTED, HARD TO RATTLE", &"description": "Forgiving grip trades straight-line speed for calmer line control.", &"power": 5.0, &"grip": 9.0, &"suspension": 7.0, &"speed": 5.0}
 		&"ATTACK":
-			return {&"name": "ATTACK KIT", &"tagline": "POWER FIRST. CONSEQUENCES LATER.", &"description": "Hard power and jump support trade lateral grip for expert pace.", &"power": 9.0, &"grip": 5.0, &"suspension": 7.0, &"speed": 10.0}
+			return {&"name": "ATTACK KIT", &"tagline": "POWER FIRST. CONSEQUENCES LATER.", &"description": "Hard drive and top speed trade lateral grip for expert pace.", &"power": 9.0, &"grip": 5.0, &"suspension": 7.0, &"speed": 10.0}
 		_:
 			return {&"name": "BALANCED", &"tagline": "THE BASELINE THAT NEVER MAKES EXCUSES", &"description": "Predictable power and grip make every Quarry line readable.", &"power": 7.0, &"grip": 7.0, &"suspension": 7.0, &"speed": 7.0}
+
+
+func _runtime_delta_percent(selected: Dictionary, baseline: Dictionary, key: StringName) -> int:
+	var reference := float(baseline.get(key, 0.0))
+	if is_zero_approx(reference):
+		return 0
+	return roundi((float(selected.get(key, reference)) / reference - 1.0) * 100.0)
+
+
+func _format_setup_comparison(setup: StringName, deltas: Dictionary) -> String:
+	if setup == &"BALANCED":
+		return "REFERENCE KIT  //  NEUTRAL DRIVE, GRIP, AND SPEED"
+	var metrics := [
+		["DRIVE", int(deltas.get(&"drive_percent", 0))],
+		["GRIP", int(deltas.get(&"grip_percent", 0))],
+		["SPEED", int(deltas.get(&"speed_percent", 0))],
+	]
+	var tokens := PackedStringArray(["VS BALANCED"])
+	for metric: Array in metrics:
+		var amount := int(metric[1])
+		tokens.append("%s %s%d%%" % [str(metric[0]), "+" if amount > 0 else "", amount])
+	return "  //  ".join(tokens)
+
+
+func _format_setup_decision(
+	equipped_setup: StringName,
+	selected_setup: StringName,
+	recommended_setup: StringName,
+	recommended_tune: StringName,
+	active_tune: StringName
+) -> String:
+	if equipped_setup == selected_setup and equipped_setup == recommended_setup and active_tune == recommended_tune:
+		return "EQUIPPED + EVENT PLAN  //  %s KIT + %s TUNE" % [
+			String(equipped_setup).replace("_", " "),
+			String(active_tune).replace("_", " "),
+		]
+	return "EQUIPPED %s  //  VIEWING %s  //  EVENT %s + %s" % [
+		String(equipped_setup).replace("_", " "),
+		String(selected_setup).replace("_", " "),
+		String(recommended_setup).replace("_", " "),
+		String(recommended_tune).replace("_", " "),
+	]
+
+
+func _setup_metric_bar(fill_color: Color) -> ProgressBar:
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 10.0
+	bar.show_percentage = false
+	var background := StyleBoxFlat.new()
+	background.bg_color = Color("202b32")
+	background.corner_radius_top_left = 4
+	background.corner_radius_top_right = 4
+	background.corner_radius_bottom_left = 4
+	background.corner_radius_bottom_right = 4
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = fill_color
+	fill.corner_radius_top_left = 4
+	fill.corner_radius_top_right = 4
+	fill.corner_radius_bottom_left = 4
+	fill.corner_radius_bottom_right = 4
+	bar.add_theme_stylebox_override(&"background", background)
+	bar.add_theme_stylebox_override(&"fill", fill)
+	return bar
+
+
+func _tune_dictionary(tune_id: StringName) -> Dictionary:
+	for preset: Dictionary in TUNE_PRESETS:
+		if StringName(preset.get(&"preset_id", &"")) == tune_id:
+			return (preset.get(&"tune", {}) as Dictionary).duplicate(true)
+	return {}
+
+
+func _runtime_deltas(candidate: Dictionary, reference: Dictionary) -> Dictionary:
+	return {
+		&"drive_percent": _runtime_delta_percent(candidate, reference, &"engine_force"),
+		&"grip_percent": _runtime_delta_percent(candidate, reference, &"lateral_grip"),
+		&"suspension_percent": _runtime_delta_percent(candidate, reference, &"spring_stiffness"),
+		&"speed_percent": _runtime_delta_percent(candidate, reference, &"maximum_speed_mps"),
+		&"preload_percent": _runtime_delta_percent(candidate, reference, &"preload_impulse"),
+		&"braking_percent": _runtime_delta_percent(candidate, reference, &"brake_force"),
+	}
+
+
+func _setup_decision_metrics(equipped: Dictionary, selected: Dictionary, recommended: Dictionary) -> Dictionary:
+	return {
+		&"POWER": _metric_row(equipped, selected, recommended, &"engine_force", 850.0, 1750.0),
+		&"GRIP": _metric_row(equipped, selected, recommended, &"lateral_grip", 450.0, 850.0),
+		&"SUSPENSION": _metric_row(equipped, selected, recommended, &"spring_stiffness", 16_000.0, 24_000.0),
+		&"TOP SPEED": _metric_row(equipped, selected, recommended, &"maximum_speed_mps", 23.0, 43.0),
+	}
+
+
+func _metric_row(
+	equipped: Dictionary, selected: Dictionary, recommended: Dictionary,
+	key: StringName, minimum: float, maximum: float
+) -> Dictionary:
+	return {
+		&"equipped": clampf(inverse_lerp(minimum, maximum, float(equipped.get(key, minimum))) * 10.0, 0.0, 10.0),
+		&"selected": clampf(inverse_lerp(minimum, maximum, float(selected.get(key, minimum))) * 10.0, 0.0, 10.0),
+		&"recommended": clampf(inverse_lerp(minimum, maximum, float(recommended.get(key, minimum))) * 10.0, 0.0, 10.0),
+	}
 
 
 func _on_profile_changed(_cash: int, _reputation: int, _setup: StringName) -> void:

@@ -37,6 +37,9 @@ var lap_times_usec: Array[int] = []
 var rewards: Dictionary = {}
 var championship_points: int = 0
 var academy_metrics: Dictionary = {}
+var racecraft_metrics: Dictionary = {}
+var rider_debrief: Dictionary = {}
+var run_plan: Dictionary = {}
 
 
 func to_dictionary() -> Dictionary:
@@ -76,4 +79,7 @@ func to_dictionary() -> Dictionary:
 		&"rewards": rewards.duplicate(true),
 		&"championship_points": championship_points,
 		&"academy_metrics": academy_metrics.duplicate(true),
+		&"racecraft_metrics": racecraft_metrics.duplicate(true),
+		&"rider_debrief": rider_debrief.duplicate(true),
+		&"run_plan": run_plan.duplicate(true),
 	}

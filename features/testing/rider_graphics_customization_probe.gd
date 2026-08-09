@@ -21,7 +21,7 @@ func _run() -> void:
 	profile._ensure_full_race_defaults()
 	var defaults: Dictionary = profile.get_rider_cosmetics()
 	_check(
-		profile.PROFILE_SCHEMA_VERSION == 10
+		profile.PROFILE_SCHEMA_VERSION == 12
 		and str(defaults.get(&"team_palette", "")) == "STYLE"
 		and str(defaults.get(&"decal_id", "")) == "CLEAN"
 		and str(defaults.get(&"sponsor_id", "")) == "NONE"

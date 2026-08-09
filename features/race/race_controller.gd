@@ -7,6 +7,7 @@ const RacePackController = preload("res://features/race/race_pack.gd")
 const PLAYER_RACE_METRICS_SCRIPT := preload("res://features/race/player_race_metrics.gd")
 const GATE_LAUNCH_SCRIPT := preload("res://features/race/race_gate_launch.gd")
 const REPUTATION_POLICY_SCRIPT := preload("res://features/race/race_reputation_policy.gd")
+const RIDER_DEBRIEF_SCRIPT := preload("res://features/race/rider_debrief.gd")
 const RACECRAFT_RULES := preload("res://features/race/racecraft_rules.gd")
 const SIMULATION_CLOCK_SCRIPT := preload("res://common/simulation_clock.gd")
 const ACADEMY_TRANSMISSION_TRACKER_SCRIPT := preload("res://features/career/academy_transmission_tracker.gd")
@@ -72,6 +73,7 @@ var _player_penalty_usec: int = 0
 var _finish_grace_remaining: float = 0.0
 var _last_result: Dictionary = {}
 var _race_attempt_context: Dictionary = {}
+var _run_plan_cache: Dictionary = {}
 var _is_new_best: bool = false
 var _field_sample_remaining: float = 0.0
 var _field_position: int = -1
@@ -333,6 +335,7 @@ func reset_run() -> void:
 	_track_evolution_opponent_sample_remaining = 0.0
 	_gate_launch_evaluator.call(&"reset")
 	_gate_launch_staging_active = false
+	_run_plan_cache = _capture_run_plan_snapshot()
 	if _activity_id in RaceEventCatalog.RACE_EVENTS:
 		_race_attempt_context = Profile.begin_race_run(
 			_activity_id,
@@ -1105,6 +1108,7 @@ func _build_race_result() -> RaceResult:
 	result.format = _session_config.format
 	result.session_type = _session_config.session_type
 	result.championship_id = _session_config.championship_id
+	result.run_plan = _run_plan_cache.duplicate(true)
 	var finish_validity := _evaluate_finish_validity()
 	result.valid = bool(finish_validity.get(&"valid", false))
 	var validity_reasons: PackedStringArray = finish_validity.get(&"reasons", PackedStringArray())
@@ -1208,6 +1212,36 @@ func _build_race_result() -> RaceResult:
 		&"multiplier": reward_multiplier,
 	}
 	result.academy_metrics = _get_academy_metrics(result)
+	var racecraft_snapshot := bike.get_racecraft_snapshot() if bike != null else {}
+	var racecraft_counters_value: Variant = racecraft_snapshot.get(&"counters", {})
+	var racecraft_counters: Dictionary = (
+		(racecraft_counters_value as Dictionary).duplicate(true)
+		if racecraft_counters_value is Dictionary else {}
+	)
+	result.racecraft_metrics = {
+		&"flow_uses": (
+			int(racecraft_counters.get(&"FLOW_SURGE", 0))
+			+ int(racecraft_counters.get(&"FLOW_RAIL", 0))
+			+ int(racecraft_counters.get(&"FLOW_COMPOSE", 0))
+			+ int(racecraft_counters.get(&"FLOW_BRACE", 0))
+		),
+		&"flow_surges": int(racecraft_counters.get(&"FLOW_SURGE", 0)),
+		&"flow_rail_uses": int(racecraft_counters.get(&"FLOW_RAIL", 0)),
+		&"flow_compose_uses": int(racecraft_counters.get(&"FLOW_COMPOSE", 0)),
+		&"flow_brace_uses": int(racecraft_counters.get(&"FLOW_BRACE", 0)),
+		&"skill_line_attempts": int(racecraft_counters.get(&"SKILL_LINE", 0)),
+		&"ending_flow": float(racecraft_snapshot.get(&"flow", 0.0)),
+		&"counters": racecraft_counters,
+	}
+	var debrief_source := result.to_dictionary()
+	result.rider_debrief = RIDER_DEBRIEF_SCRIPT.build(debrief_source, {
+		&"rival_target_usec": _rival_target_usec,
+		&"laps": _session_config.laps,
+		&"checkpoint_count": _checkpoint_data.size(),
+		&"checkpoint_progress_ratios": CourseCatalog.get_checkpoint_progress_ratios(
+			_track_id, _authoritative_route
+		),
+	})
 	return result
 
 
@@ -1263,6 +1297,43 @@ func _build_competitive_signature() -> String:
 		"challenge_id": competitive_rules.get(&"challenge_id", ""),
 		"modifiers": competitive_rules.get(&"modifiers", []),
 	})
+
+
+func _capture_run_plan_snapshot() -> Dictionary:
+	## Freeze the reconstructable player plan at staging. Competitive signatures
+	## prove eligibility, while this bounded snapshot explains and restores the
+	## actual configuration without rolling durability or odometer state backward.
+	var setup_snapshot: Dictionary = (
+		Profile.get_active_bike_setup_snapshot()
+		if Profile.has_method(&"get_active_bike_setup_snapshot") else {}
+	)
+	var build: Dictionary = setup_snapshot.get(&"build", {}) as Dictionary
+	var rules := _session_config.rules
+	var transmission := (
+		StringName(bike.get_transmission_snapshot().get(&"mode", &"AUTOMATIC"))
+		if bike != null else &"AUTOMATIC"
+	)
+	return {
+		&"version": 1,
+		&"setup_id": StringName(rules.get(&"competitive_setup_id", Profile.current_setup)),
+		&"bike_id": Profile.active_bike_id,
+		&"selected_class": Profile.selected_bike_class,
+		&"installed_parts": (build.get(&"installed_parts", {}) as Dictionary).duplicate(true),
+		&"tune": (build.get(&"tune", {}) as Dictionary).duplicate(true),
+		&"livery_id": StringName(build.get(&"livery_id", &"FACTORY")),
+		&"condition_percent": clampi(roundi(float(build.get(&"condition", 1.0)) * 100.0), 0, 100),
+		&"build_signature": str(setup_snapshot.get(&"signature", "")).substr(0, 256),
+		&"assist_mode": Profile.assist_mode,
+		&"assist_signature": (
+			Profile.get_assist_signature() if Profile.has_method(&"get_assist_signature") else String(Profile.assist_mode)
+		),
+		&"difficulty": clampi(int(_session_config.difficulty), 0, 2),
+		&"transmission_mode": transmission,
+		&"control_signature": InputRouter.get_control_response_signature().substr(0, 160),
+		&"crash_support_mode": StringName(rules.get(&"crash_support_mode", &"STANDARD")),
+		&"weather": _active_session_weather,
+		&"surface": _active_session_surface,
+	}
 
 
 func _competitive_modifier_names() -> PackedStringArray:

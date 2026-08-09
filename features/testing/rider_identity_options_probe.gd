@@ -18,7 +18,7 @@ func _run() -> void:
 	profile._ensure_full_race_defaults()
 	var defaults: Dictionary = profile.get_rider_cosmetics()
 	_check(
-		profile.PROFILE_SCHEMA_VERSION == 10
+		profile.PROFILE_SCHEMA_VERSION == 12
 		and str(defaults.get(&"body_type", "")) == "ATHLETIC"
 		and str(defaults.get(&"skin_tone", "")) == "MEDIUM"
 		and str(defaults.get(&"voice", "")) == "FOCUSED",

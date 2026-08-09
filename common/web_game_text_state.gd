@@ -3,7 +3,7 @@ class_name WebGameTextState
 ## assistive diagnostics. Presentation nodes remain authoritative; this is only
 ## a current-state projection and never feeds gameplay decisions.
 
-const SCHEMA_VERSION := 7
+const SCHEMA_VERSION := 13
 const MAX_VISIBLE_RIDERS := 8
 const MAX_TRACKSIDE_LANDMARKS := 4
 
@@ -80,6 +80,8 @@ static func build(raw: Dictionary) -> Dictionary:
 
 static func _results_projection(source: Dictionary) -> Dictionary:
 	var podium := _dictionary(source.get(&"podium", {}))
+	var debrief := _dictionary(source.get(&"rider_debrief", {}))
+	var follow_up := _dictionary(debrief.get(&"follow_up", {}))
 	var top_three: Array[Dictionary] = []
 	var raw_top_three: Variant = podium.get(&"top_three", [])
 	if raw_top_three is Array:
@@ -98,6 +100,25 @@ static func _results_projection(source: Dictionary) -> Dictionary:
 		&"title": str(source.get(&"title", "")),
 		&"summary": str(source.get(&"summary", "")),
 		&"event_recap": str(source.get(&"event_recap", "")),
+		&"rider_debrief": {
+			&"grade": str(debrief.get(&"grade", "")),
+			&"focus_id": str(debrief.get(&"focus_id", "")),
+			&"headline": str(debrief.get(&"headline", "")),
+			&"strength": str(debrief.get(&"strength", "")),
+			&"primary_insight": str(debrief.get(&"primary_insight", "")),
+			&"next_objective": str(debrief.get(&"next_objective", "")),
+			&"summary": str(debrief.get(&"summary", source.get(&"rider_debrief_text", ""))),
+			&"costliest_sector": maxi(int(debrief.get(&"costliest_sector", 0)), 0),
+			&"costliest_sector_delta_usec": int(debrief.get(&"costliest_sector_delta_usec", 0)),
+			&"flow_uses": maxi(int(debrief.get(&"flow_uses", 0)), 0),
+			&"follow_up": {
+				&"focus_id": str(follow_up.get(&"focus_id", "")),
+				&"status": str(follow_up.get(&"status", "")),
+				&"achieved": bool(follow_up.get(&"achieved", false)),
+				&"improved": bool(follow_up.get(&"improved", false)),
+				&"receipt": str(follow_up.get(&"receipt", "")),
+			},
+		},
 		&"podium": {
 			&"visible": bool(podium.get(&"visible", false)),
 			&"event_name": str(podium.get(&"event_name", "")),
@@ -384,6 +405,9 @@ static func _menu_projection(garage: Dictionary) -> Dictionary:
 		&"workshop_open": bool(garage.get(&"workshop_open", false)),
 		&"event": str(garage.get(&"event", "")),
 		&"setup": str(garage.get(&"setup", "")),
+		&"setup_comparison": _setup_comparison_projection(_dictionary(garage.get(&"setup_comparison", {}))),
+		&"setup_decision": _setup_decision_projection(_dictionary(garage.get(&"setup_decision", {}))),
+		&"result_history": _result_history_projection(_dictionary(garage.get(&"result_history", {}))),
 		&"status": str(garage.get(&"status", "")),
 		&"workshop_category": str(garage.get(&"workshop_category", "")),
 		&"workshop_item": str(garage.get(&"workshop_item", "")),
@@ -391,6 +415,140 @@ static func _menu_projection(garage: Dictionary) -> Dictionary:
 		&"workshop_status": str(garage.get(&"workshop_status", "")),
 		&"rider_number": clampi(int(garage.get(&"rider_number", 17)), 1, 999),
 		&"rider_number_draft": clampi(int(garage.get(&"rider_number_draft", 17)), 0, 999),
+	}
+
+
+static func _result_history_projection(source: Dictionary) -> Dictionary:
+	if source.is_empty():
+		return {}
+	return {
+		&"event_id": str(source.get(&"event_id", "")),
+		&"challenge_id": str(source.get(&"challenge_id", "")),
+		&"recent_count": clampi(int(source.get(&"recent_count", 0)), 0, 5),
+		&"previous_label": str(source.get(&"previous_label", "")),
+		&"personal_best_label": str(source.get(&"personal_best_label", "")),
+		&"pinned_label": str(source.get(&"pinned_label", "")),
+		&"reference_kind": str(source.get(&"reference_kind", "PERSONAL_BEST")),
+		&"comparison": _run_comparison_projection(_dictionary(source.get(&"comparison", {}))),
+		&"previous_run": _history_run_projection(_dictionary(source.get(&"previous_run", {}))),
+		&"personal_best_run": _history_run_projection(_dictionary(source.get(&"personal_best_run", {}))),
+		&"pinned_run": _history_run_projection(_dictionary(source.get(&"pinned_run", {}))),
+	}
+
+
+static func _run_comparison_projection(source: Dictionary) -> Dictionary:
+	if source.is_empty():
+		return {}
+	return {
+		&"previous_minus_pb_usec": int(source.get(&"previous_minus_pb_usec", 0)),
+		&"pace_state": str(source.get(&"pace_state", "")),
+		&"summary": str(source.get(&"summary", "")),
+		&"attribution": str(source.get(&"attribution", "")),
+		&"attribution_label": str(source.get(&"attribution_label", "")),
+		&"comparable": bool(source.get(&"comparable", false)),
+		&"opportunity_sector": clampi(int(source.get(&"opportunity_sector", 0)), 0, 32),
+		&"opportunity_usec": maxi(int(source.get(&"opportunity_usec", 0)), 0),
+		&"latest_advantage_sector": clampi(int(source.get(&"latest_advantage_sector", 0)), 0, 32),
+		&"latest_advantage_usec": maxi(int(source.get(&"latest_advantage_usec", 0)), 0),
+		&"crash_delta": clampi(int(source.get(&"crash_delta", 0)), -999, 999),
+		&"contact_delta": clampi(int(source.get(&"contact_delta", 0)), -999, 999),
+		&"reset_delta": clampi(int(source.get(&"reset_delta", 0)), -999, 999),
+		&"flow_delta": clampi(int(source.get(&"flow_delta", 0)), -999, 999),
+		&"recommendation": str(source.get(&"recommendation", "")),
+	}
+
+
+static func _history_run_projection(source: Dictionary) -> Dictionary:
+	if source.is_empty():
+		return {}
+	var plan := _dictionary(source.get(&"plan", {}))
+	return {
+		&"position": clampi(int(source.get(&"position", 0)), 0, 99),
+		&"status": str(source.get(&"status", "")),
+		&"valid": bool(source.get(&"valid", false)),
+		&"effective_time_usec": int(source.get(&"effective_time_usec", -1)),
+		&"crashes": clampi(int(source.get(&"crashes", 0)), 0, 999),
+		&"contacts": clampi(int(source.get(&"contacts", 0)), 0, 999),
+		&"flow_uses": clampi(int(source.get(&"flow_uses", 0)), 0, 999),
+		&"plan": {
+			&"bike_id": str(plan.get(&"bike_id", "")),
+			&"setup_id": str(plan.get(&"setup_id", "")),
+			&"selected_class": str(plan.get(&"selected_class", "")),
+			&"livery_id": str(plan.get(&"livery_id", "")),
+			&"assist_mode": str(plan.get(&"assist_mode", "")),
+			&"difficulty": clampi(int(plan.get(&"difficulty", 0)), 0, 2),
+			&"transmission_mode": str(plan.get(&"transmission_mode", "")),
+			&"weather": str(plan.get(&"weather", "")),
+			&"surface": str(plan.get(&"surface", "")),
+		},
+	}
+
+
+static func _setup_comparison_projection(source: Dictionary) -> Dictionary:
+	var deltas := _dictionary(source.get(&"deltas", {}))
+	return {
+		&"baseline": str(source.get(&"baseline", "BALANCED")),
+		&"label": str(source.get(&"label", "")),
+		&"drive_percent": clampi(int(deltas.get(&"drive_percent", 0)), -50, 50),
+		&"grip_percent": clampi(int(deltas.get(&"grip_percent", 0)), -50, 50),
+		&"suspension_percent": clampi(int(deltas.get(&"suspension_percent", 0)), -50, 50),
+		&"speed_percent": clampi(int(deltas.get(&"speed_percent", 0)), -50, 50),
+		&"preload_percent": clampi(int(deltas.get(&"preload_percent", 0)), -50, 50),
+		&"braking_percent": clampi(int(deltas.get(&"braking_percent", 0)), -50, 50),
+	}
+
+
+static func _setup_decision_projection(source: Dictionary) -> Dictionary:
+	if source.is_empty():
+		return {}
+	return {
+		&"equipped_setup": str(source.get(&"equipped_setup", "")),
+		&"selected_setup": str(source.get(&"selected_setup", "")),
+		&"recommended_setup": str(source.get(&"recommended_setup", "")),
+		&"active_tune": str(source.get(&"active_tune", "")),
+		&"recommended_tune": str(source.get(&"recommended_tune", "")),
+		&"state": str(source.get(&"state", "")),
+		&"action": str(source.get(&"action", "")),
+		&"selected_owned": bool(source.get(&"selected_owned", false)),
+		&"selected_affordable": bool(source.get(&"selected_affordable", false)),
+		&"selected_shortfall": clampi(int(source.get(&"selected_shortfall", 0)), 0, 999_999),
+		&"label": str(source.get(&"label", "")),
+		&"metrics": _setup_metric_projection(_dictionary(source.get(&"metrics", {}))),
+		&"selected_vs_equipped": _setup_delta_projection(_dictionary(source.get(&"selected_vs_equipped", {}))),
+		&"recommended_vs_equipped": _setup_delta_projection(_dictionary(source.get(&"recommended_vs_equipped", {}))),
+		&"sources": _setup_source_projection(_dictionary(source.get(&"sources", {}))),
+	}
+
+
+static func _setup_metric_projection(source: Dictionary) -> Dictionary:
+	var projection := {}
+	for metric_id: StringName in [&"POWER", &"GRIP", &"SUSPENSION", &"TOP SPEED"]:
+		var row := _dictionary(source.get(metric_id, {}))
+		projection[metric_id] = {
+			&"equipped": clampf(float(row.get(&"equipped", 0.0)), 0.0, 10.0),
+			&"selected": clampf(float(row.get(&"selected", 0.0)), 0.0, 10.0),
+			&"recommended": clampf(float(row.get(&"recommended", 0.0)), 0.0, 10.0),
+		}
+	return projection
+
+
+static func _setup_delta_projection(source: Dictionary) -> Dictionary:
+	return {
+		&"drive_percent": clampi(int(source.get(&"drive_percent", 0)), -75, 75),
+		&"grip_percent": clampi(int(source.get(&"grip_percent", 0)), -75, 75),
+		&"suspension_percent": clampi(int(source.get(&"suspension_percent", 0)), -75, 75),
+		&"speed_percent": clampi(int(source.get(&"speed_percent", 0)), -75, 75),
+		&"preload_percent": clampi(int(source.get(&"preload_percent", 0)), -75, 75),
+		&"braking_percent": clampi(int(source.get(&"braking_percent", 0)), -75, 75),
+	}
+
+
+static func _setup_source_projection(source: Dictionary) -> Dictionary:
+	return {
+		&"kit": str(source.get(&"kit", "")),
+		&"tune": str(source.get(&"tune", "")),
+		&"build": str(source.get(&"build", "")),
+		&"assists": str(source.get(&"assists", "")),
 	}
 
 

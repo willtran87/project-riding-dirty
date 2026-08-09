@@ -293,7 +293,18 @@ func _validate_results(config: RaceSessionConfig) -> void:
 		and (result.get(&"lap_times_usec", []) as Array).size() == config.laps
 		and (result.get(&"sector_times_usec", []) as Array).size() == config.laps * _race.get_checkpoint_positions().size()
 		and result.get(&"rewards", {}) is Dictionary
+		and result.get(&"racecraft_metrics", {}) is Dictionary
+		and str((result.get(&"rider_debrief", {}) as Dictionary).get(&"summary", "")).contains("RIDER DEBRIEF")
 		and int(result.get(&"championship_points", 0)) > 0
+	)
+	var run_plan := result.get(&"run_plan", {}) as Dictionary
+	var run_plan_passed := (
+		not run_plan.is_empty()
+		and StringName(run_plan.get(&"bike_id", &"")) == Profile.active_bike_id
+		and StringName(run_plan.get(&"setup_id", &"")) == StringName(config.rules.get(&"competitive_setup_id", Profile.current_setup))
+		and StringName(run_plan.get(&"weather", &"")) == config.weather
+		and StringName(run_plan.get(&"surface", &"")) == config.surface_modifier
+		and run_plan.get(&"tune", {}) is Dictionary
 	)
 	_check(schema_passed, "full classification and DNF schema", "size=%d dnf=%d ordered=%s" % [classification.size(), dnf_count, str(ordered_positions)])
 	_check(player_passed, "player finish and penalty classification", "player=%s" % str(player))
@@ -302,6 +313,7 @@ func _validate_results(config: RaceSessionConfig) -> void:
 		int(result.get(&"recoveries", -1)), int(result.get(&"crashes", -1)),
 		str(result.get(&"lap_times_usec", [])), (result.get(&"sector_times_usec", []) as Array).size(),
 	])
+	_check(run_plan_passed, "official result retains exact staged run plan", "plan=%s" % str(run_plan))
 	_check(result == _captured_result, "results preview matches emitted payload")
 	_validate_named_field(config.field_size, &"DNF")
 
@@ -319,6 +331,10 @@ func _validate_result_serialization() -> void:
 		and parsed_classification.size() == 6
 		and int(parsed.get("player_penalty_usec", -1)) == 2_000_000
 		and (parsed.get("lap_times_usec", []) as Array).size() == 2
+		and parsed.get("racecraft_metrics", {}) is Dictionary
+		and parsed.get("run_plan", {}) is Dictionary
+		and str((parsed.get("run_plan", {}) as Dictionary).get("bike_id", "")) == "TYKE_125"
+		and str((parsed.get("rider_debrief", {}) as Dictionary).get("summary", "")).contains("RIDER DEBRIEF")
 	)
 	_check(passed, "result JSON round trip", "bytes=%d parsed_field=%d" % [json.length(), parsed_classification.size()])
 
