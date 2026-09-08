@@ -4,7 +4,8 @@ extends Node3D
 ## Run against source or an exported PCK.  It reports the authored longitudinal
 ## and lateral footprint of every route-authored additive collision overlay;
 ## the separate freestyle arena is deliberately outside this audit, and the
-## opponent pack itself has no PhysicsBody3D nodes.
+## opponent pack uses inspectable non-physical contact envelopes around its
+## deterministic racecraft simulation, never heavyweight rigid-body AI.
 
 const QUARRY_SCENE := preload("res://levels/quarry/quarry.tscn")
 
@@ -71,20 +72,25 @@ func _ready() -> void:
 	await get_tree().process_frame
 	var physics_bodies := race_pack.find_children("*", "PhysicsBody3D", true, false)
 	var collision_shapes := race_pack.find_children("*", "CollisionShape3D", true, false)
+	var contact_envelopes := race_pack.find_children("ContactEnvelope", "Area3D", true, false)
 	print("GATE8 NPC COLLISION MODEL: physics_bodies=%d collision_shapes=%d root_type=%s surface_ray_height=%.1f surface_ray_depth=%.1f" % [
 		physics_bodies.size(), collision_shapes.size(), race_pack.get_class(),
 		RacePack.SURFACE_RAY_HEIGHT, RacePack.SURFACE_RAY_DEPTH,
 	])
-	var npc_is_collisionless := physics_bodies.is_empty() and collision_shapes.is_empty()
+	var npc_contact_model_valid := (
+		physics_bodies.is_empty()
+		and collision_shapes.size() == RacePack.RIDER_COUNT
+		and contact_envelopes.size() == RacePack.RIDER_COUNT
+	)
 	var passed := (
 		overlay_count == 0
 		and bool(topology_result[&"passed"])
 		and bool(presented_heading_result[&"passed"])
-		and npc_is_collisionless
+		and npc_contact_model_valid
 	)
-	print("QUARRY FULL-ROUTE COLLISION RESULT: overlays=%d player_layer=1 player_mask=2 full_corridor_clear=%s gate8_heading_clear=%s npc_collisionless=%s passed=%s" % [
+	print("QUARRY FULL-ROUTE COLLISION RESULT: overlays=%d player_layer=1 player_mask=2 full_corridor_clear=%s gate8_heading_clear=%s npc_contact_envelopes=%s passed=%s" % [
 		overlay_count, str(topology_result[&"passed"]), str(presented_heading_result[&"passed"]),
-		str(npc_is_collisionless), str(passed),
+		str(npc_contact_model_valid), str(passed),
 	])
 	get_tree().quit(0 if passed else 1)
 

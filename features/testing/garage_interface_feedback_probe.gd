@@ -337,7 +337,13 @@ func _run() -> void:
 	)
 	_check(bool(Profile.load_saved_bike_build(&"BUILD_A").get(&"accepted", false)), "Probe could not restore Build A before comparison")
 	var build_items: Array = garage.call(&"_get_workshop_items", &"BUILD")
-	var compare_ab: Dictionary = build_items[6] as Dictionary
+	var compare_ab: Dictionary = {}
+	for candidate_value: Variant in build_items:
+		var candidate := candidate_value as Dictionary
+		if StringName(candidate.get(&"action_id", &"")) == &"COMPARE" and str(candidate.get(&"slot_label", "")) == "A / B":
+			compare_ab = candidate
+			break
+	_check(not compare_ab.is_empty(), "Saved Build A/B comparison is not available")
 	var compare_projection: Dictionary = garage.call(&"_saved_build_projection", compare_ab)
 	_check(
 		str(compare_projection.get(&"title", "")).contains("BUILD A / B")

@@ -8,10 +8,14 @@ const ACADEMY_CATALOG_SCRIPT := preload("res://features/career/academy_lesson_ca
 static var _academy_lesson_override: StringName = &""
 static var _player_difficulty_mode: StringName = &"STANDARD"
 
-const PLAYER_DIFFICULTY_MODES: Array[StringName] = [&"RELAXED", &"STANDARD", &"EXPERT"]
+const PLAYER_DIFFICULTY_MODES: Array[StringName] = [
+	&"RELAXED", &"CASUAL", &"STANDARD", &"CHALLENGING", &"EXPERT",
+]
 const PLAYER_DIFFICULTY_OFFSETS: Dictionary = {
 	&"RELAXED": -1,
+	&"CASUAL": -1,
 	&"STANDARD": 0,
+	&"CHALLENGING": 1,
 	&"EXPERT": 1,
 }
 

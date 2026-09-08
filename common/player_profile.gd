@@ -19,10 +19,13 @@ const MAX_ACTIVITY_RESULT_IDS: int = 64
 const MAX_ACADEMY_RESULT_BINDINGS: int = 128
 const MAX_EVENT_RECORDS: int = 64
 const MAX_CHALLENGE_RECORDS: int = 64
-const MAX_EVENT_RUN_HISTORY: int = 5
+const MAX_EVENT_RUN_HISTORY: int = 12
 const MAX_LEADERBOARD_SUMMARIES: int = 48
-const MAX_SAVED_BUILD_SLOTS: int = 3
-const SAVED_BUILD_SLOT_IDS: Array[StringName] = [&"BUILD_A", &"BUILD_B", &"BUILD_C"]
+const MAX_SAVED_BUILD_SLOTS: int = 8
+const SAVED_BUILD_SLOT_IDS: Array[StringName] = [
+	&"BUILD_A", &"BUILD_B", &"BUILD_C", &"BUILD_D",
+	&"BUILD_E", &"BUILD_F", &"BUILD_G", &"BUILD_H",
+]
 const MAX_SAVED_OUTFIT_SLOTS: int = 3
 const SAVED_OUTFIT_SLOT_IDS: Array[StringName] = [&"OUTFIT_A", &"OUTFIT_B", &"OUTFIT_C"]
 const RIDER_BODY_TYPES: Array[StringName] = [&"COMPACT", &"ATHLETIC", &"POWERFUL"]

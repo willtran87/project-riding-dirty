@@ -56,6 +56,7 @@ func _run() -> void:
 		and str(restored.get(&"challenge_id", "")) == str(initial.get(&"challenge_id", "")),
 		"active duel recovers with the same rotating challenge identity"
 	)
+	restored_service.free()
 
 	var garage := GARAGE_UI_SCRIPT.new() as GarageUi
 	add_child(garage)
@@ -136,6 +137,7 @@ func _run() -> void:
 	hud.queue_free()
 	touch.queue_free()
 	service.queue_free()
+	await get_tree().process_frame
 	await get_tree().process_frame
 	_cleanup()
 	if _failures.is_empty():

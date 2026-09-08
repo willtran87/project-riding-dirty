@@ -14,6 +14,7 @@ signal rider_eliminated(rider_id: StringName, elimination_lap: int)
 signal holeshot_decided(rider_id: StringName)
 signal player_overtook(rider_id: StringName)
 signal player_was_overtaken(rider_id: StringName)
+signal opponent_flow_boosted(rider_id: StringName, display_name: String, signature_trait: String, gap_m: float)
 
 const RIDER_COUNT := 11
 const GRID_COLUMNS := 3
@@ -85,6 +86,9 @@ const NEAR_MISS_DISTANCE := 1.85
 const NEAR_MISS_EXIT_DISTANCE := 2.35
 const PLAYER_CONTACT_COOLDOWN := 0.35
 const GLOBAL_CONTACT_COOLDOWN := 0.22
+const FIELD_CONTACT_COOLDOWN := 0.48
+const FIELD_CRASH_IMPACT_THRESHOLD := 4.8
+const FIELD_WOBBLE_CRASH_CHANCE := 0.24
 
 # The old pack began making 2.25 m/s lane changes almost immediately while its
 # forward launch was still heavily eased. That made the grid appear to strafe
@@ -113,9 +117,63 @@ const ACADEMY_PACE_SCALE := 0.87
 const HOLESHOT_DISTANCE := 48.0
 const AUDIO_POOL_SIZE := 4
 const PLAYER_MODE_PACE_SCALARS: Dictionary[StringName, float] = {
-	&"RELAXED": 0.99,
-	&"STANDARD": 1.08,
+	&"RELAXED": 0.98,
+	&"CASUAL": 1.03,
+	&"STANDARD": 1.07,
+	&"CHALLENGING": 1.125,
 	&"EXPERT": 1.17,
+}
+const PLAYER_MODE_SKILL_DELTAS: Dictionary[StringName, float] = {
+	&"RELAXED": -0.04,
+	&"CASUAL": -0.02,
+	&"STANDARD": 0.0,
+	&"CHALLENGING": 0.02,
+	&"EXPERT": 0.04,
+}
+## Rider-owned Flow and racecraft stay meaningful, but hidden director pressure
+## may only use the remaining headroom. This prevents Flow, draft, late charge,
+## and comeback shaping from stacking into an unreadable speed spike.
+const PLAYER_MODE_DYNAMIC_PACE_BUDGET_MPS: Dictionary[StringName, float] = {
+	&"RELAXED": 1.75,
+	&"CASUAL": 1.95,
+	&"STANDARD": 2.05,
+	&"CHALLENGING": 2.45,
+	&"EXPERT": 2.70,
+}
+const PLAYER_MODE_COMEBACK_RESERVE_MPS: Dictionary[StringName, float] = {
+	&"RELAXED": 0.45,
+	&"CASUAL": 0.70,
+	&"STANDARD": 1.10,
+	&"CHALLENGING": 1.35,
+	&"EXPERT": 1.55,
+}
+const PLAYER_MODE_PRESSURE_SCALES: Dictionary[StringName, float] = {
+	&"RELAXED": 0.76,
+	&"CASUAL": 0.88,
+	&"STANDARD": 1.0,
+	&"CHALLENGING": 1.06,
+	&"EXPERT": 1.12,
+}
+const PLAYER_MODE_FLOW_GAIN_SCALES: Dictionary[StringName, float] = {
+	&"RELAXED": 0.68,
+	&"CASUAL": 0.84,
+	&"STANDARD": 1.0,
+	&"CHALLENGING": 1.09,
+	&"EXPERT": 1.18,
+}
+const PLAYER_MODE_FLOW_OUTPUT_SCALES: Dictionary[StringName, float] = {
+	&"RELAXED": 0.72,
+	&"CASUAL": 0.86,
+	&"STANDARD": 1.0,
+	&"CHALLENGING": 1.05,
+	&"EXPERT": 1.10,
+}
+const PLAYER_MODE_FLOW_THRESHOLDS: Dictionary[StringName, float] = {
+	&"RELAXED": 0.86,
+	&"CASUAL": 0.75,
+	&"STANDARD": 0.64,
+	&"CHALLENGING": 0.57,
+	&"EXPERT": 0.50,
 }
 
 enum RiderMode { RIDING, WOBBLE, CRASHED, RECOVERING }
@@ -207,7 +265,7 @@ func configure(
 	_mode_pace_scale = float(PLAYER_MODE_PACE_SCALARS.get(_player_difficulty_mode, 1.0))
 	_build_match_scale = clampf(float(_session_config.rules.get(&"opponent_build_match_scale", 1.0)), 0.94, 1.12)
 	var skill_tier := _authored_difficulty if _session_config.rules.has(&"authored_difficulty") else _session_config.difficulty
-	var mode_skill_delta := -0.03 if _player_difficulty_mode == &"RELAXED" else 0.04 if _player_difficulty_mode == &"EXPERT" else 0.0
+	var mode_skill_delta := float(PLAYER_MODE_SKILL_DELTAS.get(_player_difficulty_mode, 0.0))
 	_skill_delta = clampf(float(skill_tier - 2) * 0.012 + mode_skill_delta, -0.07, 0.08)
 	var configured_retention: Variant = _session_config.rules.get(&"retention", {})
 	_retention_contract = configured_retention.duplicate(true) if configured_retention is Dictionary else {}
@@ -339,6 +397,7 @@ func reset_grid() -> void:
 		state[&"profile"] = profile
 		state[&"rider_id"] = StringName(profile.get(&"id", "RIDER_%02d" % index))
 		state[&"display_name"] = str(profile.get(&"name", "RIDER %02d" % (index + 2)))
+		state[&"signature_trait"] = str(profile.get(&"signature_trait", "CONSISTENT PRESSURE"))
 		state[&"number"] = int(profile.get(&"number", index + 2))
 		state[&"progress"] = slot.x
 		state[&"lane"] = slot.y
@@ -462,6 +521,10 @@ func start_race() -> void:
 		visible = true
 		_active = true
 		_race_elapsed = 0.0
+		# Protect the launch lane while the gate pack is still compressing. Contact
+		# becomes authoritative once riders have control, never as an unavoidable
+		# first-frame penalty.
+		_contact_immunity_time = maxf(_contact_immunity_time, LAUNCH_LANE_LOCK_SECONDS)
 
 
 func stop_race() -> void:
@@ -481,6 +544,7 @@ func simulate_competition_step(
 	if not _active or delta <= 0.0 or _track_length <= 0.0:
 		return
 	_race_elapsed += delta
+	_chaos_metrics[&"simulated_seconds"] = float(_chaos_metrics[&"simulated_seconds"]) + delta
 	_player_speed_snapshot = maxf(player_speed, 0.0)
 	if player_total_progress >= 0.0 and _player_status != &"ELIMINATED":
 		var previous_player_laps := _player_laps_completed
@@ -517,6 +581,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_surface_queries_this_tick = 0
 	_race_elapsed += delta
+	_chaos_metrics[&"simulated_seconds"] = float(_chaos_metrics[&"simulated_seconds"]) + delta
 	_contact_immunity_time = maxf(_contact_immunity_time - delta, 0.0)
 	_global_contact_cooldown = maxf(_global_contact_cooldown - delta, 0.0)
 	_player_sample_time -= delta
@@ -626,6 +691,8 @@ func get_chaos_snapshot() -> Dictionary:
 	var speed_bias_samples := int(_chaos_metrics.get(&"speed_bias_samples", 0))
 	var recovery_minimum := float(_chaos_metrics.get(&"recovery_minimum_seconds", INF))
 	var section_minimum := float(_chaos_metrics.get(&"section_minimum_factor", INF))
+	var simulated_minutes := maxf(float(_chaos_metrics.get(&"simulated_seconds", 0.0)) / 60.0, 0.001)
+	var rider_minutes := maxf(simulated_minutes * float(maxi(_active_rider_count, 1)), 0.001)
 	return {
 		&"riders": _active_rider_count,
 		&"active": active_count,
@@ -640,6 +707,9 @@ func get_chaos_snapshot() -> Dictionary:
 		&"field_contacts": field_contacts,
 		&"field_crashes": field_crashes,
 		&"field_recoveries": field_recoveries,
+		&"field_contacts_per_rider_minute": float(field_contacts) / rider_minutes,
+		&"field_crashes_per_rider_minute": float(field_crashes) / rider_minutes,
+		&"launch_contact_immunity_seconds": LAUNCH_LANE_LOCK_SECONDS,
 		# Transitional aliases remain for pack-presentation probes. Competitive
 		# player results consume PlayerRaceMetrics and never read these counters.
 		&"overtakes": field_overtakes,
@@ -671,6 +741,10 @@ func get_chaos_snapshot() -> Dictionary:
 		&"ai_flow_boost_activations": int(_chaos_metrics.get(&"ai_flow_boost_activations", 0)),
 		&"ai_flow_boost_seconds": float(_chaos_metrics.get(&"ai_flow_boost_seconds", 0.0)),
 		&"ai_flow_boost_peak_mps": float(_chaos_metrics.get(&"ai_flow_boost_peak_mps", 0.0)),
+		&"dynamic_pace_budget_mps": _dynamic_pace_budget_mps(),
+		&"dynamic_pace_budget_clamps": int(_chaos_metrics.get(&"dynamic_pace_budget_clamps", 0)),
+		&"dynamic_pace_raw_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_raw_peak_mps", 0.0)),
+		&"dynamic_pace_applied_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_applied_peak_mps", 0.0)),
 		&"player_draft_seconds": float(_chaos_metrics.get(&"player_draft_seconds", 0.0)),
 		&"player_draft_peak": float(_chaos_metrics.get(&"player_draft_peak", 0.0)),
 		&"player_roost_pressure_peak": float(_chaos_metrics.get(&"player_roost_pressure_peak", 0.0)),
@@ -1452,12 +1526,12 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 	state[&"section_speed_factor"] = section_speed_factor
 	_record_section_consequences(state, section_speed_factor, delta)
 	var flow_boost_mps := _update_opponent_flow(index, state, progress_gap, player_speed, delta)
+	var tactical_pace := _bounded_tactical_pace(late_pressure_mps, close_attack_mps, flow_boost_mps)
+	state[&"tactical_pace_mps"] = tactical_pace
 	var dynamic_base_speed := (
 		float(state[&"base_speed"])
 		+ float(state[&"speed_bias"])
-		+ late_pressure_mps
-		+ close_attack_mps
-		+ flow_boost_mps
+		+ tactical_pace
 	)
 	var target_speed := _target_speed_for_gap(dynamic_base_speed, player_speed, progress_gap, state)
 	target_speed *= section_speed_factor
@@ -1725,15 +1799,15 @@ func _resolve_rider_pairs() -> void:
 					contact_sign = -1.0 if (pair_key + int(_race_elapsed * 2.0)) % 2 == 0 else 1.0
 				first[&"lane_velocity"] = float(first[&"lane_velocity"]) + contact_sign * minf(impact * 0.38, 1.5)
 				second[&"lane_velocity"] = float(second[&"lane_velocity"]) - contact_sign * minf(impact * 0.38, 1.5)
-				first[&"contact_cooldown"] = PLAYER_CONTACT_COOLDOWN
-				second[&"contact_cooldown"] = PLAYER_CONTACT_COOLDOWN
+				first[&"contact_cooldown"] = FIELD_CONTACT_COOLDOWN
+				second[&"contact_cooldown"] = FIELD_CONTACT_COOLDOWN
 				first[&"contacts"] = int(first.get(&"contacts", 0)) + 1
 				second[&"contacts"] = int(second.get(&"contacts", 0)) + 1
 				_enter_wobble(first, impact, contact_sign)
 				_enter_wobble(second, impact, -contact_sign)
 				_increment_metric(&"field_contacts")
 				var crash_roll := _event_unit(pair_key, int(_chaos_metrics[&"field_contacts"]), 11.2)
-				if impact > 4.0 or ((first_was_wobbling or second_was_wobbling) and crash_roll < 0.38):
+				if impact > FIELD_CRASH_IMPACT_THRESHOLD or ((first_was_wobbling or second_was_wobbling) and crash_roll < FIELD_WOBBLE_CRASH_CHANCE):
 					if float(first[&"speed"]) >= float(second[&"speed"]):
 						_enter_crash(first, first_index, impact, contact_sign)
 					else:
@@ -1934,11 +2008,6 @@ func _resolve_player_proximity(delta: float) -> void:
 				if _launch_tactics_blend() >= 1.0 and (closing_speed > 5.5 or (was_wobbling and closing_speed > 2.5)):
 					_enter_crash(state, index, closing_speed, -lateral_push)
 		_riders[index] = state
-	# Keep a deterministic metric even when the caller advances with unusual
-	# frame sizes in a headless probe.
-	_chaos_metrics[&"simulated_seconds"] = float(_chaos_metrics[&"simulated_seconds"]) + delta
-
-
 func _update_mode(state: Dictionary, index: int, delta: float) -> void:
 	var mode := int(state[&"mode"])
 	var recovery_skill := clampf(float(state.get(&"recovery_skill", 0.8)), 0.0, 1.0)
@@ -2186,6 +2255,18 @@ func _target_speed_for_gap(base_speed: float, player_speed: float, progress_gap:
 	var correction := get_gap_pace_adjustment(progress_gap, race_completion) if is_instance_valid(_player) or simulation_has_player else 0.0
 	if correction > 0.0:
 		correction *= lerpf(0.82, 1.12, clampf(float(state.get(&"comeback_skill", 0.85)), 0.0, 1.0))
+		var tactical_pace := maxf(float(state.get(&"tactical_pace_mps", 0.0)), 0.0)
+		# A decisive player breakaway opens a small, explicit comeback reserve.
+		# Close racing receives no extra hidden pace, so ordinary battles remain
+		# readable while elite play still provokes a credible answer.
+		var comeback_reserve := (
+			float(PLAYER_MODE_COMEBACK_RESERVE_MPS.get(_player_difficulty_mode, 1.10))
+			* smoothstep(12.0, 55.0, maxf(-progress_gap, 0.0))
+		)
+		var remaining_budget := maxf(_dynamic_pace_budget_mps() + comeback_reserve - tactical_pace, 0.0)
+		if correction > remaining_budget + 0.001:
+			_increment_metric(&"dynamic_pace_budget_clamps")
+		correction = minf(correction, remaining_budget)
 	elif correction < 0.0:
 		# High-pressure front-runners resist some leader drag; calmer riders invite
 		# a slightly tighter chase. The final clamp preserves the event contract.
@@ -2203,7 +2284,7 @@ func _late_race_pressure_mps(state: Dictionary, progress_gap: float) -> float:
 	var pressure_skill := clampf(float(state.get(&"pressure_skill", 0.75)), 0.0, 1.0)
 	var comeback_skill := clampf(float(state.get(&"comeback_skill", 0.85)), 0.0, 1.0)
 	var racecraft_skill := comeback_skill if progress_gap < 0.0 else pressure_skill
-	var difficulty_scale := 0.76 if _player_difficulty_mode == &"RELAXED" else 1.12 if _player_difficulty_mode == &"EXPERT" else 1.0
+	var difficulty_scale := float(PLAYER_MODE_PRESSURE_SCALES.get(_player_difficulty_mode, 1.0))
 	var pressure_cap := 0.82 if _session_config.event_id == &"ACADEMY" else LATE_RACE_PRESSURE_MAX_MPS
 	return clampf(
 		pressure_cap * phase * lerpf(0.42, 1.0, racecraft_skill) * difficulty_scale,
@@ -2362,11 +2443,7 @@ func _update_opponent_flow(
 				flow_gain += OPPONENT_FLOW_CLEAN_GAIN_PER_SECOND
 		if float(state.get(&"line_factor", 1.0)) > 1.001:
 			flow_gain += 0.20
-		var gain_scale := (
-			0.68 if _player_difficulty_mode == &"RELAXED"
-			else 1.18 if _player_difficulty_mode == &"EXPERT"
-			else 1.0
-		)
+		var gain_scale := float(PLAYER_MODE_FLOW_GAIN_SCALES.get(_player_difficulty_mode, 1.0))
 		_grant_opponent_flow(state, flow_gain * gain_scale * delta)
 		if _should_activate_opponent_flow_boost(state, progress_gap, player_speed):
 			_activate_opponent_flow_boost(index, state)
@@ -2379,11 +2456,7 @@ func _update_opponent_flow(
 			smoothstep(0.0, 0.16, elapsed)
 			* smoothstep(0.0, 0.24, boost_time)
 		)
-		var output_scale := (
-			0.72 if _player_difficulty_mode == &"RELAXED"
-			else 1.10 if _player_difficulty_mode == &"EXPERT"
-			else 1.0
-		)
+		var output_scale := float(PLAYER_MODE_FLOW_OUTPUT_SCALES.get(_player_difficulty_mode, 1.0))
 		boost_mps = OPPONENT_FLOW_BOOST_MAX_MPS * output_scale * envelope
 		_chaos_metrics[&"ai_flow_boost_seconds"] = float(
 			_chaos_metrics.get(&"ai_flow_boost_seconds", 0.0)
@@ -2461,11 +2534,7 @@ func _should_activate_opponent_flow_boost(
 		1.0
 	)
 	tactical_score = maxf(tactical_score, late_pressure * 0.74)
-	var threshold := (
-		0.86 if _player_difficulty_mode == &"RELAXED"
-		else 0.50 if _player_difficulty_mode == &"EXPERT"
-		else 0.64
-	)
+	var threshold := float(PLAYER_MODE_FLOW_THRESHOLDS.get(_player_difficulty_mode, 0.64))
 	return tactical_score >= threshold
 
 
@@ -2477,11 +2546,35 @@ func _activate_opponent_flow_boost(index: int, state: Dictionary) -> void:
 	state[&"flow_boost_time"] = OPPONENT_FLOW_BOOST_DURATION
 	state[&"flow_boost_cooldown"] = OPPONENT_FLOW_BOOST_DURATION + OPPONENT_FLOW_BOOST_COOLDOWN
 	_increment_metric(&"ai_flow_boost_activations")
+	opponent_flow_boosted.emit(
+		StringName(state.get(&"rider_id", &"")),
+		str(state.get(&"display_name", "RIDER")),
+		str(state.get(&"signature_trait", "FLOW ATTACK")),
+		_state_total_progress(state) - _player_total_progress()
+	)
 	if not presentation_enabled or index < 0 or index >= _riders.size():
 		return
 	var visual := state.get(&"visual") as Node3D
 	if is_instance_valid(visual) and visual.has_method(&"burst_boost"):
 		visual.call(&"burst_boost")
+
+
+func _dynamic_pace_budget_mps() -> float:
+	return float(PLAYER_MODE_DYNAMIC_PACE_BUDGET_MPS.get(_player_difficulty_mode, 2.05))
+
+
+func _bounded_tactical_pace(late_pressure_mps: float, close_attack_mps: float, flow_boost_mps: float) -> float:
+	var raw_total := maxf(late_pressure_mps, 0.0) + maxf(close_attack_mps, 0.0) + maxf(flow_boost_mps, 0.0)
+	var bounded := minf(raw_total, _dynamic_pace_budget_mps())
+	_chaos_metrics[&"dynamic_pace_raw_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_raw_peak_mps", 0.0)), raw_total
+	)
+	_chaos_metrics[&"dynamic_pace_applied_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_applied_peak_mps", 0.0)), bounded
+	)
+	if raw_total > bounded + 0.001:
+		_increment_metric(&"dynamic_pace_budget_clamps")
+	return bounded
 
 
 func _state_total_progress(state: Dictionary) -> float:
@@ -3343,6 +3436,9 @@ func _reset_chaos_metrics() -> void:
 		&"ai_flow_boost_activations": 0,
 		&"ai_flow_boost_seconds": 0.0,
 		&"ai_flow_boost_peak_mps": 0.0,
+		&"dynamic_pace_budget_clamps": 0,
+		&"dynamic_pace_raw_peak_mps": 0.0,
+		&"dynamic_pace_applied_peak_mps": 0.0,
 		&"player_draft_seconds": 0.0,
 		&"player_draft_peak": 0.0,
 		&"player_roost_pressure_peak": 0.0,
@@ -3464,6 +3560,23 @@ func _build_riders() -> void:
 		# Player chassis origin sits 0.76 m above the tyre contact patch.
 		visual.position = Vector3(0.0, 0.76, 0.0)
 		root.add_child(visual)
+		# The pack uses a deterministic contact resolver rather than heavyweight
+		# rigid-body AI. Keep an explicit, inspectable envelope attached to every
+		# rider so authored contact dimensions cannot drift from the visual bike.
+		var contact_envelope := Area3D.new()
+		contact_envelope.name = "ContactEnvelope"
+		contact_envelope.collision_layer = 0
+		contact_envelope.collision_mask = 0
+		contact_envelope.monitoring = false
+		contact_envelope.monitorable = false
+		var contact_shape := CollisionShape3D.new()
+		contact_shape.name = "ContactShape"
+		var box := BoxShape3D.new()
+		box.size = Vector3(NPC_VISUAL_WIDTH, PLAYER_CONTACT_HEIGHT, NPC_VISUAL_LENGTH)
+		contact_shape.shape = box
+		contact_shape.position = Vector3(0.0, PLAYER_CONTACT_HEIGHT * 0.5, 0.0)
+		contact_envelope.add_child(contact_shape)
+		root.add_child(contact_envelope)
 		_riders.append({
 			&"root": root,
 			&"visual": visual,

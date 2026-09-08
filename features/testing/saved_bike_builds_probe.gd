@@ -3,6 +3,7 @@ extends Node
 
 const PLAYER_PROFILE_SCRIPT := preload("res://common/player_profile.gd")
 const FAILING_PROFILE_SCRIPT := preload("res://features/testing/failing_activity_settlement_profile.gd")
+const EXPECTED_SAVED_BUILD_SLOTS := 8
 
 var _failures: Array[String] = []
 
@@ -64,6 +65,8 @@ func _run() -> void:
 	var invalid: Dictionary = profile.load_saved_bike_build(&"BUILD_Z")
 	_check(not bool(invalid.get(&"accepted", false)), "Invalid build slot was accepted")
 	_check(str(profile.get_active_bike_setup_snapshot().get(&"signature", "")) == before_invalid, "Invalid load mutated the active build")
+	var saved_h: Dictionary = profile.save_current_bike_build(&"BUILD_H", "Tyke Hardpack Reserve")
+	_check(bool(saved_h.get(&"accepted", false)), "Expanded final Build H slot was not writable")
 
 	# JSON persistence retains valid slots. Unrecognized slots, missing bikes and
 	# unowned parts are stripped at the same trust boundary as owned builds.
@@ -90,11 +93,17 @@ func _run() -> void:
 	var restored_slots: Array[Dictionary] = restored.get_saved_bike_build_slots()
 	var restored_a: Dictionary = restored.get_saved_bike_build_snapshot(&"BUILD_A")
 	var restored_b: Dictionary = restored.get_saved_bike_build_snapshot(&"BUILD_B")
+	var restored_h: Dictionary = restored.get_saved_bike_build_snapshot(&"BUILD_H")
 	var restored_b_parts: Dictionary = restored_b.get(&"installed_parts", {}) as Dictionary
 	_check(restored.PROFILE_SCHEMA_VERSION >= 7, "Profile schema did not include saved builds and individual assists")
-	_check(restored_slots.size() == 3, "Saved-build projection does not expose exactly three bounded slots")
+	_check(
+		restored_slots.size() == EXPECTED_SAVED_BUILD_SLOTS,
+		"Saved-build projection does not expose exactly %d bounded slots" % EXPECTED_SAVED_BUILD_SLOTS
+	)
+	_check(restored.SAVED_BUILD_SLOT_IDS.size() == EXPECTED_SAVED_BUILD_SLOTS, "Saved-build slot authority and projection disagree")
 	_check(not restored_a.is_empty(), "Valid Build A did not survive JSON round-trip")
 	_check(not restored_b.is_empty(), "Sanitizable Build B was discarded")
+	_check(not restored_h.is_empty(), "Valid Build H did not survive JSON round-trip")
 	_check(not restored_b_parts.has(&"ENGINE"), "Unowned tampered part survived saved-build sanitization")
 	_check(StringName(restored_b_parts.get(&"TIRES", &"")) == &"HARDPACK_TIRES", "Owned valid part was lost during sanitization")
 	_check(is_equal_approx(float((restored_b.get(&"tune", {}) as Dictionary).get(&"gearing", 0.0)), 1.0), "Saved tune was not clamped by RacingBikeTune")

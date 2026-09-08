@@ -74,6 +74,7 @@ func _run() -> void:
 		and int(restored_snapshot.get(&"round_count", 0)) == 2,
 		"active tour recovers with the exact authored calendar"
 	)
+	restored.free()
 
 	var first_result := _eligible_result(&"CIRCUIT", 2, "custom-tour-round-1")
 	service.call(&"_on_results_ready", first_result)
@@ -139,6 +140,7 @@ func _run() -> void:
 	hud.queue_free()
 	touch.queue_free()
 	service.queue_free()
+	await get_tree().process_frame
 	await get_tree().process_frame
 	_cleanup()
 	if _failures.is_empty():
@@ -226,6 +228,7 @@ func _test_backup_recovery(service: RaceServices) -> void:
 		and int(snapshot.get(&"completed_rounds", 0)) == 2,
 		"corrupt primary recovers the completed tour from its atomic backup"
 	)
+	recovered.free()
 
 
 func _on_ride_requested(_setup: StringName, activity: StringName) -> void:

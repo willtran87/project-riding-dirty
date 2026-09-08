@@ -118,6 +118,7 @@ func _ready() -> void:
 	_race_pack.holeshot_decided.connect(_on_holeshot_decided)
 	_race_pack.player_overtook.connect(_on_player_overtook)
 	_race_pack.player_was_overtaken.connect(_on_player_was_overtaken)
+	_race_pack.opponent_flow_boosted.connect(_on_opponent_flow_boosted)
 	_race_pack.hide_pack()
 	_create_integrity_tracker()
 
@@ -888,6 +889,25 @@ func _on_player_overtook(_rider_id: StringName) -> void:
 func _on_player_was_overtaken(_rider_id: StringName) -> void:
 	if state == State.RACING:
 		_player_race_metrics.record_position_lost()
+
+
+func _on_opponent_flow_boosted(
+	_rider_id: StringName,
+	display_name: String,
+	signature_trait: String,
+	gap_m: float
+) -> void:
+	if state != State.RACING or absf(gap_m) > 32.0 or _field_moment_cooldown > 0.0:
+		return
+	var intent := "ATTACKING FROM BEHIND" if gap_m < -0.35 else "SURGING AHEAD" if gap_m > 0.35 else "BAR-TO-BAR ATTACK"
+	race_moment.emit(
+		"RIVAL FLOW  //  %s  //  %s  //  %s" % [
+			display_name.to_upper(), intent, signature_trait.to_upper(),
+		],
+		0,
+		false
+	)
+	_field_moment_cooldown = 1.15
 
 
 func _on_gate_entered(body: Node3D, checkpoint_index: int) -> void:

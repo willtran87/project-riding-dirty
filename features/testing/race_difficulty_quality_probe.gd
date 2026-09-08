@@ -55,7 +55,7 @@ func _run() -> void:
 	var persisted_load := persisted.load_from_disk()
 	_check(bool(persisted_load.get(&"ok", false)), "Changed settings did not reload")
 	_check(
-		str(persisted.get_value(&"gameplay", &"race_difficulty", "")) == "RELAXED",
+		str(persisted.get_value(&"gameplay", &"race_difficulty", "")) == "CASUAL",
 		"Race difficulty did not persist"
 	)
 	_check(
@@ -108,7 +108,10 @@ func _run() -> void:
 		var mode_signature := _production_signature(mode_session)
 		_check(CompetitiveRunSignature.validate(mode_signature), "%s produced an invalid run signature" % mode)
 		ordinary_signatures[mode_signature] = true
-	_check(ordinary_signatures.size() == 3, "Difficulty modes did not segregate ordinary run signatures")
+	_check(
+		ordinary_signatures.size() == RaceEventCatalog.PLAYER_DIFFICULTY_MODES.size(),
+		"Difficulty modes did not segregate ordinary run signatures"
+	)
 	var authored_standard := RaceEventCatalog.get_session_config(&"CIRCUIT", 1)
 	_check(
 		_production_signature(standard) == _production_signature(authored_standard),
@@ -168,16 +171,16 @@ func _exercise_difficulty_inputs(service: RaceServices) -> Dictionary:
 	_check(row != null, "Race Difficulty has no mouse-selectable row")
 	if row != null:
 		row.pressed.emit()
-	var mouse := str(service.settings.get_value(&"gameplay", &"race_difficulty", "")) == "EXPERT"
-	_check(mouse, "Mouse did not cycle Race Difficulty to EXPERT")
+	var mouse := str(service.settings.get_value(&"gameplay", &"race_difficulty", "")) == "CHALLENGING"
+	_check(mouse, "Mouse did not cycle Race Difficulty to CHALLENGING")
 
 	service.call(&"_handle_settings_input", _key_event(KEY_LEFT))
 	var keyboard := str(service.settings.get_value(&"gameplay", &"race_difficulty", "")) == "STANDARD"
 	_check(keyboard, "Keyboard did not cycle Race Difficulty to STANDARD")
 
 	service.call(&"_handle_settings_input", _joy_event(JOY_BUTTON_DPAD_LEFT))
-	var gamepad := str(service.settings.get_value(&"gameplay", &"race_difficulty", "")) == "RELAXED"
-	_check(gamepad, "Gamepad did not cycle Race Difficulty to RELAXED")
+	var gamepad := str(service.settings.get_value(&"gameplay", &"race_difficulty", "")) == "CASUAL"
+	_check(gamepad, "Gamepad did not cycle Race Difficulty to CASUAL")
 	return {&"mouse": mouse, &"keyboard": keyboard, &"gamepad": gamepad}
 
 

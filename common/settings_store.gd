@@ -10,7 +10,9 @@ const TEMP_SUFFIX: String = ".tmp"
 const BACKUP_TEMP_SUFFIX: String = ".bak.tmp"
 const COLOR_SAFE_MODES: Array[String] = ["OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"]
 const UNIT_MODES: Array[String] = ["IMPERIAL", "METRIC"]
-const RACE_DIFFICULTY_MODES: Array[String] = ["RELAXED", "STANDARD", "EXPERT"]
+const RACE_DIFFICULTY_MODES: Array[String] = [
+	"RELAXED", "CASUAL", "STANDARD", "CHALLENGING", "EXPERT",
+]
 const TRANSMISSION_MODES: Array[String] = ["AUTOMATIC", "MANUAL"]
 const CRASH_SUPPORT_MODES: Array[String] = ["STANDARD", "ASSISTED"]
 const PRELOAD_BEHAVIOR_MODES: Array[String] = ["HOLD", "TOGGLE"]

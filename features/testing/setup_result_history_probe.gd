@@ -16,11 +16,19 @@ func _run() -> void:
 	profile.reset_profile_for_testing()
 	profile.unlocked_setups.append(&"ATTACK")
 
-	var times := [120_000_000, 130_000_000, 126_000_000, 124_000_000, 122_000_000, 110_000_000, 140_000_000]
+	# Exercise eviction as well as serialization. Keep the fastest ATTACK run inside
+	# the retained window and finish with an intentionally slower reference run.
+	var times := [
+		150_000_000, 148_000_000, 146_000_000, 144_000_000,
+		142_000_000, 138_000_000, 134_000_000, 130_000_000,
+		126_000_000, 122_000_000, 118_000_000, 110_000_000,
+		145_000_000, 140_000_000,
+	]
+	var personal_best_index := 11
 	for index: int in times.size():
-		var setup_id: StringName = &"ATTACK" if index == 5 else &"BALANCED"
-		var tune_value := 0.7 if index == 5 else float(index) * 0.05
-		var plan := _plan(setup_id, tune_value, {&"TIRES": &"HARDPACK_TIRES"} if index == 5 else {})
+		var setup_id: StringName = &"ATTACK" if index == personal_best_index else &"BALANCED"
+		var tune_value := 0.7 if index == personal_best_index else float(index) * 0.05
+		var plan := _plan(setup_id, tune_value, {&"TIRES": &"HARDPACK_TIRES"} if index == personal_best_index else {})
 		var run: Dictionary = profile.begin_race_run(&"CIRCUIT", "SETUP_HISTORY_%d" % index)
 		var result := _result(run, times[index], index + 1, plan)
 		var receipt: Dictionary = profile.record_race_result(result, false)
@@ -42,7 +50,7 @@ func _run() -> void:
 		int(personal_best.get(&"effective_time_usec", -1)) == 110_000_000
 		and StringName(pb_plan.get(&"setup_id", &"")) == &"ATTACK"
 		and StringName((pb_plan.get(&"installed_parts", {}) as Dictionary).get(&"TIRES", &"")) == &"HARDPACK_TIRES"
-		and int(personal_best.get(&"flow_uses", -1)) == 6
+		and int(personal_best.get(&"flow_uses", -1)) == personal_best_index + 1
 		and (personal_best.get(&"sector_times_usec", []) as Array).size() == 2,
 		"personal-best history did not retain the fastest plan and run evidence"
 	)

@@ -86,6 +86,8 @@ var _setup_right_hint: Label
 var _bars: Dictionary[StringName, ProgressBar] = {}
 var _equipped_bars: Dictionary[StringName, ProgressBar] = {}
 var _recommended_bars: Dictionary[StringName, ProgressBar] = {}
+var _setup_metric_legend: Label
+var _setup_metric_labels: Array[Label] = []
 var _event_markers: Array[Label] = []
 var _workshop_summary_panel: PanelContainer
 var _workshop_summary_label: Label
@@ -434,6 +436,7 @@ func get_input_prompt_snapshot() -> Dictionary:
 func get_progression_presentation_snapshot() -> Dictionary:
 	return {
 		&"first_run_path": _is_pristine_first_run_context(),
+		&"guided_first_event": _is_guided_first_event_presentation(),
 		&"context": _garage_context_label.text if _garage_context_label != null else "",
 		&"tour": _tour_label.text if _tour_label != null else "",
 		&"summary": _workshop_meta_label.text if _workshop_meta_label != null else "",
@@ -1196,7 +1199,7 @@ func _build_ui() -> void:
 	_event_meta_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_event_meta_label, Vector2(1.0, 0.0), Rect2(-840.0, 190.0, 760.0, 28.0))
 	_root.add_child(_event_meta_label)
-	_event_competition_label = _label("", 11, CREAM)
+	_event_competition_label = _label("", 14, CREAM)
 	_event_competition_label.name = "EventCompetitionBriefing"
 	_event_competition_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_event_competition_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
@@ -1285,17 +1288,18 @@ func _build_ui() -> void:
 	_anchor_rect(_strategy_label, Vector2(0.5, 0.5), Rect2(-290.0, -28.0, 800.0, 26.0))
 	_root.add_child(_strategy_label)
 
-	var metric_legend := _label("EQUIPPED                     VIEWING                     EVENT PLAN", 12, MUTED)
-	metric_legend.name = "SetupMetricLegend"
-	metric_legend.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(metric_legend, Vector2(0.5, 0.5), Rect2(-55.0, 0.0, 560.0, 18.0))
-	_root.add_child(metric_legend)
+	_setup_metric_legend = _label("EQUIPPED                     VIEWING                     EVENT PLAN", 14, MUTED)
+	_setup_metric_legend.name = "SetupMetricLegend"
+	_setup_metric_legend.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_anchor_rect(_setup_metric_legend, Vector2(0.5, 0.5), Rect2(-55.0, 0.0, 560.0, 22.0))
+	_root.add_child(_setup_metric_legend)
 	var stat_names: Array[StringName] = [&"POWER", &"GRIP", &"SUSPENSION", &"TOP SPEED"]
 	for index: int in stat_names.size():
 		var stat_name := stat_names[index]
 		var label := _label(String(stat_name), 16, Color("8fa0aa"))
 		_anchor_rect(label, Vector2(0.5, 0.5), Rect2(-200.0, 15.0 + index * 43.0, 150.0, 28.0))
 		_root.add_child(label)
+		_setup_metric_labels.append(label)
 		var equipped_bar := _setup_metric_bar(MUTED)
 		_anchor_rect(equipped_bar, Vector2(0.5, 0.5), Rect2(-40.0, 20.0 + index * 43.0, 170.0, 15.0))
 		_root.add_child(equipped_bar)
@@ -1484,8 +1488,53 @@ func _refresh() -> void:
 		Profile.style_tokens,
 	]
 	_refresh_workshop_summary()
+	_apply_progressive_disclosure()
 	if _workshop_open:
 		_refresh_workshop()
+
+
+func _is_guided_first_event_presentation() -> bool:
+	if not _is_pristine_first_run_context():
+		return false
+	var activity := EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
+	return activity == INITIAL_EVENT
+
+
+func _apply_progressive_disclosure() -> void:
+	## A new rider gets one obvious decision: ride the first event with the safe
+	## baseline. Detailed comparison, economy, and career controls return as soon
+	## as they deliberately browse elsewhere or complete their first activity.
+	var guided := _is_guided_first_event_presentation()
+	_profile_label.visible = not guided
+	_event_competition_label.visible = _event_competition_label.visible and not guided
+	_repair_label.visible = not guided
+	_comparison_label.visible = not guided
+	_setup_metric_legend.visible = not guided
+	_setup_left_hint.visible = not guided
+	_setup_right_hint.visible = not guided
+	for label: Label in _setup_metric_labels:
+		label.visible = not guided
+	for bar: ProgressBar in _equipped_bars.values():
+		bar.visible = not guided
+	for bar: ProgressBar in _bars.values():
+		bar.visible = not guided
+	for bar: ProgressBar in _recommended_bars.values():
+		bar.visible = not guided
+	for marker: Label in _event_markers:
+		marker.visible = not guided
+	if not guided:
+		return
+	_decision_label.text = "FIRST RIDE  //  BALANCED KIT + ASSIST SPORT  //  NO PURCHASE NEEDED"
+	_strategy_label.text = "EVENT PLAN  //  KIT BALANCED + TUNE BALANCED  //  FULL MATCH"
+	_price_label.text = "READY TO RIDE"
+	_price_label.modulate = CYAN
+	_status_label.text = "%s START FIRST EVENT   •   %s OPTIONAL WORKSHOP" % [
+		_any_action_label(InputRouter.CONFIRM),
+		_any_action_label(InputRouter.OPEN_WORKSHOP),
+	]
+	_status_label.modulate = CREAM
+	_workshop_summary_label.text = "REDLINE TYKE 125\nBALANCED BASELINE\nBIKE READY  //  ASSIST SPORT"
+	_workshop_meta_label.text = "FIRST ROUTE  //  EVENT 01\nFINISH QUARRY TRAIL\nSET A PERSONAL BEST\n\nUNLOCK PATH\nCLEAR 2 QUARRY EVENTS\nEARN THE TRAIL KIT"
 
 
 func _refresh_workshop_summary() -> void:
@@ -1604,10 +1653,12 @@ func _refresh_workshop() -> void:
 	var items := _get_workshop_items(category)
 	var selected_index := clampi(int(_workshop_item_indices.get(category, 0)), 0, maxi(items.size() - 1, 0))
 	_workshop_item_indices[category] = selected_index
-	var tab_tokens := PackedStringArray()
-	for tab: StringName in WORKSHOP_CATEGORIES:
-		tab_tokens.append("[%s]" % String(tab) if tab == category else String(tab))
-	_workshop_tabs_label.text = "  ".join(tab_tokens)
+	var previous_tab := WORKSHOP_CATEGORIES[wrapi(_workshop_category_index - 1, 0, WORKSHOP_CATEGORIES.size())]
+	var next_tab := WORKSHOP_CATEGORIES[wrapi(_workshop_category_index + 1, 0, WORKSHOP_CATEGORIES.size())]
+	_workshop_tabs_label.text = "‹ %s     [%s]     %s ›   //   %d / %d" % [
+		String(previous_tab), String(category), String(next_tab),
+		_workshop_category_index + 1, WORKSHOP_CATEGORIES.size(),
+	]
 	if items.is_empty():
 		_workshop_item_label.text = "NO ITEMS"
 		_workshop_detail_label.text = "Nothing is available for the active bike and profile."
@@ -1748,6 +1799,8 @@ func _get_workshop_items(category: StringName) -> Array[Dictionary]:
 				for second_index: int in range(first_index + 1, saved_slots.size()):
 					var first := saved_slots[first_index]
 					var second := saved_slots[second_index]
+					if not bool(first.get(&"occupied", false)) or not bool(second.get(&"occupied", false)):
+						continue
 					build_items.append({
 						&"slot_id": StringName("COMPARE_%s_%s" % [
 							str(first.get(&"slot_label", "?")), str(second.get(&"slot_label", "?")),
@@ -1839,7 +1892,9 @@ func _history_plan_projection(item: Dictionary) -> Dictionary:
 		return {
 			&"title": "%s  //  %s" % [history_name, _format_usec(time_usec)],
 			&"detail": "%s\nMakes this official result the durable sector and execution reference." % detail,
-			&"build": "%s\nPinned evidence remains available after the five-run recent list advances." % _saved_build_summary(plan),
+			&"build": "%s\nPinned evidence remains available after the %d-run recent list advances." % [
+				_saved_build_summary(plan), Profile.MAX_EVENT_RUN_HISTORY,
+			],
 			&"action": "%s  PIN AS COMPARISON REFERENCE" % _any_action_label(InputRouter.CONFIRM),
 			&"available": true,
 		}

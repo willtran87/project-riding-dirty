@@ -1439,6 +1439,7 @@ static func _commentary_kind_for_race_moment(
 	var normalized := label.to_upper()
 	if (
 		normalized.contains("POSITION LOST")
+		or normalized.contains("RIVAL FLOW")
 		or normalized.contains("ELIMINATED")
 		or normalized.contains("PENALTY")
 		or normalized.contains("WRONG WAY")

@@ -47,7 +47,7 @@ Pass when median control responsiveness is at least 4/5, at least 85% correctly 
 
 ### C. Difficulty and opponents
 
-1. Run matched events on Relaxed, Standard, and Expert.
+1. Run matched events across Relaxed, Casual, Standard, Challenging, and Expert, keeping bike, setup, assist mode, and event constant.
 2. Observe opponent passes, defensive choices, mistakes, Flow banking, and Surge use.
 3. Record finish position, restarts, perceived fairness, and whether the result felt recoverable.
 
