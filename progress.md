@@ -1,5 +1,12 @@
 Original prompt: Resolve the complete race-experience backlog, make the authoritative track drive every consumer, and ship the latest production build on 127.0.0.1:8777.
 
+## Opponent-challenge polish GitHub Pages publication - 2026-09-08
+
+- **Source publication:** Commit `8496cf1` (`Polish opponent challenge and first ride`) is pushed to `origin/codex/racecraft-v27` with the complete 104-probe, six-smoke, 17-delivery-test candidate and content-addressed Web bundle.
+- **Pages deployment:** Commit `6926e59ed02d8cf2e7a913c2b903d410e0a08d08` is pushed to `origin/gh-pages`; GitHub Pages workflow `34196076963` completed successfully at `https://willtran87.github.io/project-riding-dirty/`.
+- **Independent public verification:** The public manifest, game HTML, and downloaded `index.2dc376e14a6e.pck` agree on `5,520,568` bytes and SHA-256 `2dc376e14a6eadacd8df8680b7a737bad4c918105d8c88d31a88383a99720c7f`; the superseded `index.fcedba016124.pck` returns 404.
+- **Live browser proof:** The prescribed shared-action client opened the public Quarry Trail Garage at Event 01/19, reported schema 13, and produced an inspected clean 1280x720 frame with no console/page-error artifact.
+
 ## Professional gameplay polish, fair rival pressure, and progressive first ride - 2026-09-07
 
 - **Five-step challenge curve:** Relaxed, Casual, Standard, Challenging, and Expert now have distinct pace, skill, pressure, Flow-gain, Flow-output, and tactical-budget contracts. The complete three-track matrix covers all five modes plus strong, elite, and max-build benchmarks in 22 deterministic full-course simulations.
