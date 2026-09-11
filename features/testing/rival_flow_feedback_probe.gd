@@ -2,8 +2,8 @@ extends Node
 ## Production-path proof that opponent Flow is mechanically active and that a
 ## nearby attack reaches sight, sound, captions, and rider identity together.
 
-const STEP := 0.20
-const MAX_STEPS := 900
+const STEP := 1.0 / 60.0
+const MAX_STEPS := 10800
 const HUD_SCENE := preload("res://features/hud/race_hud.tscn")
 
 var _failures: Array[String] = []
@@ -62,7 +62,10 @@ func _run() -> void:
 	race.race_moment.connect(Callable(audio, &"_on_race_moment"))
 	if not EventBus.audio_caption_requested.is_connected(_on_audio_caption_requested):
 		EventBus.audio_caption_requested.connect(_on_audio_caption_requested)
-	race.call(&"_on_opponent_flow_boosted", &"ROOK", "ROOK MERCER", "LATE-BRAKE PRESSURE", -4.0)
+	# A real overtake/near-miss message must not swallow this one-shot attack.
+	race.set("_field_moment_cooldown", 0.75)
+	pack.opponent_flow_boosted.connect(Callable(race, &"_on_opponent_flow_boosted"))
+	pack.opponent_flow_boosted.emit(&"ROOK", "ROOK MERCER", "LATE-BRAKE PRESSURE", -4.0)
 	await get_tree().process_frame
 	var hud_message := str(hud.get_control_prompt_snapshot().get(&"message", ""))
 	var audio_feedback := audio.get_competition_feedback_snapshot()

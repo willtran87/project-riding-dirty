@@ -29,6 +29,11 @@ func _run() -> void:
 		var setup_id: StringName = &"ATTACK" if index == personal_best_index else &"BALANCED"
 		var tune_value := 0.7 if index == personal_best_index else float(index) * 0.05
 		var plan := _plan(setup_id, tune_value, {&"TIRES": &"HARDPACK_TIRES"} if index == personal_best_index else {})
+		if index == 12:
+			# A retained pre-migration run remains available, but its missing
+			# named difficulty must not be fabricated during save/load.
+			plan[&"version"] = 1
+			plan.erase(&"player_difficulty_mode")
 		var run: Dictionary = profile.begin_race_run(&"CIRCUIT", "SETUP_HISTORY_%d" % index)
 		var result := _result(run, times[index], index + 1, plan)
 		var receipt: Dictionary = profile.record_race_result(result, false)
@@ -81,6 +86,16 @@ func _run() -> void:
 	else:
 		_assert(false, "setup history profile did not survive JSON encoding")
 	var restored_history: Dictionary = restored.get_event_run_history_snapshot(&"CIRCUIT")
+	var restored_plan := (restored_history.get(&"personal_best_run", {}) as Dictionary).get(&"plan", {}) as Dictionary
+	_assert(int(restored_plan.get(&"version", 0)) == 2 and int(restored_plan.get(&"difficulty", -1)) == 4, "high-tier run evidence was truncated during persistence")
+	_assert(StringName(restored_plan.get(&"player_difficulty_mode", &"")) == &"EXPERT", "named difficulty did not survive persistence")
+	var retained_legacy := false
+	for recorded: Dictionary in restored_history.get(&"recent_runs", []):
+		var recorded_plan := recorded.get(&"plan", {}) as Dictionary
+		if int(recorded_plan.get(&"version", 0)) == 1:
+			retained_legacy = true
+			_assert(str(recorded_plan.get(&"player_difficulty_mode", "")).is_empty(), "legacy save fabricated a named difficulty")
+	_assert(retained_legacy, "migration discarded the retained legacy run")
 	_assert(
 		(restored_history.get(&"recent_runs", []) as Array).size() == profile.MAX_EVENT_RUN_HISTORY
 		and int((restored_history.get(&"personal_best_run", {}) as Dictionary).get(&"effective_time_usec", -1)) == 110_000_000
@@ -140,7 +155,8 @@ func _run() -> void:
 
 func _plan(setup_id: StringName, tune_value: float, parts: Dictionary) -> Dictionary:
 	return {
-		&"version": 1,
+		&"version": 2,
+		&"player_difficulty_mode": &"EXPERT",
 		&"setup_id": setup_id,
 		&"bike_id": &"TYKE_125",
 		&"selected_class": &"LITE_125",
@@ -158,7 +174,7 @@ func _plan(setup_id: StringName, tune_value: float, parts: Dictionary) -> Dictio
 		&"build_signature": "TYKE_125|SETUP_HISTORY",
 		&"assist_mode": &"SPORT",
 		&"assist_signature": "SPORT|SETUP_HISTORY",
-		&"difficulty": 1,
+		&"difficulty": 4,
 		&"transmission_mode": &"AUTOMATIC",
 		&"control_signature": "SETUP_HISTORY",
 		&"crash_support_mode": &"STANDARD",

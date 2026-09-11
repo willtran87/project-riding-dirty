@@ -26,6 +26,31 @@ func _run() -> void:
 	await get_tree().process_frame
 
 	garage.show_garage()
+	var first_decision := garage.get_node("GarageRoot/SetupDecision") as Label
+	var first_comparison := garage.get_node("GarageRoot/SetupComparison") as Label
+	_check(first_decision.text.contains("NO PURCHASE NEEDED") and not first_comparison.visible, "Fresh starter guidance is not concise and ready")
+	for _index: int in 2:
+		garage.call(&"_unhandled_input", _action_event(InputRouter.GARAGE_RIGHT))
+	_check(first_comparison.visible and not first_decision.text.contains("NO PURCHASE NEEDED"), "Locked first-run preview still claims no purchase is needed")
+	garage.call(&"_unhandled_input", _action_event(InputRouter.CONFIRM))
+	_check(_ride_requests.is_empty(), "Locked first-run preview launched a race")
+	_expect_last_feedback(&"DENIED", &"GARAGE_CONFIRM", "First-run locked kit")
+	for _index: int in 2:
+		garage.call(&"_unhandled_input", _action_event(InputRouter.GARAGE_LEFT))
+	_check(first_decision.text.contains("NO PURCHASE NEEDED") and not first_comparison.visible, "Returning to starter kit failed to restore guidance")
+	garage.call(&"_unhandled_input", _action_event(InputRouter.TOGGLE_ASSIST))
+	_check(first_decision.text.contains("ASSIST %s" % String(Profile.assist_mode)), "First-run assist copy differs from actual assist")
+	Profile.set_assist_preset(&"SPORT")
+	var starter_tune := (Profile.get_active_bike_setup_snapshot().get(&"build", {}) as Dictionary).get(&"tune", {}) as Dictionary
+	Profile.set_bike_tune({&"gearing": 0.7})
+	garage.show_garage()
+	_check(not bool(garage.get_event_strategy_presentation_snapshot().get(&"full_match", true)), "Customized first-ride tune is falsely a full match")
+	Profile.set_bike_tune(starter_tune)
+	Profile.bike_condition = 75
+	garage.show_garage()
+	_check(first_comparison.visible and not first_decision.text.contains("NO PURCHASE NEEDED"), "Worn first-run bike hides repair context")
+	Profile.bike_condition = 100
+	garage.show_garage()
 	_check(
 		StringName(garage.get_event_briefing_presentation_snapshot().get(&"event_id", &"")) == &"CIRCUIT",
 		"Fresh Garage did not start at the first event"

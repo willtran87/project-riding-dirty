@@ -3,7 +3,7 @@ extends Node
 ## advances RacePack without presentation or wall-clock waits, then validates
 ## full-race outcomes against deliberately broad balance envelopes.
 
-const STEP := 0.20
+const STEP := 1.0 / 60.0
 const MAX_SIMULATION_SECONDS := 720.0
 const AUDIT_EVENTS: Array[StringName] = [&"CIRCUIT", &"PINE_ENDURO", &"MESA_MX"]
 const MAIN_SCRIPT := preload("res://scenes/main.gd")
@@ -26,15 +26,15 @@ const UPGRADED_MIDFIELD_MIN_PLACE := 4
 const UPGRADED_MIDFIELD_MAX_PLACE := 9
 const UPGRADED_ELITE_RATIO := 0.530
 const DEFENSE_SETUP_SECONDS := 4.20
-const DEFENSE_MAX_STEPS := 30
-const DEFENSE_FOLLOW_THROUGH_STEPS := 2
+const DEFENSE_MAX_STEPS := 360
+const DEFENSE_FOLLOW_THROUGH_STEPS := 24
 
 # Adjacent tiers should be perceptible without becoming difficulty cliffs.
 const MIN_ADJACENT_SEPARATION_RATIO := 0.020
 const MAX_ADJACENT_SEPARATION_RATIO := 0.075
 # Pine's technical layout naturally compresses a skilled field slightly more
 # than the sprint courses; keep a real spread requirement without making the
-# release gate hinge on one 0.2-second fixed-step finish bucket.
+# release gate hinge on a single fixed-step finish bucket.
 const MIN_FIELD_SPREAD_RATIO := 0.014
 const MAX_FIELD_SPREAD_RATIO := 0.080
 const MIN_LANE_CHANGES_PER_RIDER := 3
@@ -94,6 +94,25 @@ func _run() -> void:
 	add_child(_pack)
 	_pack.set_process(false)
 	_pack.set_physics_process(false)
+	if &"--pressure-only" in OS.get_cmdline_user_args():
+		RaceEventCatalog.set_player_difficulty_mode(&"STANDARD")
+		for ratio: float in [FLOW_SURGE_BENCHMARK_RATIO, FLOW_SURGE_ELITE_RATIO]:
+			var sample := _simulate_session(RaceEventCatalog.get_session_config(REPLAY_EVENT, -1, STARTER_CLASS), true, ratio)
+			var elite := is_equal_approx(ratio, FLOW_SURGE_ELITE_RATIO)
+			_validate_sample(REPLAY_EVENT, &"STANDARD", sample)
+			_validate_flow_surge_pressure(
+				sample, ratio,
+				FLOW_SURGE_ELITE_MIN_PLACE if elite else FLOW_SURGE_PRESSURE_MIN_PLACE,
+				FLOW_SURGE_ELITE_MAX_PLACE if elite else FLOW_SURGE_PRESSURE_MAX_PLACE,
+				&"ELITE" if elite else &"STRONG"
+			)
+		_pack.stop_race()
+		RaceEventCatalog.set_player_difficulty_mode(previous_mode)
+		Profile.persistence_enabled = previous_persistence
+		for failure: String in _failures:
+			push_error("OPPONENT PRESSURE PROBE: " + failure)
+		get_tree().quit(0 if _failures.is_empty() else 1)
+		return
 
 	var audit_events: Array[StringName] = []
 	audit_events.assign(AUDIT_EVENTS)
@@ -108,6 +127,11 @@ func _run() -> void:
 			tiers[mode] = sample
 			_validate_sample(event_id, mode, sample)
 			_print_sample(event_id, mode, sample)
+			var traffic_sample := _simulate_session(RaceEventCatalog.get_session_config(event_id), true)
+			_validate_sample(event_id, mode, traffic_sample)
+			_print_sample(event_id, mode, traffic_sample)
+			_check(float(traffic_sample.get(&"contacts_per_rider_minute", INF)) <= MAX_TRAFFIC_CONTACTS_PER_RIDER_MINUTE, "%s %s live-rate traffic contacts exceed budget" % [event_id, mode])
+			_check(float(traffic_sample.get(&"crashes_per_rider_minute", INF)) <= MAX_TRAFFIC_CRASHES_PER_RIDER_MINUTE, "%s %s live-rate traffic crashes exceed budget" % [event_id, mode])
 		report[event_id] = tiers
 		_validate_event_separation(event_id, tiers)
 
@@ -321,8 +345,9 @@ func _simulate_session(
 	while elapsed < MAX_SIMULATION_SECONDS and not _pack.all_riders_finished():
 		elapsed += STEP
 		var player_total := minf(player_reference_speed * elapsed, total_distance)
-		# Most balance samples isolate rider pace from pair contacts. The explicit
-		# starter-traffic case below runs this same path with full production traffic.
+		# Each track/mode is checked both in isolation and with production traffic.
+		# Constant-speed benchmark riders isolate balance; physical handling and
+		# terrain contact are covered separately by the integration probes.
 		_pack.simulate_competition_step(STEP, player_reference_speed, player_total, resolve_traffic)
 
 	var finish_usecs: Array[int] = []
@@ -386,6 +411,9 @@ func _simulate_session(
 		&"ai_flow_boost_activations": int(chaos.get(&"ai_flow_boost_activations", 0)),
 		&"ai_flow_boost_seconds": float(chaos.get(&"ai_flow_boost_seconds", 0.0)),
 		&"ai_flow_boost_peak_mps": float(chaos.get(&"ai_flow_boost_peak_mps", 0.0)),
+		&"dynamic_pace_applied_peak_mps": float(chaos.get(&"dynamic_pace_applied_peak_mps", 0.0)),
+		&"dynamic_pace_total_budget_peak_mps": float(chaos.get(&"dynamic_pace_total_budget_peak_mps", 0.0)),
+		&"dynamic_pace_budget_excess_peak_mps": float(chaos.get(&"dynamic_pace_budget_excess_peak_mps", 0.0)),
 		&"player_difficulty_mode": StringName(tension.get(&"player_difficulty_mode", &"LOCKED")),
 		&"opponent_build_match_scale": float(tension.get(&"opponent_build_match_scale", 0.0)),
 		&"field_chase_adjustment_mps": float(tension.get(&"field_chase_adjustment_mps", 0.0)),
@@ -433,6 +461,8 @@ func _validate_sample(event_id: StringName, mode: StringName, sample: Dictionary
 	_check(valid, "%s %s simulation invalid: %s" % [event_id, mode, str(sample.get(&"error", "unknown error"))])
 	if not valid:
 		return
+	_check(float(sample.get(&"dynamic_pace_budget_excess_peak_mps", INF)) <= 0.001, "%s %s combined tactical + catch-up pace exceeded its live budget" % [event_id, mode])
+	_check(float(sample.get(&"dynamic_pace_applied_peak_mps", INF)) <= float(sample.get(&"dynamic_pace_total_budget_peak_mps", 0.0)) + 0.001, "%s %s total pace telemetry is inconsistent" % [event_id, mode])
 	var expected := int(sample.get(&"expected", -1))
 	var finished := int(sample.get(&"finished", 0))
 	var finished_statuses := int(sample.get(&"finished_statuses", 0))

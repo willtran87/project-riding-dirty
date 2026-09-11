@@ -1496,6 +1496,12 @@ func _refresh() -> void:
 func _is_guided_first_event_presentation() -> bool:
 	if not _is_pristine_first_run_context():
 		return false
+	# Browsing a different kit is an explicit request for the full purchase and
+	# comparison UI. Never cover a locked selection with a ready-to-ride prompt.
+	if SETUPS[_selected_index] != &"BALANCED" or not Profile.is_setup_unlocked(SETUPS[_selected_index]):
+		return false
+	if Profile.get_repair_price() > 0:
+		return false
 	var activity := EVENTS[_event_index] if _event_index >= 0 and _event_index < EVENTS.size() else INITIAL_EVENT
 	return activity == INITIAL_EVENT
 
@@ -1524,8 +1530,7 @@ func _apply_progressive_disclosure() -> void:
 		marker.visible = not guided
 	if not guided:
 		return
-	_decision_label.text = "FIRST RIDE  //  BALANCED KIT + ASSIST SPORT  //  NO PURCHASE NEEDED"
-	_strategy_label.text = "EVENT PLAN  //  KIT BALANCED + TUNE BALANCED  //  FULL MATCH"
+	_decision_label.text = "FIRST RIDE  //  BALANCED KIT + ASSIST %s  //  NO PURCHASE NEEDED" % String(Profile.assist_mode)
 	_price_label.text = "READY TO RIDE"
 	_price_label.modulate = CYAN
 	_status_label.text = "%s START FIRST EVENT   •   %s OPTIONAL WORKSHOP" % [
@@ -1533,7 +1538,8 @@ func _apply_progressive_disclosure() -> void:
 		_any_action_label(InputRouter.OPEN_WORKSHOP),
 	]
 	_status_label.modulate = CREAM
-	_workshop_summary_label.text = "REDLINE TYKE 125\nBALANCED BASELINE\nBIKE READY  //  ASSIST SPORT"
+	# Keep the authoritative tune/build/condition summary refreshed above: a
+	# first-time rider may already have customized the optional Workshop.
 	_workshop_meta_label.text = "FIRST ROUTE  //  EVENT 01\nFINISH QUARRY TRAIL\nSET A PERSONAL BEST\n\nUNLOCK PATH\nCLEAR 2 QUARRY EVENTS\nEARN THE TRAIL KIT"
 
 
@@ -3271,7 +3277,7 @@ func _refresh_event_strategy() -> void:
 func _refresh_garage_context(activity: StringName, event_data: Dictionary) -> void:
 	if _garage_context_label == null:
 		return
-	if _is_pristine_first_run_context() and activity == INITIAL_EVENT:
+	if _is_guided_first_event_presentation() and activity == INITIAL_EVENT:
 		_garage_context_label.text = "QUARRY TRAIL  //  FIRST EVENT READY  //  %s" % _sponsor_context(activity)
 		return
 	if activity == &"ACADEMY":

@@ -88,6 +88,7 @@ func _make_session_config() -> RaceSessionConfig:
 		&"track_id": CourseCatalog.MESA_MX_ID,
 		&"display_name": "RED MESA LIFECYCLE TEST",
 		&"format": &"CIRCUIT",
+		&"difficulty": 4,
 		&"session_type": &"MAIN",
 		&"championship_id": &"DIRT_TOUR",
 		&"route_version": CourseCatalog.MESA_MX_ROUTE_VERSION,
@@ -334,6 +335,9 @@ func _validate_result_serialization() -> void:
 		and parsed.get("racecraft_metrics", {}) is Dictionary
 		and parsed.get("run_plan", {}) is Dictionary
 		and str((parsed.get("run_plan", {}) as Dictionary).get("bike_id", "")) == "TYKE_125"
+		and int((parsed.get("run_plan", {}) as Dictionary).get("version", 0)) == 2
+		and int((parsed.get("run_plan", {}) as Dictionary).get("difficulty", -1)) == 4
+		and str((parsed.get("run_plan", {}) as Dictionary).get("player_difficulty_mode", "")) == "LOCKED"
 		and str((parsed.get("rider_debrief", {}) as Dictionary).get("summary", "")).contains("RIDER DEBRIEF")
 	)
 	_check(passed, "result JSON round trip", "bytes=%d parsed_field=%d" % [json.length(), parsed_classification.size()])

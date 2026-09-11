@@ -1,5 +1,19 @@
 Original prompt: Resolve the complete race-experience backlog, make the authoritative track drive every consumer, and ship the latest production build on 127.0.0.1:8777.
 
+## Six-finding gameplay audit remediation - 2026-09-11
+
+- Guided first-ride presentation now yields to the full kit/purchase UI when browsing locked or alternate kits, or when repairs are needed. Assist, tune, bike and condition copy reflects the active configuration.
+- Rival side separation is expressed per second, and vertical clearance gates following, shoves and NPC contact. The focused fairness probe covers jump-over/landing contacts and 30/60/120Hz side pressure.
+- Nearby one-shot Flow warnings preempt incidental race chatter; the existing persistent bike boost pose/effect is retained. The regression drives the pack signal into the controller/HUD/audio/caption path with an occupied cooldown.
+- Version-2 recorded plans preserve five named difficulty modes and all five numeric tiers. Comparisons include detailed assists and condition; legacy evidence is explicitly incomplete rather than execution-comparable. Save round-trip coverage includes Expert/tier 4.
+- Combined pace telemetry includes tactical boosts and director correction, plus the applicable reserve and per-step cap excess. Values are nominal additive m/s before shared terrain/drive multipliers.
+- Balance simulations now use 60Hz and pair every track/mode baseline with traffic. This revealed the strong starter Flow benchmark falling to P12; LITE opponent class scaling was adjusted from 0.94 to 0.92. The unchanged strong benchmark now reaches P8 in the focused rerun.
+- Opponent acceptance passed all 37 full-course simulations across three tracks with zero failures, including all five modes both with/without traffic, deterministic replay, starter/upgraded builds, strong Flow (P8), elite Flow (P1) and defense. Original acceptance windows were retained.
+- Packaged-browser verification: the guided/locked/denied/restored/actual-riding sequence passed at 2560x1600, 1280x720 and 844x390, with no browser errors or horizontal overflow. Screenshots and state evidence are under `output/gameplay-audit-visual/`; final shared-client startup evidence is under `output/gameplay-audit-final-client/`.
+- Current local package: `index.59429b028ed6.pck`, 5,522,440 bytes, SHA-256 `59429b028ed6bb5329a8c807c22044328ed79b1f4dc91cbb6619b6efeb0b28ab`. All 17 delivery tests passed. No commit, push or Pages deployment was requested for this remediation turn.
+- Final validation: `QUALITY GATE PASS: probes=105 activities=6 full=True` in `output/gameplay-audit-full-gate.log`, plus 17/17 web delivery tests. The updated production lifecycle and migration tests also passed targeted reruns after the final changes. `git diff --check` passed.
+- Remaining external validation only: representative-player comfort/fun and real-device performance per `docs/PLAYER_VALIDATION_PROTOCOL.md`; automation does not certify those qualities. All six code-backed audit findings are addressed; no implementation TODO remains for this list.
+
 ## Opponent-challenge polish GitHub Pages publication - 2026-09-08
 
 - **Source publication:** Commit `8496cf1` (`Polish opponent challenge and first ride`) is pushed to `origin/codex/racecraft-v27` with the complete 104-probe, six-smoke, 17-delivery-test candidate and content-addressed Web bundle.

@@ -31,6 +31,8 @@ static func compare(previous: Dictionary, personal_best: Dictionary, debrief: Di
 		attribution = &"CONDITIONS_CHANGED"
 	elif strategy_changed:
 		attribution = &"PLAN_CHANGED"
+	if not _has_complete_evidence(previous_plan) or not _has_complete_evidence(best_plan):
+		attribution = &"INCOMPLETE_EVIDENCE"
 
 	var sectors := _sector_rows(
 		previous.get(&"sector_times_usec", []) as Array,
@@ -105,6 +107,7 @@ static func _changed_plan_fields(previous: Dictionary, personal_best: Dictionary
 		&"bike_id", &"selected_class", &"setup_id", &"installed_parts", &"tune",
 		&"livery_id", &"assist_mode", &"difficulty", &"transmission_mode",
 		&"control_signature", &"crash_support_mode", &"weather", &"surface",
+		&"assist_signature", &"condition_percent", &"player_difficulty_mode",
 	]
 	for field: StringName in fields:
 		if previous.get(field) != personal_best.get(field):
@@ -116,6 +119,7 @@ static func _conditions_changed(previous: Dictionary, personal_best: Dictionary)
 	return (
 		previous.get(&"weather") != personal_best.get(&"weather")
 		or previous.get(&"surface") != personal_best.get(&"surface")
+		or previous.get(&"condition_percent") != personal_best.get(&"condition_percent")
 	)
 
 
@@ -124,10 +128,21 @@ static func _strategy_changed(previous: Dictionary, personal_best: Dictionary) -
 		&"bike_id", &"selected_class", &"setup_id", &"installed_parts", &"tune",
 		&"assist_mode", &"difficulty", &"transmission_mode", &"control_signature",
 		&"crash_support_mode",
+		&"assist_signature", &"player_difficulty_mode",
 	]:
 		if previous.get(field) != personal_best.get(field):
 			return true
 	return false
+
+
+static func _has_complete_evidence(plan: Dictionary) -> bool:
+	# Old saves remain usable, but cannot prove matched difficulty/handling.
+	return (
+		int(plan.get(&"version", 1)) >= 2
+		and not str(plan.get(&"player_difficulty_mode", "")).is_empty()
+		and not str(plan.get(&"assist_signature", "")).is_empty()
+		and plan.has(&"condition_percent")
+	)
 
 
 static func _pace_state(delta_usec: int) -> StringName:
@@ -154,6 +169,8 @@ static func _summary(total_delta: int, opportunity_sector: int, opportunity_usec
 
 static func _attribution_label(attribution: StringName, changed_fields: PackedStringArray) -> String:
 	match attribution:
+		&"INCOMPLETE_EVIDENCE":
+			return "INCOMPLETE RUN SETTINGS  //  PACE DELTA ONLY"
 		&"EXECUTION_COMPARABLE":
 			return "MATCHED PLAN + CONDITIONS  //  EXECUTION COMPARISON"
 		&"CONDITIONS_CHANGED":
@@ -171,6 +188,8 @@ static func _recommendation(
 	opportunity_usec: int,
 	total_delta: int
 ) -> String:
+	if attribution == &"INCOMPLETE_EVIDENCE":
+		return "NEXT: RECORD TWO RUNS WITH MATCHED SETTINGS FOR A FAIR COMPARISON"
 	if focus in TECHNIQUE_FOCUS:
 		return "NEXT: KEEP THE PLAN, WORK THE %s OBJECTIVE" % focus.replace("_", " ")
 	if attribution == &"CONDITIONS_CHANGED" or attribution == &"MIXED_CHANGES":

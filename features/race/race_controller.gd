@@ -897,7 +897,9 @@ func _on_opponent_flow_boosted(
 	signature_trait: String,
 	gap_m: float
 ) -> void:
-	if state != State.RACING or absf(gap_m) > 32.0 or _field_moment_cooldown > 0.0:
+	# Tactical attacks take priority over incidental overtake/near-miss chatter.
+	# The activation signal is one-shot; dropping it here loses the warning.
+	if state != State.RACING or absf(gap_m) > 32.0:
 		return
 	var intent := "ATTACKING FROM BEHIND" if gap_m < -0.35 else "SURGING AHEAD" if gap_m > 0.35 else "BAR-TO-BAR ATTACK"
 	race_moment.emit(
@@ -907,7 +909,7 @@ func _on_opponent_flow_boosted(
 		0,
 		false
 	)
-	_field_moment_cooldown = 1.15
+	_field_moment_cooldown = 1.5
 
 
 func _on_gate_entered(body: Node3D, checkpoint_index: int) -> void:
@@ -1334,7 +1336,7 @@ func _capture_run_plan_snapshot() -> Dictionary:
 		if bike != null else &"AUTOMATIC"
 	)
 	return {
-		&"version": 1,
+		&"version": 2,
 		&"setup_id": StringName(rules.get(&"competitive_setup_id", Profile.current_setup)),
 		&"bike_id": Profile.active_bike_id,
 		&"selected_class": Profile.selected_bike_class,
@@ -1347,7 +1349,9 @@ func _capture_run_plan_snapshot() -> Dictionary:
 		&"assist_signature": (
 			Profile.get_assist_signature() if Profile.has_method(&"get_assist_signature") else String(Profile.assist_mode)
 		),
-		&"difficulty": clampi(int(_session_config.difficulty), 0, 2),
+		&"difficulty": clampi(int(_session_config.difficulty), 0, 4),
+		# Authored competitive challenges ignore the career difficulty selector.
+		&"player_difficulty_mode": StringName(rules.get(&"player_difficulty_mode", &"LOCKED")),
 		&"transmission_mode": transmission,
 		&"control_signature": InputRouter.get_control_response_signature().substr(0, 160),
 		&"crash_support_mode": StringName(rules.get(&"crash_support_mode", &"STANDARD")),

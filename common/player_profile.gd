@@ -2878,8 +2878,11 @@ func _sanitize_recorded_run_plan(value: Variant) -> Dictionary:
 	var crash_support := _safe_identifier(_dictionary_value(data, "crash_support_mode", &"STANDARD"), &"STANDARD")
 	if crash_support not in [&"STANDARD", &"ASSISTED"]:
 		crash_support = &"STANDARD"
+	var player_difficulty := _safe_identifier(_dictionary_value(data, "player_difficulty_mode", &""), &"")
+	if player_difficulty not in [&"RELAXED", &"CASUAL", &"STANDARD", &"CHALLENGING", &"EXPERT", &"LOCKED"]:
+		player_difficulty = &""
 	return {
-		&"version": 1,
+		&"version": clampi(int(_dictionary_value(data, "version", 1)), 1, 2),
 		&"setup_id": setup_id,
 		&"bike_id": bike_id,
 		&"selected_class": _safe_identifier(_dictionary_value(data, "selected_class", &"LITE_125"), &"LITE_125"),
@@ -2890,7 +2893,8 @@ func _sanitize_recorded_run_plan(value: Variant) -> Dictionary:
 		&"build_signature": str(_dictionary_value(data, "build_signature", "")).strip_edges().substr(0, 256),
 		&"assist_mode": assist_mode,
 		&"assist_signature": str(_dictionary_value(data, "assist_signature", "")).strip_edges().substr(0, 160),
-		&"difficulty": clampi(int(_dictionary_value(data, "difficulty", 1)), 0, 2),
+		&"difficulty": clampi(int(_dictionary_value(data, "difficulty", 1)), 0, 4),
+		&"player_difficulty_mode": player_difficulty,
 		&"transmission_mode": transmission,
 		&"control_signature": str(_dictionary_value(data, "control_signature", "")).strip_edges().substr(0, 160),
 		&"crash_support_mode": crash_support,

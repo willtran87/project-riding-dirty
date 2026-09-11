@@ -79,6 +79,8 @@ const NPC_VISUAL_WIDTH := 0.9
 const NPC_CONTACT_HALF_LENGTH := 2.18
 const NPC_CONTACT_HALF_WIDTH := 0.96
 const NPC_MAX_SEPARATION_STEP := 0.12
+const NPC_SIDE_SEPARATION_ACCELERATION := 33.0
+const NPC_SEPARATION_SPEED := NPC_MAX_SEPARATION_STEP * 60.0
 const PLAYER_CONTACT_HALF_WIDTH := 0.95
 const PLAYER_CONTACT_HALF_LENGTH := 2.1
 const PLAYER_CONTACT_HEIGHT := 1.5
@@ -407,7 +409,9 @@ func reset_grid() -> void:
 		state[&"previous_lane_velocity"] = 0.0
 		state[&"lane_change_active"] = false
 		var difficulty_scale := 1.0 + float(_authored_difficulty - 2) * 0.045
-		var class_scale := 0.94 if _session_config.bike_class == &"LITE_125" else 1.08 if _session_config.bike_class == &"OPEN" else 1.0
+		# Live 60Hz traffic preserves more momentum than the former coarse
+		# balance probe. Keep starter Flow mastery competitive, not mandatory.
+		var class_scale := 0.92 if _session_config.bike_class == &"LITE_125" else 1.08 if _session_config.bike_class == &"OPEN" else 1.0
 		var pace := clampf(float(profile.get(&"pace", 0.82)), 0.55, 1.05)
 		state[&"base_speed"] = (13.0 + pace * 5.5) * difficulty_scale * _mode_pace_scale * class_scale * _build_match_scale
 		state[&"speed"] = 0.0
@@ -565,7 +569,7 @@ func simulate_competition_step(
 		_integrate_rider_state(rider_index, player_speed, delta)
 	_resolve_pending_eliminations()
 	if resolve_traffic:
-		_resolve_rider_pairs()
+		_resolve_rider_pairs(delta)
 		_apply_player_traffic_plans()
 	_update_player_racecraft_context(delta)
 
@@ -598,7 +602,7 @@ func _physics_process(delta: float) -> void:
 	# traffic, visual, or contact work after that callback has stopped the pack.
 	if not _active:
 		return
-	_resolve_rider_pairs()
+	_resolve_rider_pairs(delta)
 	_resolve_player_pair_orders()
 	_apply_player_traffic_plans()
 	for index: int in _riders.size():
@@ -745,6 +749,8 @@ func get_chaos_snapshot() -> Dictionary:
 		&"dynamic_pace_budget_clamps": int(_chaos_metrics.get(&"dynamic_pace_budget_clamps", 0)),
 		&"dynamic_pace_raw_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_raw_peak_mps", 0.0)),
 		&"dynamic_pace_applied_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_applied_peak_mps", 0.0)),
+		&"dynamic_pace_total_budget_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_total_budget_peak_mps", 0.0)),
+		&"dynamic_pace_budget_excess_peak_mps": float(_chaos_metrics.get(&"dynamic_pace_budget_excess_peak_mps", 0.0)),
 		&"player_draft_seconds": float(_chaos_metrics.get(&"player_draft_seconds", 0.0)),
 		&"player_draft_peak": float(_chaos_metrics.get(&"player_draft_peak", 0.0)),
 		&"player_roost_pressure_peak": float(_chaos_metrics.get(&"player_roost_pressure_peak", 0.0)),
@@ -1528,6 +1534,9 @@ func _integrate_rider_state(index: int, player_speed: float, delta: float) -> vo
 	var flow_boost_mps := _update_opponent_flow(index, state, progress_gap, player_speed, delta)
 	var tactical_pace := _bounded_tactical_pace(late_pressure_mps, close_attack_mps, flow_boost_mps)
 	state[&"tactical_pace_mps"] = tactical_pace
+	state[&"tactical_pace_raw_mps"] = (
+		maxf(late_pressure_mps, 0.0) + maxf(close_attack_mps, 0.0) + maxf(flow_boost_mps, 0.0)
+	)
 	var dynamic_base_speed := (
 		float(state[&"base_speed"])
 		+ float(state[&"speed_bias"])
@@ -1710,7 +1719,7 @@ func _plan_reference_line(index: int, state: Dictionary) -> void:
 		_set_lane_target(state, preferred_target)
 
 
-func _resolve_rider_pairs() -> void:
+func _resolve_rider_pairs(delta: float = 1.0 / 60.0) -> void:
 	var tactics_blend := _launch_tactics_blend()
 	for first_index: int in range(_riders.size() - 1):
 		for second_index: int in range(first_index + 1, _riders.size()):
@@ -1735,6 +1744,10 @@ func _resolve_rider_pairs() -> void:
 					first[&"overtakes"] = int(first.get(&"overtakes", 0)) + 1
 			if order != 0:
 				_pair_orders[pair_key] = order
+			# Jump-overs count as passes without physically colliding with the
+			# rider underneath. Apply this envelope to following and shoves too.
+			if absf(_rider_contact_height(first) - _rider_contact_height(second)) >= PLAYER_CONTACT_HEIGHT:
+				continue
 
 			var longitudinal_gap := absf(progress_gap)
 			var lateral_gap := absf(float(second[&"lane"]) - float(first[&"lane"]))
@@ -1771,11 +1784,11 @@ func _resolve_rider_pairs() -> void:
 				var separation_sign := signf(float(first[&"lane"]) - float(second[&"lane"]))
 				if is_zero_approx(separation_sign):
 					separation_sign = -1.0 if (first_index + second_index) % 2 == 0 else 1.0
-				first[&"lane_velocity"] = float(first[&"lane_velocity"]) + separation_sign * 0.55
-				second[&"lane_velocity"] = float(second[&"lane_velocity"]) - separation_sign * 0.55
+				first[&"lane_velocity"] = float(first[&"lane_velocity"]) + separation_sign * NPC_SIDE_SEPARATION_ACCELERATION * delta
+				second[&"lane_velocity"] = float(second[&"lane_velocity"]) - separation_sign * NPC_SIDE_SEPARATION_ACCELERATION * delta
 
 			if tactics_blend >= 1.0 and longitudinal_gap < NPC_VISUAL_LENGTH and lateral_gap < NPC_VISUAL_WIDTH:
-				_resolve_pair_visual_overlap(first, second, progress_gap, first_index, second_index)
+				_resolve_pair_visual_overlap(first, second, progress_gap, first_index, second_index, delta)
 
 			var can_contact := (
 				tactics_blend >= 1.0
@@ -1885,13 +1898,22 @@ func _choose_pass_lane(rider_index: int, progress: float, obstacle_lane: float, 
 	return left_candidate if left_score > right_score else right_candidate
 
 
+func _rider_contact_height(state: Dictionary) -> float:
+	if bool(state.get(&"surface_initialized", false)):
+		return float(state.get(&"surface_y", 0.0))
+	return _track_position_for_distance(float(state.get(&"progress", 0.0))).y
+
+
 func _resolve_pair_visual_overlap(
 	first: Dictionary,
 	second: Dictionary,
 	progress_gap: float,
 	first_index: int,
-	second_index: int
+	second_index: int,
+	delta: float = 1.0 / 60.0
 ) -> void:
+	if absf(_rider_contact_height(first) - _rider_contact_height(second)) >= PLAYER_CONTACT_HEIGHT:
+		return
 	var longitudinal_penetration := NPC_VISUAL_LENGTH - absf(progress_gap)
 	var lane_delta := float(second[&"lane"]) - float(first[&"lane"])
 	var lateral_penetration := NPC_VISUAL_WIDTH - absf(lane_delta)
@@ -1901,7 +1923,7 @@ func _resolve_pair_visual_overlap(
 	if longitudinal_penetration <= lateral_penetration:
 		# Queue the rear tyre just behind the bike ahead. Contact is detected
 		# slightly before this point, so the correction remains sub-frame small.
-		applied_step = minf(longitudinal_penetration + 0.015, NPC_MAX_SEPARATION_STEP)
+		applied_step = minf(longitudinal_penetration + 0.015, NPC_SEPARATION_SPEED * delta)
 		if progress_gap > 0.0:
 			first[&"progress"] = float(first[&"progress"]) - applied_step
 			first[&"speed"] = minf(float(first[&"speed"]), float(second[&"speed"]))
@@ -1912,7 +1934,7 @@ func _resolve_pair_visual_overlap(
 		var separation_sign := signf(lane_delta)
 		if is_zero_approx(separation_sign):
 			separation_sign = -1.0 if (first_index + second_index) % 2 == 0 else 1.0
-		applied_step = minf((lateral_penetration + 0.015) * 0.5, NPC_MAX_SEPARATION_STEP)
+		applied_step = minf((lateral_penetration + 0.015) * 0.5, NPC_SEPARATION_SPEED * delta)
 		first[&"lane"] = clampf(float(first[&"lane"]) - separation_sign * applied_step, -_lane_limit, _lane_limit)
 		second[&"lane"] = clampf(float(second[&"lane"]) + separation_sign * applied_step, -_lane_limit, _lane_limit)
 	_increment_metric(&"pair_separation_corrections")
@@ -2253,8 +2275,11 @@ func _target_speed_for_gap(base_speed: float, player_speed: float, progress_gap:
 	# Isolated field simulations and pre-race presentation have no player to
 	# create a meaningful gap against, so the director stays entirely dormant.
 	var correction := get_gap_pace_adjustment(progress_gap, race_completion) if is_instance_valid(_player) or simulation_has_player else 0.0
+	var raw_correction := maxf(correction, 0.0)
+	var total_budget := _dynamic_pace_budget_mps()
 	if correction > 0.0:
 		correction *= lerpf(0.82, 1.12, clampf(float(state.get(&"comeback_skill", 0.85)), 0.0, 1.0))
+		raw_correction = correction
 		var tactical_pace := maxf(float(state.get(&"tactical_pace_mps", 0.0)), 0.0)
 		# A decisive player breakaway opens a small, explicit comeback reserve.
 		# Close racing receives no extra hidden pace, so ordinary battles remain
@@ -2263,7 +2288,8 @@ func _target_speed_for_gap(base_speed: float, player_speed: float, progress_gap:
 			float(PLAYER_MODE_COMEBACK_RESERVE_MPS.get(_player_difficulty_mode, 1.10))
 			* smoothstep(12.0, 55.0, maxf(-progress_gap, 0.0))
 		)
-		var remaining_budget := maxf(_dynamic_pace_budget_mps() + comeback_reserve - tactical_pace, 0.0)
+		total_budget += comeback_reserve
+		var remaining_budget := maxf(total_budget - tactical_pace, 0.0)
 		if correction > remaining_budget + 0.001:
 			_increment_metric(&"dynamic_pace_budget_clamps")
 		correction = minf(correction, remaining_budget)
@@ -2272,6 +2298,23 @@ func _target_speed_for_gap(base_speed: float, player_speed: float, progress_gap:
 		# a slightly tighter chase. The final clamp preserves the event contract.
 		correction *= lerpf(1.08, 0.86, clampf(float(state.get(&"pressure_skill", 0.75)), 0.0, 1.0))
 	correction = clampf(correction, -DIRECTOR_MAX_CORRECTION, DIRECTOR_MAX_CORRECTION)
+	var tactical := maxf(float(state.get(&"tactical_pace_mps", 0.0)), 0.0)
+	var combined := tactical + maxf(correction, 0.0)
+	# These are nominal additive m/s before the shared terrain/drive multipliers.
+	# Track the total at the application site, including the director's reserve.
+	_chaos_metrics[&"dynamic_pace_raw_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_raw_peak_mps", 0.0)),
+		float(state.get(&"tactical_pace_raw_mps", tactical)) + raw_correction
+	)
+	_chaos_metrics[&"dynamic_pace_applied_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_applied_peak_mps", 0.0)), combined
+	)
+	_chaos_metrics[&"dynamic_pace_total_budget_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_total_budget_peak_mps", 0.0)), total_budget
+	)
+	_chaos_metrics[&"dynamic_pace_budget_excess_peak_mps"] = maxf(
+		float(_chaos_metrics.get(&"dynamic_pace_budget_excess_peak_mps", 0.0)), combined - total_budget
+	)
 	return maxf(base_speed + correction, 5.5)
 
 
@@ -3439,6 +3482,8 @@ func _reset_chaos_metrics() -> void:
 		&"dynamic_pace_budget_clamps": 0,
 		&"dynamic_pace_raw_peak_mps": 0.0,
 		&"dynamic_pace_applied_peak_mps": 0.0,
+		&"dynamic_pace_total_budget_peak_mps": 0.0,
+		&"dynamic_pace_budget_excess_peak_mps": 0.0,
 		&"player_draft_seconds": 0.0,
 		&"player_draft_peak": 0.0,
 		&"player_roost_pressure_peak": 0.0,

@@ -34,6 +34,17 @@ func _ready() -> void:
 	var technique: Dictionary = ANALYSIS.compare(previous, personal_best, {&"focus_id": &"CRASH_CONTROL"})
 	_assert(str(technique.get(&"recommendation", "")).contains("CRASH CONTROL"), "debrief technique priority was replaced by setup advice")
 	_assert(ANALYSIS.compare({}, personal_best).is_empty(), "missing runs should not manufacture analysis")
+	for field: StringName in [&"assist_signature", &"player_difficulty_mode", &"difficulty", &"condition_percent"]:
+		var alternate := baseline_plan.duplicate(true)
+		alternate[field] = {&"assist_signature": "CUSTOM:CHANGED", &"player_difficulty_mode": &"CASUAL", &"difficulty": 4, &"condition_percent": 62}[field]
+		var comparison: Dictionary = ANALYSIS.compare(previous, _run(116_000_000, [], 0, 0, 0, alternate))
+		_assert(not bool(comparison.get(&"comparable", true)), "%s change was falsely execution-comparable" % field)
+		_assert(String(field).to_upper() in comparison.get(&"changed_fields", []), "%s was not explained" % field)
+	var legacy := baseline_plan.duplicate(true)
+	legacy.erase(&"version")
+	legacy.erase(&"player_difficulty_mode")
+	var incomplete: Dictionary = ANALYSIS.compare(previous, _run(116_000_000, [], 0, 0, 0, legacy))
+	_assert(StringName(incomplete.get(&"attribution", &"")) == &"INCOMPLETE_EVIDENCE", "legacy evidence manufactured matched settings")
 
 	var passed := _failures.is_empty()
 	print("RUN PLAN ANALYSIS PROBE: delta=%d sector=%d attribution=%s mixed=%s technique=%s passed=%s failures=%s" % [
@@ -49,6 +60,8 @@ func _ready() -> void:
 
 func _plan(setup_id: StringName, weather: StringName, surface: StringName) -> Dictionary:
 	return {
+		&"version": 2, &"player_difficulty_mode": &"STANDARD", &"condition_percent": 100,
+		&"assist_signature": "SPORT:BASELINE",
 		&"bike_id": &"TYKE_125", &"selected_class": &"LITE_125", &"setup_id": setup_id,
 		&"installed_parts": {}, &"tune": {&"gearing": 0.0}, &"assist_mode": &"SPORT",
 		&"difficulty": 1, &"transmission_mode": &"AUTOMATIC", &"control_signature": "DEFAULT",

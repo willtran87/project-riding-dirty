@@ -55,6 +55,8 @@ QUICK_PROBES = (
     "bike_animation_timestep_probe.tscn",
     "simulation_clock_pause_probe.tscn",
     "opponent_challenge_probe.tscn",
+    "gameplay_fairness_probe.tscn",
+    "rival_flow_feedback_probe.tscn",
     "settings_navigation_probe.tscn",
     "touch_riding_controls_probe.tscn",
     "transmission_system_probe.tscn",
@@ -182,7 +184,10 @@ def main() -> int:
             command = rendered + [resource] if probe_name in RENDERED_PROBES else headless + [resource]
             if args.full and probe_name == "physical_route_traversability_probe.tscn":
                 command += ["--", "--three-lines"]
-            _run(probe_name, command, args.timeout)
+            # Full-course traffic now runs at production 60Hz across all five
+            # modes. Keep a bounded allowance without reverting to coarse ticks.
+            timeout = max(args.timeout, 1800) if probe_name == "opponent_challenge_probe.tscn" else args.timeout
+            _run(probe_name, command, timeout)
 
         if not args.skip_activities:
             for activity in ACTIVITY_SMOKES:
