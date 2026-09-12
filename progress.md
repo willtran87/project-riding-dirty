@@ -1,5 +1,14 @@
 Original prompt: Resolve the complete race-experience backlog, make the authoritative track drive every consumer, and ship the latest production build on 127.0.0.1:8777.
 
+## Runtime optimization release and branch reconciliation - 2026-09-12
+
+- Committed the accumulated HUD polish and eight runtime fixes as `054668e8b3ecf8a2e665dcb41952bdc2f08f86d1`. Fast-forwarded `main` through all 32 development commits and pushed both branches without rewriting history. GitHub marked PR #1 merged at `2026-09-12T10:24:31Z`.
+- Published the exact source `web/` tree as `gh-pages` commit `b4990fb5ec55b9d551a4e3ef0fcca361751d38aa`. Pages workflow `34688379190` completed successfully; the source and deployment trees are identical.
+- Independently downloaded the public package: 5,533,488 bytes, SHA-256 `e76e41bbcf95e694ca5f94abaab8922ff01c636d14053580a03d27c681a66987`, matching the local manifest and build. Public URL: `https://willtran87.github.io/project-riding-dirty/`.
+- Re-ran runtime optimization and HUD readability probes plus all 17 delivery tests. Public shared-client startup opens Quarry Event 01/19 without an error artifact; screenshot inspected under `output/published-optimization-required-client/`.
+- The web-game and high-resolution verification skills drove public live-racing/Flow-feedback checks at 2560x1600, 1280x720, and 844x390. All completed with zero console/page errors and no horizontal overflow; screenshots inspected under `output/published-optimization-visual/`. Public engine HTML references the new package, and the superseded package returns 404.
+- After checking remote-main ancestry and merged PR state, deleted `codex/racecraft-v27` locally and remotely. Its complete history remains reachable from `main`; retained `main` and `gh-pages`, with no other local worktrees or open pull requests.
+
 ## Eight runtime optimization findings resolved - 2026-09-12
 
 - Replay recording now reads authoritative progress directly; the browser builds only visible menu/results projections with invalidated strategy caches; each field-feedback update constructs classification once and avoids duplicate HUD delivery.
