@@ -5,6 +5,7 @@
 # Local editor and engine tools
 tools/*
 !tools/build_web_release.py
+!tools/benchmark_web_runtime.mjs
 !tools/run_quality_gate.py
 !tools/bake_runtime_audio_assets.gd
 !tools/bake_runtime_audio_assets.gd.uid

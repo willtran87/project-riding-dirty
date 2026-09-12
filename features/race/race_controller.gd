@@ -628,6 +628,11 @@ func get_session_snapshot() -> Dictionary:
 	}
 
 
+func get_recording_progress() -> float:
+	# Recording needs the exact current progress, not a presentation projection.
+	return float(_integrity_snapshot.get(&"total_progress", 0.0))
+
+
 func get_track_evolution_snapshot() -> Dictionary:
 	return (
 		_track_evolution.get_snapshot()
@@ -859,8 +864,10 @@ func _update_field_feedback(delta: float) -> void:
 		race_moment.emit("BAR-TO-BAR  //  NEAR MISS  //  +%d" % (260 * new_misses), 260 * new_misses, true)
 		_field_moment_cooldown = 0.75
 	_last_pack_near_misses = near_misses
-	_emit_classification()
-	_emit_session_snapshot()
+	var snapshot := get_session_snapshot()
+	classification_updated.emit(snapshot[&"classification"])
+	snapshot[&"classification_already_emitted"] = true
+	session_updated.emit(snapshot)
 
 
 func _on_player_pack_contacted(_intensity: float) -> void:

@@ -1,6 +1,7 @@
 extends CanvasLayer
 class_name GarageUi
 ## Setup selection and purchase surface projected from the persistent Profile autoload.
+var _web_strategy_cache: Dictionary = {}
 
 signal ride_requested(setup: StringName, activity: StringName)
 signal test_ride_requested(bike_id: StringName, setup: StringName)
@@ -273,6 +274,7 @@ func show_test_ride_complete(bike_name: String) -> void:
 
 func set_rider_debrief(debrief: Dictionary) -> void:
 	## Carry the last official lesson into the next setup/event decision.
+	_web_strategy_cache.clear()
 	_rider_debrief = debrief.duplicate(true)
 	_workshop_focus_debrief_pending = not _rider_debrief.is_empty()
 	if _open:
@@ -418,6 +420,24 @@ func get_workshop_snapshot() -> Dictionary:
 	}
 
 
+func get_web_workshop_snapshot() -> Dictionary:
+	# Only fields consumed by the browser projection; no achievements/history.
+	return {
+		&"open": _workshop_open,
+		&"category": WORKSHOP_CATEGORIES[_workshop_category_index],
+		&"rider_number_draft": _rider_number_draft,
+		&"workshop_item": _workshop_item_label.text if _workshop_item_label != null else "",
+		&"workshop_action": _workshop_action_label.text if _workshop_action_label != null else "",
+		&"workshop_status": _workshop_status_label.text if _workshop_status_label != null else "",
+	}
+
+
+func get_web_event_strategy_snapshot() -> Dictionary:
+	if _web_strategy_cache.is_empty():
+		_web_strategy_cache = get_event_strategy_presentation_snapshot()
+	return _web_strategy_cache.duplicate(true)
+
+
 func get_input_prompt_snapshot() -> Dictionary:
 	return {
 		&"input_mode": InputRouter.input_mode,
@@ -553,6 +573,7 @@ func focus_event_briefing(activity: StringName) -> bool:
 	var index := EVENTS.find(activity)
 	if index < 0:
 		return false
+	_web_strategy_cache.clear()
 	_event_index = index
 	if _open:
 		_refresh()
@@ -3246,6 +3267,7 @@ func _custom_tour_standings_text(standings: Array) -> String:
 
 
 func _refresh_event_strategy() -> void:
+	_web_strategy_cache.clear()
 	if _strategy_label == null:
 		return
 	var snapshot := get_event_strategy_presentation_snapshot()
@@ -3798,11 +3820,13 @@ func _metric_row(
 
 
 func _on_profile_changed(_cash: int, _reputation: int, _setup: StringName) -> void:
+	_web_strategy_cache.clear()
 	if _open:
 		_refresh()
 
 
 func _on_meta_progress_changed(_snapshot: Dictionary) -> void:
+	_web_strategy_cache.clear()
 	if _open:
 		_refresh()
 

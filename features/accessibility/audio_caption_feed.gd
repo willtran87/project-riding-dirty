@@ -89,8 +89,13 @@ func request_caption(source: StringName, text: String, priority: int) -> bool:
 		_render_current()
 		_accepted_count += 1
 		return true
+	# New information from one source supersedes its old queued information.
+	# In particular, never replay 3 / 2 / 1 after the green-light caption.
+	for index: int in range(_queue.size() - 1, -1, -1):
+		if StringName(_queue[index].get(&"source", &"")) == normalized_source:
+			_queue.remove_at(index)
 	if _current.is_empty() or normalized_priority >= int(_current.get(&"priority", PRIORITY_ALL)):
-		if not _current.is_empty() and _queue.size() < MAX_QUEUE_SIZE:
+		if not _current.is_empty() and StringName(_current.get(&"source", &"")) != normalized_source and _queue.size() < MAX_QUEUE_SIZE:
 			_queue.push_front(_current.duplicate(true))
 		_show(entry)
 	else:
@@ -174,8 +179,8 @@ func _build_overlay() -> void:
 	_panel.name = "AudioCaptionPanel"
 	_panel.anchor_left = 0.18
 	_panel.anchor_right = 0.82
-	_panel.anchor_top = 0.72
-	_panel.anchor_bottom = 0.86
+	_panel.anchor_top = 0.87
+	_panel.anchor_bottom = 0.87
 	_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_panel)
 	_label = Label.new()
@@ -194,8 +199,12 @@ func _build_overlay() -> void:
 func _apply_presentation() -> void:
 	if not is_instance_valid(_panel) or not is_instance_valid(_label):
 		return
-	_panel.anchor_left = 0.18 + _safe_area
-	_panel.anchor_right = 0.82 - _safe_area
+	_panel.anchor_left = 0.25 + _safe_area * 0.5
+	_panel.anchor_right = 0.75 - _safe_area * 0.5
+	# A dedicated two-line strip below line scoring, above the control/instrument
+	# lane. Scale the strip with the text, not with the entire viewport height.
+	_panel.offset_top = -ceilf(52.0 * _caption_scale + 20.0)
+	_panel.offset_bottom = 0.0
 	_label.add_theme_font_size_override(&"font_size", maxi(roundi(20.0 * _caption_scale), 15))
 	var high_contrast := _style == &"HIGH_CONTRAST" or _global_high_contrast
 	var panel_style := StyleBoxFlat.new()

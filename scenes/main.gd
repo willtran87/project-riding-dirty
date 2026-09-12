@@ -72,6 +72,8 @@ var _sponsor_trackside: SponsorTracksidePresenter
 
 
 func _ready() -> void:
+	if "--runtime-benchmark" in OS.get_cmdline_user_args():
+		Profile.persistence_enabled = false
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().auto_accept_quit = false
 	if not SaveLifecycle.state_changed.is_connected(_on_save_lifecycle_for_pending_close):
@@ -194,6 +196,10 @@ func _ready() -> void:
 		_hud.visible = false
 		_garage.show_garage()
 		_refresh_touch_context()
+	if "--runtime-benchmark" in OS.get_cmdline_user_args():
+		var benchmark: Node = load("res://features/diagnostics/runtime_work_benchmark.gd").new()
+		benchmark.subject = self
+		add_child(benchmark)
 
 
 func _on_race_conditions_changed(snapshot: Dictionary) -> void:
@@ -226,10 +232,11 @@ func _process(delta: float) -> void:
 
 
 func get_web_game_text_state_snapshot() -> Dictionary:
-	var workshop := _garage.get_workshop_snapshot()
-	var garage_prompts := _garage.get_input_prompt_snapshot()
-	var garage_briefing := _garage.get_event_briefing_presentation_snapshot()
-	var garage_strategy := _garage.get_event_strategy_presentation_snapshot()
+	var menu_open := _garage.is_open()
+	var workshop := _garage.get_web_workshop_snapshot() if menu_open else {}
+	var garage_prompts := _garage.get_input_prompt_snapshot() if menu_open else {}
+	var garage_briefing := _garage.get_event_briefing_presentation_snapshot() if menu_open else {}
+	var garage_strategy := _garage.get_web_event_strategy_snapshot() if menu_open else {}
 	var hud_prompts := _hud.get_control_prompt_snapshot()
 	var rider_cosmetics := Profile.get_rider_cosmetics()
 	return WEB_GAME_TEXT_STATE.build({
@@ -286,7 +293,7 @@ func get_web_game_text_state_snapshot() -> Dictionary:
 		},
 		&"local_duel": _race_services.get_hotseat_presentation_snapshot(),
 		&"custom_tour": _race_services.get_custom_tour_presentation_snapshot(),
-		&"results": _hud.get_competition_presentation_snapshot(),
+		&"results": _hud.get_competition_presentation_snapshot() if _hud.is_results_visible() or _replay_modal_open else {},
 		&"save": SaveLifecycle.get_snapshot(),
 		&"input_mode": InputRouter.input_mode,
 		&"binding_revision": InputRouter.binding_revision,
@@ -296,7 +303,7 @@ func get_web_game_text_state_snapshot() -> Dictionary:
 func _web_game_mode() -> StringName:
 	var workshop_open := false
 	if _garage.is_open():
-		workshop_open = bool(_garage.get_workshop_snapshot().get(&"open", false))
+		workshop_open = bool(_garage.get_web_workshop_snapshot().get(&"open", false))
 	return resolve_web_game_mode(
 		_transitioning,
 		_settings_modal_open,

@@ -9,12 +9,37 @@ var _model: ReplayModel
 var _time_usec: int = 0
 var _playing: bool = false
 var _last_event_cursor_usec: int = -1
+var _event_index: int = 0
+var _indexed_events: Array[Dictionary] = []
+var _event_search_end: int = -1
+var _event_source_indices: Array[int] = []
+var _events_in_source_order: bool = true
 
 
 func load_model(model: ReplayModel) -> bool:
-	if model == null or not model.is_valid():
+	if model == null:
 		return false
-	_model = model.duplicate_model()
+	var owned := model.duplicate_model()
+	# Invalid models deserialize to an empty model; no second full validation.
+	if owned.samples.is_empty():
+		return false
+	_model = owned
+	_indexed_events = _model.events.duplicate()
+	# Imports may have unordered markers. Stable index tie-break keeps their
+	# authored order for simultaneous events while enabling logarithmic seeks.
+	var order: Array[int] = []
+	for index: int in _indexed_events.size():
+		order.append(index)
+	order.sort_custom(func(a: int, b: int) -> bool:
+		var first := int(_model.events[a].get("t_usec", 0))
+		var second := int(_model.events[b].get("t_usec", 0))
+		return first < second if first != second else a < b)
+	for index: int in order.size():
+		_indexed_events[index] = _model.events[order[index]]
+	_event_source_indices = order
+	_events_in_source_order = true
+	for index: int in order.size():
+		_events_in_source_order = _events_in_source_order and order[index] == index
 	reset()
 	return true
 
@@ -32,6 +57,8 @@ func reset() -> void:
 	_time_usec = 0
 	_last_event_cursor_usec = -1
 	_playing = false
+	_event_index = 0
+	_event_search_end = -1
 
 
 func seek_usec(target_usec: int) -> Dictionary:
@@ -119,10 +146,32 @@ func _events_between(exclusive_start: int, inclusive_end: int) -> Array[Dictiona
 	var markers: Array[Dictionary] = []
 	if _model == null:
 		return markers
-	for event: Dictionary in _model.events:
-		var event_time := int(event.get("t_usec", -1))
-		if event_time > exclusive_start and event_time <= inclusive_end:
+	if exclusive_start != _event_search_end:
+		var low := 0
+		var high := _indexed_events.size()
+		while low < high:
+			var middle := (low + high) >> 1
+			if int(_indexed_events[middle].get("t_usec", -1)) <= exclusive_start:
+				low = middle + 1
+			else:
+				high = middle
+		_event_index = low
+	var source_indices: Array[int] = []
+	while _event_index < _indexed_events.size():
+		var event := _indexed_events[_event_index]
+		if int(event.get("t_usec", -1)) > inclusive_end:
+			break
+		if _events_in_source_order:
 			markers.append(event.duplicate(true))
+		else:
+			source_indices.append(_event_source_indices[_event_index])
+		_event_index += 1
+	# Preserve the legacy emission order of accepted unsorted imports as well.
+	if not source_indices.is_empty():
+		source_indices.sort()
+		for index: int in source_indices:
+			markers.append(_model.events[index].duplicate(true))
+	_event_search_end = inclusive_end
 	return markers
 
 

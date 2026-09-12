@@ -50,6 +50,8 @@ QUICK_PROBES = (
     "rider_identity_options_probe.tscn",
     "rider_graphics_customization_probe.tscn",
     "presentation_contract_probe.tscn",
+    "hud_race_readability_probe.tscn",
+    "runtime_optimization_probe.tscn",
     "individual_assists_probe.tscn",
     "camera_modes_probe.tscn",
     "bike_animation_timestep_probe.tscn",

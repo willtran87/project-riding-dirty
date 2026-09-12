@@ -324,6 +324,27 @@ button, a { font: inherit; }
   .app-shell.is-playing #gameFrame { filter: saturate(.4) brightness(.32); pointer-events: none; }
 }
 
+/* Short landscape windows need the same play-first treatment as touch devices.
+   Keep a reachable fullscreen control in its own gutter, never over the HUD. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .app-shell.is-playing {
+    --playing-chrome: calc(max(4px, env(safe-area-inset-top)) + max(4px, env(safe-area-inset-bottom)));
+    padding: max(4px, env(safe-area-inset-top)) max(56px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
+  }
+  .app-shell.is-playing .topbar {
+    display: flex;
+    position: fixed;
+    top: max(4px, env(safe-area-inset-top));
+    right: max(4px, env(safe-area-inset-right));
+    margin: 0;
+    z-index: 5;
+  }
+  .app-shell.is-playing .brand,
+  .app-shell.is-playing .build-status,
+  .app-shell.is-playing .icon-button span { display: none; }
+  .app-shell.is-playing .icon-button { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

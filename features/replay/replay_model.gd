@@ -28,11 +28,21 @@ func to_dictionary() -> Dictionary:
 
 
 func duplicate_model() -> ReplayModel:
-	return ReplayModel.from_dictionary(to_dictionary())
+	# from_dictionary validates without mutation, then takes one owned copy.
+	return ReplayModel.from_dictionary(_validation_view())
 
 
 func is_valid() -> bool:
-	return bool(validate_dictionary(to_dictionary()).get("ok", false))
+	return bool(validate_dictionary(_validation_view()).get("ok", false))
+
+
+func _validation_view() -> Dictionary:
+	# Private borrowed view. Never return this to callers or mutate its arrays.
+	return {
+		"format": "RIDING_DIRTY_REPLAY", "version": FORMAT_VERSION,
+		"sample_interval_usec": sample_interval_usec, "duration_usec": duration_usec,
+		"metadata": metadata, "samples": samples, "events": events,
+	}
 
 
 func ghost_samples() -> Array[Dictionary]:

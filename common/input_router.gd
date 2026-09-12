@@ -126,6 +126,7 @@ var using_gamepad: bool = false
 var using_touch: bool = false
 var input_mode: StringName = INPUT_MODE_KEYBOARD_MOUSE
 var binding_revision: int = 0
+var _action_label_cache: Dictionary = {}
 var _last_touch_input_usec: int = -MOUSE_AFTER_TOUCH_GUARD_USEC
 var steering_deadzone: float = 0.12
 var throttle_deadzone: float = 0.05
@@ -212,6 +213,7 @@ func notify_bindings_changed(actions: Array[StringName] = []) -> void:
 	## this after a successful, fully-applied change so every teaching surface can
 	## refresh even when the rider keeps using the same device family.
 	binding_revision += 1
+	_action_label_cache.clear()
 	bindings_changed.emit(actions.duplicate())
 
 
@@ -266,6 +268,9 @@ func get_action_label(
 		)
 		var gamepad_label := get_action_label(action, INPUT_MODE_GAMEPAD, max_labels)
 		return _join_device_labels(keyboard_label, gamepad_label)
+	var cache_key := "%s:%s:%d" % [action, requested_mode, max_labels]
+	if _action_label_cache.has(cache_key):
+		return _action_label_cache[cache_key]
 	var labels := PackedStringArray()
 	for event: InputEvent in InputMap.action_get_events(action):
 		if not _event_matches_mode(event, requested_mode):
@@ -276,7 +281,9 @@ func get_action_label(
 		labels.append(label)
 		if max_labels > 0 and labels.size() >= max_labels:
 			break
-	return "UNBOUND" if labels.is_empty() else " / ".join(labels)
+	var result := "UNBOUND" if labels.is_empty() else " / ".join(labels)
+	_action_label_cache[cache_key] = result
+	return result
 
 
 func get_action_pair_label(

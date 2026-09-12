@@ -38,6 +38,8 @@ var _condition_label: Label
 var _speed_bar: ProgressBar
 var _flow_label: Label
 var _flow_bar: ProgressBar
+var _flow_hint_label: Label
+var _flow_cost_marker: ColorRect
 var _racecraft_label: Label
 var _landing_projection_label: Label
 var _landing_projection_bar: ProgressBar
@@ -96,6 +98,9 @@ var _results_visibility_request: int = 0
 var _results_stats: Label
 var _results_footer: Label
 var _message_time: float = 0.0
+var _go_time: float = 0.0
+var _flow_text_key: Array = []
+var _gate_text_key: Array = []
 var _reward_time: float = 0.0
 var _reward_queue: Array[Dictionary] = []
 var _activity: StringName = &"CIRCUIT"
@@ -284,7 +289,10 @@ func update_session_snapshot(snapshot: Dictionary) -> void:
 		var checkpoint_total := int(snapshot.get(&"checkpoint_total", snapshot.get(&"total_checkpoints", snapshot.get(&"checkpoint_count", 0))))
 		if checkpoint_total > 0:
 			_checkpoint_label.text = "GATE  %02d / %02d" % [mini(checkpoint + 1, checkpoint_total), checkpoint_total]
-	if snapshot.has(&"classification"):
+	if snapshot.has(&"classification") and not (
+		bool(snapshot.get(&"classification_already_emitted", false))
+		and _classification == snapshot.get(&"classification", [])
+	):
 		update_classification(snapshot.get(&"classification", []) as Array)
 	if snapshot.has(&"integrity") and snapshot.get(&"integrity") is Dictionary:
 		update_integrity(snapshot.get(&"integrity") as Dictionary)
@@ -919,6 +927,9 @@ func get_control_prompt_snapshot() -> Dictionary:
 		&"racecraft": _racecraft_label.text if _racecraft_label != null else "",
 		&"paused": _paused_label.text if _paused_label != null else "",
 		&"message": _message_label.text if _message_label != null else "",
+		&"countdown": _countdown_label.text if _countdown_label != null else "",
+		&"flow": _flow_label.text if _flow_label != null else "",
+		&"flow_hint": _flow_hint_label.text if _flow_hint_label != null else "",
 		&"line": (
 			_line_label.text
 			if _line_label != null and _line_label.visible else ""
@@ -952,7 +963,14 @@ func _update_gate_launch_feedback(snapshot: Dictionary, phase: StringName) -> vo
 		var prompt := str(snapshot.get(&"prompt", "STAGE  //  HOLD THROTTLE"))
 		var throttle_percent := roundi(clampf(float(snapshot.get(&"throttle", 0.0)), 0.0, 1.0) * 100.0)
 		var brake_percent := roundi(clampf(float(snapshot.get(&"brake", 0.0)), 0.0, 1.0) * 100.0)
-		_gate_launch_label.text = "%s\nTHROTTLE %03d%%  //  BRAKE %03d%%" % [prompt, throttle_percent, brake_percent]
+		var text_key := [prompt, throttle_percent, brake_percent, bool(snapshot.get(&"brake_staged", false)),
+			InputRouter.input_mode, InputRouter.binding_revision]
+		if _gate_launch_label.visible and text_key == _gate_text_key:
+			return
+		_gate_text_key = text_key
+		var throttle_key := InputRouter.get_action_label(&"throttle", InputRouter.input_mode, 1)
+		var brake_key := InputRouter.get_action_label(&"brake", InputRouter.input_mode, 1)
+		_gate_launch_label.text = "%s\n%s THROTTLE %03d%%  //  %s BRAKE %03d%%" % [prompt, throttle_key, throttle_percent, brake_key, brake_percent]
 		_gate_launch_label.modulate = WARNING if prompt.begins_with("DROP BRAKE") else CYAN if bool(snapshot.get(&"brake_staged", false)) and throttle_percent >= 45 else AMBER
 		_gate_launch_label.visible = true
 		return
@@ -979,6 +997,16 @@ func _update_gate_launch_feedback(snapshot: Dictionary, phase: StringName) -> vo
 func _process(delta: float) -> void:
 	_update_control_hints(delta)
 	_update_flow_denied_feedback(delta)
+	_message_label.visible = not (
+		_line_label.is_visible_in_tree()
+		and not _line_label.text.is_empty()
+		and _message_label.text == _line_label.text
+	)
+	# Start feedback owns its lifetime; technique events must never prolong GO.
+	if _go_time > 0.0:
+		_go_time = maxf(_go_time - delta, 0.0)
+		if _go_time <= 0.0 and _countdown_label.text == "GO!":
+			_countdown_label.text = ""
 	if _gate_launch_feedback_time > 0.0:
 		_gate_launch_feedback_time = maxf(_gate_launch_feedback_time - delta, 0.0)
 		if _gate_launch_feedback_time <= 0.0 and _gate_launch_label != null:
@@ -988,8 +1016,6 @@ func _process(delta: float) -> void:
 		_message_time -= delta
 		if _message_time <= 0.0:
 			_message_label.text = ""
-			if _countdown_label.text == "GO!":
-				_countdown_label.text = ""
 	if _reward_time > 0.0:
 		_reward_time -= delta
 		if _reward_time <= 0.0:
@@ -1265,6 +1291,7 @@ func _apply_hud_preferences() -> void:
 	_live_hud_root.visible = _hud_detail != &"OFF"
 	_focused_hud_layer.visible = _hud_detail in [&"FULL", &"FOCUSED"]
 	_full_hud_layer.visible = _hud_detail == &"FULL"
+	_assist_label.visible = _hud_detail == &"FULL"
 	_refresh_live_hud_transform()
 
 
@@ -1311,13 +1338,32 @@ func _refresh_accessible_flag_color() -> void:
 func update_flow(value: float, boosting: bool) -> void:
 	_flow_bar.value = clampf(value, 0.0, 100.0)
 	var active_mode := StringName(_racecraft_snapshot.get(&"active_flow_mode", &"NONE"))
+	var cost := clampf(float(_racecraft_snapshot.get(&"recommended_flow_cost", 0.0)), 0.0, 100.0)
+	var ready := cost > 0.0 and value >= cost
+	var mode := String(_racecraft_snapshot.get(&"recommended_flow_mode", &"SURGE"))
+	var text_key := [roundi(value), active_mode, cost, ready, mode, ceili(maxf(cost - value, 0.0)),
+		boosting, InputRouter.input_mode, InputRouter.binding_revision, _flow_denied_feedback_time > 0.0]
+	if text_key == _flow_text_key:
+		return
+	_flow_text_key = text_key
 	_flow_label.text = (
-		"FLOW  %03d  //  %s" % [int(round(value)), String(active_mode)]
+		"FLOW %03d  //  %s" % [int(round(value)), String(active_mode)]
 		if active_mode != &"NONE"
-		else "FLOW  %03d" % int(round(value))
+		else "FLOW %03d  //  %s" % [int(round(value)), "READY" if ready else "BUILDING"]
 	)
+	var binding := "FLOW" if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.FLOW_BOOST, InputRouter.input_mode, 1)
+	_flow_hint_label.text = (
+		"%s ACTIVE" % String(active_mode) if active_mode != &"NONE" else
+		"%s: %s  /  %d FLOW" % [binding, mode, roundi(cost)] if ready else
+		"%d MORE FOR %s" % [ceili(maxf(cost - value, 0.0)), mode] if cost > 0.0 else
+		"CLEAN LINES BUILD FLOW"
+	)
+	_flow_hint_label.modulate = CYAN if ready or active_mode != &"NONE" else CREAM
+	_flow_cost_marker.visible = cost > 0.0 and active_mode == &"NONE"
+	_flow_cost_marker.anchor_left = cost / 100.0
+	_flow_cost_marker.anchor_right = cost / 100.0
 	if _flow_denied_feedback_time <= 0.0:
-		_flow_label.modulate = CYAN if boosting else CREAM
+		_flow_label.modulate = CYAN if boosting or ready else CREAM
 		_flow_bar.modulate = Color.WHITE
 
 
@@ -1337,11 +1383,11 @@ static func format_fast_line_cue(snapshot: Dictionary) -> String:
 	if phase not in [&"PREVIEW", &"ACTIVE"] or StringName(snapshot.get(&"skill_zone", &"")).is_empty():
 		return ""
 	var direction := StringName(snapshot.get(&"skill_line_direction", &"CENTER"))
-	var arrow := "◆"
+	var arrow := "CENTER"
 	if direction == &"LEFT":
-		arrow = "◀"
+		arrow = "LEFT"
 	elif direction == &"RIGHT":
-		arrow = "▶"
+		arrow = "RIGHT"
 	var kind := String(snapshot.get(&"skill_zone_kind", &"LINE")).replace("_", " ")
 	if phase == &"PREVIEW":
 		return "FAST LINE %s %s  ·  %dm" % [
@@ -1408,7 +1454,19 @@ func update_racecraft_state(snapshot: Dictionary) -> void:
 		var cost := roundi(float(snapshot.get(&"recommended_flow_cost", 0.0)))
 		var flow_binding := "FLOW" if InputRouter.input_mode == InputRouter.INPUT_MODE_TOUCH else InputRouter.get_action_label(InputRouter.FLOW_BOOST, InputRouter.input_mode, 2)
 		tokens.append("%s: %s  %d FLOW" % [flow_binding, String(recommended), cost])
-	_racecraft_label.text = "RACECRAFT  //  " + "  //  ".join(tokens)
+	# Keep the decision lane bounded, even when several surface effects coexist.
+	# Handling hazards must survive that bound ahead of routine technique receipts.
+	var hazard := ""
+	if roost >= 0.45:
+		hazard = "ROOST %02d%%" % roundi(roost * 100.0)
+	elif evolution_state == &"SLICK_GROOVE":
+		hazard = "SLICK GROOVE"
+	elif evolution_state == &"DEEP_RUT" and evolution_wet:
+		hazard = "DEEP WET RUT"
+	if not hazard.is_empty():
+		tokens.erase(hazard)
+		tokens.insert(0, hazard)
+	_racecraft_label.text = "  //  ".join(tokens.slice(0, 2)) if not tokens.is_empty() else ""
 	var skill_phase := StringName(snapshot.get(&"skill_zone_phase", &"NONE"))
 	var skill_needs_commitment := skill_phase == &"ACTIVE" and not bool(snapshot.get(&"skill_line_committed", false))
 	_racecraft_label.modulate = (
@@ -1531,6 +1589,7 @@ func _update_flow_denied_feedback(delta: float) -> void:
 
 
 func _clear_flow_denied_feedback() -> void:
+	_flow_text_key.clear()
 	_flow_denied_feedback_time = 0.0
 	_last_flow_denied_feedback.clear()
 	if _flow_bar != null:
@@ -1668,6 +1727,10 @@ func update_field(position: int, total: int, gap_ahead: float, gap_behind: float
 func show_race_moment(label: String, _points: int, positive: bool) -> void:
 	if _activity in [&"FREESTYLE", &"DISCOVERY"]:
 		return
+	# Routine technique receipts must not erase a rival/damage/Flow warning
+	# before the rider has had time to read it. Line scoring remains independent.
+	if positive and _message_time > 0.0 and _message_label.modulate.is_equal_approx(WARNING):
+		return
 	_message_label.text = label
 	_message_label.modulate = CYAN if positive else Color("ff806b")
 	_message_time = 1.45
@@ -1755,32 +1818,33 @@ func _build_hud() -> void:
 	_checkpoint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_checkpoint_label, Vector2(1.0, 0.0), Rect2(-350.0, 46.0, 320.0, 28.0))
 
-	var speed_panel := ColorRect.new()
-	speed_panel.color = DARK
-	_anchor_rect(speed_panel, Vector2.ONE, Rect2(-235.0, -202.0, 205.0, 168.0))
+	var speed_panel := Panel.new()
+	speed_panel.name = "RiderInstruments"
+	speed_panel.add_theme_stylebox_override(&"panel", _make_panel_style(DARK, Color("53636b"), 1))
+	_anchor_rect(speed_panel, Vector2.ONE, Rect2(-315.0, -260.0, 285.0, 226.0))
 	speed_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(speed_panel)
 
-	_speed_label = _make_label(root, "000", 64, AMBER)
+	_speed_label = _make_label(root, "000", 64, Color.WHITE)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(_speed_label, Vector2.ONE, Rect2(-230.0, -202.0, 155.0, 84.0))
+	_anchor_rect(_speed_label, Vector2.ONE, Rect2(-300.0, -252.0, 180.0, 78.0))
 	_speed_units_label = _make_label(root, "MPH", 18, CREAM)
-	_anchor_rect(_speed_units_label, Vector2.ONE, Rect2(-74.0, -163.0, 50.0, 32.0))
+	_anchor_rect(_speed_units_label, Vector2.ONE, Rect2(-104.0, -215.0, 60.0, 32.0))
 	_gear_label = _make_label(root, "AUTO  //  G1", 16, CREAM)
 	_gear_label.name = "TransmissionLabel"
 	_gear_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(_gear_label, Vector2.ONE, Rect2(-220.0, -137.0, 180.0, 26.0))
-	_assist_label = _make_label(_full_hud_layer, "ASSIST SPORT  //  5 / 5", 12, Color("9dadb6"))
+	_anchor_rect(_gear_label, Vector2.ONE, Rect2(-295.0, -177.0, 250.0, 24.0))
+	_assist_label = _make_label(root, "ASSIST SPORT  //  5 / 5", 13, Color.WHITE)
 	_assist_label.name = "AssistStatusLabel"
 	_assist_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_anchor_rect(_assist_label, Vector2.ONE, Rect2(-220.0, -83.0, 180.0, 22.0))
+	_anchor_rect(_assist_label, Vector2.ONE, Rect2(-295.0, -60.0, 250.0, 22.0))
 
 	_speed_bar = ProgressBar.new()
 	_speed_bar.min_value = 0.0
 	_speed_bar.max_value = 82.0
 	_speed_bar.value = 0.0
 	_speed_bar.show_percentage = false
-	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-220.0, -105.0, 180.0, 12.0))
+	_anchor_rect(_speed_bar, Vector2.ONE, Rect2(-295.0, -148.0, 250.0, 6.0))
 	var bar_background := StyleBoxFlat.new()
 	bar_background.bg_color = Color("263039")
 	bar_background.corner_radius_top_left = 5
@@ -1797,40 +1861,53 @@ func _build_hud() -> void:
 	_speed_bar.add_theme_stylebox_override(&"fill", bar_fill)
 	root.add_child(_speed_bar)
 
-	_flow_label = _make_label(root, "FLOW  000", 16, CREAM)
-	_anchor_rect(_flow_label, Vector2.ONE, Rect2(-220.0, -88.0, 180.0, 25.0))
+	_flow_label = _make_label(root, "FLOW 000  //  BUILDING", 16, Color.WHITE)
+	_anchor_rect(_flow_label, Vector2.ONE, Rect2(-295.0, -134.0, 250.0, 25.0))
 	_flow_bar = ProgressBar.new()
 	_flow_bar.min_value = 0.0
 	_flow_bar.max_value = 100.0
 	_flow_bar.value = 0.0
 	_flow_bar.show_percentage = false
-	_anchor_rect(_flow_bar, Vector2.ONE, Rect2(-220.0, -55.0, 180.0, 10.0))
+	_anchor_rect(_flow_bar, Vector2.ONE, Rect2(-295.0, -106.0, 250.0, 10.0))
 	_flow_bar.add_theme_stylebox_override(&"background", bar_background.duplicate())
 	var flow_fill := bar_fill.duplicate() as StyleBoxFlat
 	flow_fill.bg_color = CYAN
 	_flow_bar.add_theme_stylebox_override(&"fill", flow_fill)
 	root.add_child(_flow_bar)
+	_flow_cost_marker = ColorRect.new()
+	_flow_cost_marker.name = "FlowCostMarker"
+	_flow_cost_marker.color = CREAM
+	_flow_cost_marker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_flow_cost_marker.offset_left = -1.0
+	_flow_cost_marker.offset_right = 1.0
+	_flow_cost_marker.offset_top = -3.0
+	_flow_cost_marker.offset_bottom = 13.0
+	_flow_cost_marker.visible = false
+	_flow_bar.add_child(_flow_cost_marker)
+	_flow_hint_label = _make_label(root, "CLEAN LINES BUILD FLOW", 13, Color.WHITE)
+	_flow_hint_label.name = "FlowActionHint"
+	_anchor_rect(_flow_hint_label, Vector2.ONE, Rect2(-295.0, -91.0, 250.0, 24.0))
 
 	_condition_panel = ColorRect.new()
 	_condition_panel.name = "BikeConditionPanel"
 	_condition_panel.color = Color(0.12, 0.045, 0.035, 0.92)
 	_condition_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_anchor_rect(_condition_panel, Vector2.ONE, Rect2(-235.0, -37.0, 205.0, 30.0))
+	_anchor_rect(_condition_panel, Vector2.ONE, Rect2(-315.0, -33.0, 285.0, 26.0))
 	_condition_panel.visible = false
 	root.add_child(_condition_panel)
 	_condition_label = _make_label(root, "", 14, AMBER)
 	_condition_label.name = "BikeConditionLabel"
 	_condition_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_condition_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_anchor_rect(_condition_label, Vector2.ONE, Rect2(-225.0, -36.0, 185.0, 28.0))
+	_anchor_rect(_condition_label, Vector2.ONE, Rect2(-305.0, -33.0, 265.0, 26.0))
 	_condition_label.visible = false
 
-	_racecraft_label = _make_label(_focused_hud_layer, "", 14, CREAM)
+	_racecraft_label = _make_label(_focused_hud_layer, "", 17, Color.WHITE)
 	_racecraft_label.name = "RacecraftStatusLabel"
 	_racecraft_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_racecraft_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_racecraft_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_anchor_rect(_racecraft_label, Vector2.ONE, Rect2(-560.0, -92.0, 315.0, 58.0))
+	_anchor_rect(_racecraft_label, Vector2.ONE, Rect2(-930.0, -104.0, 595.0, 70.0))
 
 	_landing_projection_label = _make_label(root, "", 17, CREAM)
 	_landing_projection_label.name = "LandingProjectionLabel"
@@ -1882,17 +1959,18 @@ func _build_hud() -> void:
 	_countdown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_anchor_rect(_countdown_label, Vector2(0.5, 0.5), Rect2(-260.0, -150.0, 520.0, 220.0))
 
-	_gate_launch_label = _make_label(root, "", 22, AMBER)
+	_gate_launch_label = _make_label(root, "", 22, Color.WHITE)
 	_gate_launch_label.name = "GateLaunchFeedback"
 	_gate_launch_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_gate_launch_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_gate_launch_label.visible = false
 	_anchor_rect(_gate_launch_label, Vector2(0.5, 0.5), Rect2(-500.0, -225.0, 1000.0, 64.0))
 
-	_message_label = _make_label(root, "", 27, CREAM)
+	_message_label = _make_label(root, "", 23, Color.WHITE)
 	_message_label.name = "CenterMessage"
 	_message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_message_label, Vector2(0.5, 0.5), Rect2(-500.0, 70.0, 1000.0, 140.0))
+	_message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_anchor_rect(_message_label, Vector2(0.5, 0.5), Rect2(-450.0, 60.0, 900.0, 88.0))
 	_compass_label = _make_label(root, "▲", 54, CYAN)
 	_compass_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_compass_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -1908,15 +1986,15 @@ func _build_hud() -> void:
 	_modifier_label = _make_label(_full_hud_layer, "", 15, Color("a8b4bd"))
 	_modifier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_modifier_label, Vector2(1.0, 0.0), Rect2(-680.0, 148.0, 650.0, 30.0))
-	_line_label = _make_label(_focused_hud_layer, "", 31, AMBER)
+	_line_label = _make_label(_focused_hud_layer, "", 25, Color.WHITE)
 	_line_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_line_label, Vector2(0.5, 1.0), Rect2(-360.0, -276.0, 720.0, 42.0))
+	_anchor_rect(_line_label, Vector2(0.5, 1.0), Rect2(-360.0, -310.0, 720.0, 36.0))
 	_line_score_label = _make_label(_focused_hud_layer, "", 17, CREAM)
 	_line_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_line_score_label, Vector2(0.5, 1.0), Rect2(-360.0, -236.0, 720.0, 30.0))
+	_anchor_rect(_line_score_label, Vector2(0.5, 1.0), Rect2(-360.0, -272.0, 720.0, 30.0))
 	_breakdown_label = _make_label(_focused_hud_layer, "", 19, CYAN)
 	_breakdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_anchor_rect(_breakdown_label, Vector2(0.5, 0.5), Rect2(-520.0, 214.0, 1040.0, 38.0))
+	_anchor_rect(_breakdown_label, Vector2(0.5, 0.5), Rect2(-520.0, 154.0, 1040.0, 38.0))
 
 	_course_map = CourseMapControl.new()
 	_course_map.name = "CourseMiniMap"
@@ -1927,7 +2005,7 @@ func _build_hud() -> void:
 	_field_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_anchor_rect(_field_label, Vector2(1.0, 0.0), Rect2(-330.0, 370.0, 300.0, 28.0))
 
-	_phase_label = _make_label(root, "STAGING", 15, AMBER)
+	_phase_label = _make_label(root, "STAGING", 15, Color.WHITE)
 	_phase_label.name = "RacePhase"
 	_phase_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_anchor_rect(_phase_label, Vector2(0.5, 0.0), Rect2(-110.0, 91.0, 220.0, 24.0))
@@ -3486,7 +3564,7 @@ func _on_countdown_changed(value: int) -> void:
 	show_control_hints(CONTROL_HINT_CONTEXT_SECONDS)
 	_countdown_label.text = str(value) if value > 0 else "GO!"
 	_countdown_label.modulate = Color.WHITE
-	_message_time = 0.8 if value == 0 else 0.0
+	_go_time = 0.8 if value == 0 else 0.0
 
 
 func _on_race_started() -> void:
@@ -3575,6 +3653,10 @@ func _on_race_finished(time_usec: int, medal: StringName, is_new_best: bool) -> 
 
 
 func _on_race_reset() -> void:
+	_flow_text_key.clear()
+	_gate_text_key.clear()
+	_go_time = 0.0
+	_countdown_label.text = ""
 	# RaceController emits race_reset before RaceServices announces replay
 	# teardown. Clear restoration ownership and result identity first so the later
 	# `replay_state_changed(false)` cannot resurrect the old classification card.

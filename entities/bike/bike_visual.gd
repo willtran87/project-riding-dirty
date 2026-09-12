@@ -72,6 +72,19 @@ var _sponsor_roots: Dictionary[StringName, Node3D] = {}
 var _sponsor_labels: Array[Label3D] = []
 
 var _materials: Dictionary[StringName, StandardMaterial3D] = {}
+var _pack_effects_enabled: bool = false
+var _pack_pose_initialized: bool = false
+var _pack_articulation_skipped: bool = false
+var _pack_wheel_angle: float = 0.0
+var _pack_steer_angle: float = 0.0
+var _pack_rider_roll: float = 0.0
+var _pack_torso_pitch: float = 0.0
+var _pack_front_chatter: float = 0.0
+var _pack_rear_chatter: float = 0.0
+var _pack_steer_input: float = 0.0
+var _pack_boosting: bool = false
+var _pack_articulation_updates: int = 0
+var _pack_effect_updates: int = 0
 
 
 func _ready() -> void:
@@ -89,6 +102,7 @@ func _ready() -> void:
 		_apply_pack_render_budget()
 	else:
 		_build_dust()
+	set_process(pack_variant)
 
 
 func _exit_tree() -> void:
@@ -96,6 +110,31 @@ func _exit_tree() -> void:
 		if is_instance_valid(mark):
 			mark.queue_free()
 	_skid_marks.clear()
+
+
+func _process(_delta: float) -> void:
+	# A camera cut may happen after the physics tick. Restore the exact latest
+	# pose before drawing, not one simulation tick after the rider reappears.
+	if pack_variant and _pack_articulation_skipped and _pack_detail_visible():
+		_apply_pack_articulation()
+
+
+func _pack_detail_visible() -> bool:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return true
+	return pack_detail_may_be_visible(global_position, camera.global_transform)
+
+
+static func pack_detail_may_be_visible(position: Vector3, camera_transform: Transform3D) -> bool:
+	# Conservative six-metre envelope: only cull fully behind the camera. Side
+	# frustum edges, near riders, and their existing shadow proxy remain intact.
+	return (position - camera_transform.origin).dot(-camera_transform.basis.z.normalized()) >= -6.0
+
+
+func get_pack_work_snapshot() -> Dictionary:
+	return {&"articulation_updates": _pack_articulation_updates, &"effect_updates": _pack_effect_updates,
+		&"articulation_skipped": _pack_articulation_skipped, &"effects_enabled": _pack_effects_enabled}
 
 
 func update_pose(
@@ -202,6 +241,8 @@ func burst_landing_dust(
 	contact_normal: Vector3,
 	surface: StringName
 ) -> void:
+	if pack_variant and not _pack_effects_enabled:
+		return
 	set_surface(surface)
 	var forward := -global_transform.basis.z.slide(contact_normal).normalized()
 	if pack_variant:
@@ -219,6 +260,8 @@ func burst_landing_dust(
 
 
 func burst_boost() -> void:
+	if pack_variant and not _pack_effects_enabled:
+		return
 	if _boost_burst != null:
 		_boost_burst.restart()
 	elif pack_variant and _roost != null:
@@ -520,26 +563,38 @@ func update_pack_pose(
 	if _front_wheel_pivot == null or _rear_wheel_pivot == null:
 		return
 	var safe_delta := maxf(delta, 0.0)
+	if not _pack_pose_initialized:
+		_pack_wheel_angle = _front_wheel_pivot.rotation.x
+		_pack_steer_angle = _front_assembly.rotation.y
+		_pack_rider_roll = _rider_root.rotation.z
+		_pack_torso_pitch = _rider_torso_root.rotation.x
+		_pack_pose_initialized = true
 	var wheel_step := speed_mps / 0.307 * safe_delta
-	_front_wheel_pivot.rotation.x = fmod(_front_wheel_pivot.rotation.x + wheel_step, TAU)
-	_rear_wheel_pivot.rotation.x = fmod(_rear_wheel_pivot.rotation.x + wheel_step, TAU)
-	_front_assembly.rotation.y = lerpf(_front_assembly.rotation.y, steer * 0.52, 1.0 - exp(-9.0 * safe_delta))
+	_pack_wheel_angle = fmod(_pack_wheel_angle + wheel_step, TAU)
+	_pack_steer_angle = lerpf(_pack_steer_angle, steer * 0.52, 1.0 - exp(-9.0 * safe_delta))
 
 	var fork_chatter := sin(suspension_phase * 1.9) * 0.018 + sin(suspension_phase * 3.7) * 0.008
 	var rear_chatter := sin(suspension_phase * 1.9 + 0.85) * 0.016
 	fork_chatter -= suspension_activity * 0.035
 	rear_chatter -= suspension_activity * 0.028
-	_update_suspension_geometry(-0.39 + fork_chatter, -0.39 + rear_chatter)
-	_rider_root.position.y = 0.15 + (fork_chatter + rear_chatter) * 0.32
-	_rider_root.rotation.z = lerpf(_rider_root.rotation.z, -corner_lean * 0.16, 1.0 - exp(-8.0 * safe_delta))
-	_rider_torso_root.rotation.x = lerpf(
-		_rider_torso_root.rotation.x,
+	_pack_front_chatter = fork_chatter
+	_pack_rear_chatter = rear_chatter
+	_pack_rider_roll = lerpf(_pack_rider_roll, -corner_lean * 0.16, 1.0 - exp(-8.0 * safe_delta))
+	_pack_torso_pitch = lerpf(
+		_pack_torso_pitch,
 		-0.25 if boosting else -0.13,
 		1.0 - exp(-8.0 * safe_delta)
 	)
-	_update_rider_limbs(steer, 0.08, boosting)
+	_pack_steer_input = steer
+	_pack_boosting = boosting
+	_pack_articulation_skipped = pack_variant and not _pack_detail_visible()
+	if not _pack_articulation_skipped:
+		_apply_pack_articulation()
 	if _dust == null:
 		return
+	if pack_variant and not _pack_effects_enabled:
+		return
+	_pack_effect_updates += 1
 	if surface != _current_surface:
 		set_surface(surface)
 	var rear_forward := -global_transform.basis.z.normalized()
@@ -560,6 +615,19 @@ func update_pack_pose(
 		_clods.emitting = grounded and speed_mps > 9.0 and surface in [&"MUD", &"LOOSE_DIRT"] and roost_intensity > 0.62
 	if landing_event:
 		burst_landing_dust(clampf(1.15 - landing_quality, 0.25, 1.0), rear_point, Vector3.UP, surface)
+
+
+func _apply_pack_articulation() -> void:
+	_pack_articulation_skipped = false
+	_pack_articulation_updates += 1
+	_front_wheel_pivot.rotation.x = _pack_wheel_angle
+	_rear_wheel_pivot.rotation.x = _pack_wheel_angle
+	_front_assembly.rotation.y = _pack_steer_angle
+	_update_suspension_geometry(-0.39 + _pack_front_chatter, -0.39 + _pack_rear_chatter)
+	_rider_root.position.y = 0.15 + (_pack_front_chatter + _pack_rear_chatter) * 0.32
+	_rider_root.rotation.z = _pack_rider_roll
+	_rider_torso_root.rotation.x = _pack_torso_pitch
+	_update_rider_limbs(_pack_steer_input, 0.08, _pack_boosting)
 
 
 func set_surface(surface: StringName) -> void:
@@ -1074,6 +1142,9 @@ func set_pack_effects_enabled(enabled: bool) -> void:
 	## transparent draw work and do not simulate off-camera roost.
 	if not pack_variant:
 		return
+	if _pack_effects_enabled == enabled and _dust != null and _dust.visible == enabled:
+		return
+	_pack_effects_enabled = enabled
 	for particles: GPUParticles3D in [_dust, _roost]:
 		if particles == null:
 			continue

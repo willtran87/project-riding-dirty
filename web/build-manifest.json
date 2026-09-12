@@ -11,9 +11,9 @@
       "sha256": "5b476a9c9ce642c0ee4256436d1bc31d9c38f868aca0f9a8e2a57c18d2dec2a3"
     },
     "pck": {
-      "bytes": 5522440,
-      "file": "index.59429b028ed6.pck",
-      "sha256": "59429b028ed6bb5329a8c807c22044328ed79b1f4dc91cbb6619b6efeb0b28ab"
+      "bytes": 5533488,
+      "file": "index.e76e41bbcf95.pck",
+      "sha256": "e76e41bbcf95e694ca5f94abaab8922ff01c636d14053580a03d27c681a66987"
     },
     "wasm": {
       "bytes": 38814086,

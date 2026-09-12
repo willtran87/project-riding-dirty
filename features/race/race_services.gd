@@ -195,15 +195,13 @@ func initialize(race_controller: RaceController, player_bike: DirtBikeController
 
 func _physics_process(delta: float) -> void:
 	if _recorder.is_recording() and not get_tree().paused and is_instance_valid(bike):
-		var session := race.get_session_snapshot() if race != null else {}
-		var integrity := session.get(&"integrity", {}) as Dictionary
 		_recorder.capture(delta, {
 			"position": bike.global_position,
 			"rotation": bike.global_transform.basis.get_rotation_quaternion(),
 			"linear_velocity": bike.linear_velocity,
 			"angular_velocity": bike.angular_velocity,
 			"speed_mps": bike.get_speed_mps(),
-			"progress": float(integrity.get(&"total_progress", 0.0)),
+			"progress": race.get_recording_progress() if race != null else 0.0,
 			"input": {
 				"throttle": InputRouter.get_throttle(),
 				"brake": InputRouter.get_brake(),
